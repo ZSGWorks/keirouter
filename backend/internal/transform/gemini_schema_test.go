@@ -61,6 +61,35 @@ func TestCleanGeminiToolSchemaStripsUnsupportedKeywords(t *testing.T) {
 	}
 }
 
+func TestCleanGeminiToolSchemaPreservesPropertyNames(t *testing.T) {
+	raw := json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"format": {"type": "string", "format": "uri"},
+			"default": {"type": "string", "default": "value"}
+		}
+	}`)
+
+	cleaned := cleanGeminiToolSchema(raw)
+	var got map[string]any
+	if err := json.Unmarshal(cleaned, &got); err != nil {
+		t.Fatalf("cleaned schema is not valid JSON: %v", err)
+	}
+	props := got["properties"].(map[string]any)
+	if _, ok := props["format"]; !ok {
+		t.Fatalf("property named format was removed: %s", cleaned)
+	}
+	if _, ok := props["default"]; !ok {
+		t.Fatalf("property named default was removed: %s", cleaned)
+	}
+	if _, ok := props["format"].(map[string]any)["format"]; ok {
+		t.Errorf("unsupported format keyword was retained: %s", cleaned)
+	}
+	if _, ok := props["default"].(map[string]any)["default"]; ok {
+		t.Errorf("unsupported default keyword was retained: %s", cleaned)
+	}
+}
+
 func TestCleanGeminiToolSchemaEmptyObjectGetsPlaceholder(t *testing.T) {
 	cleaned := cleanGeminiToolSchema(json.RawMessage(`{"type":"object","properties":{}}`))
 	var got map[string]any

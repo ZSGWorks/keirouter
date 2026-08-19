@@ -18,6 +18,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 	"github.com/mydisha/keirouter/backend/internal/budget"
+	"github.com/mydisha/keirouter/backend/internal/config"
 	"github.com/mydisha/keirouter/backend/internal/core"
 	"github.com/mydisha/keirouter/backend/internal/dispatch"
 	"github.com/mydisha/keirouter/backend/internal/limits"
@@ -26,8 +27,38 @@ import (
 	"github.com/mydisha/keirouter/backend/internal/transform"
 )
 
-// maxBodyBytes caps inbound request bodies to protect against oversized uploads.
-const maxBodyBytes = 32 << 20 // 32 MiB
+func (s *Server) requestBodyLimit() int64 {
+	if s.cfg.Server.MaxRequestBodyBytes > 0 {
+		return s.cfg.Server.MaxRequestBodyBytes
+	}
+	return config.DefaultMaxRequestBodyBytes
+}
+
+// readRequestBody enforces the configured request-body limit and translates a
+// size violation into a precise 413 response instead of an ambiguous 400.
+func (s *Server) readRequestBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
+	limit := s.requestBodyLimit()
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
+	if err == nil {
+		return body, true
+	}
+
+	var maxErr *http.MaxBytesError
+	if errors.As(err, &maxErr) {
+		message := fmt.Sprintf("request body exceeds maximum allowed size of %s", humanBytes(int(limit)))
+		if s.consoleLog != nil {
+			s.consoleLog.Log("WARN", "Request body too large", message)
+		}
+		writeError(w, http.StatusRequestEntityTooLarge, message)
+		return nil, false
+	}
+
+	if s.consoleLog != nil {
+		s.consoleLog.Log("ERROR", "Failed to read request body", err.Error())
+	}
+	writeError(w, http.StatusBadRequest, "failed to read request body")
+	return nil, false
+}
 
 // logRequest logs a completed request to the console log buffer.
 func (s *Server) logRequest(keyName, provider, model string, tokens int, costMicros int64, latencyMs int, cacheHit bool, err error) {
@@ -79,9 +110,8 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 // Anthropic response shape: {"input_tokens": N}. The estimate uses the common
 // ~4 chars/token rule, which is accurate enough for client-side budgeting.
 func (s *Server) handleAnthropicCountTokens(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "failed to read request body")
+	body, ok := s.readRequestBody(w, r)
+	if !ok {
 		return
 	}
 
@@ -136,10 +166,8 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request, dialect core
 		return
 	}
 
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
-	if err != nil {
-		s.consoleLog.Log("ERROR", "Failed to read request body", err.Error())
-		writeError(w, http.StatusBadRequest, "failed to read request body")
+	body, ok := s.readRequestBody(w, r)
+	if !ok {
 		return
 	}
 	s.consoleLog.Log("DEBUG", fmt.Sprintf("Read request body (%s)", humanBytes(len(body))), "")

@@ -32,6 +32,11 @@ type Config struct {
 	Guardrails     GuardrailsConfig     `koanf:"guardrails"`
 }
 
+// DefaultMaxRequestBodyBytes is the default maximum size accepted for inbound
+// API request bodies. Large multimodal and tool-heavy conversations can exceed
+// the historical 32 MiB limit, while a finite cap still protects the process.
+const DefaultMaxRequestBodyBytes int64 = 128 << 20 // 128 MiB
+
 // ServerConfig controls the HTTP listener.
 type ServerConfig struct {
 	Host string `koanf:"host"`
@@ -47,6 +52,9 @@ type ServerConfig struct {
 	RequestTimeout time.Duration `koanf:"request_timeout"`
 	// CORSOrigins lists allowed dashboard origins ("*" permitted for local).
 	CORSOrigins []string `koanf:"cors_origins"`
+	// MaxRequestBodyBytes caps inbound API request bodies. Values less than one
+	// are replaced by DefaultMaxRequestBodyBytes.
+	MaxRequestBodyBytes int64 `koanf:"max_request_body_bytes"`
 	// MaxConcurrentRequests caps in-flight API requests to prevent resource
 	// exhaustion. Zero or negative means unlimited (not recommended for
 	// high-traffic deployments). Default: 100.
@@ -273,14 +281,16 @@ func Default() Config {
 		Server: ServerConfig{
 			Host: "127.0.0.1",
 			Port: 20180,
-			// 60s prevents premature stall timeouts for codex/Responses
-			// streams which may have longer thinking periods between chunks.
-			StreamStallTimeout: 60 * time.Second,
+			// Reasoning models can legitimately pause for several minutes after
+			// emitting an initial text/thinking chunk. Keep the stall budget in
+			// step with the default request timeout to avoid aborting healthy work.
+			StreamStallTimeout: 5 * time.Minute,
 			// 15s keeps connections alive through common proxy idle timeouts
 			// (nginx defaults to 60s) without meaningful bandwidth cost.
 			StreamHeartbeatInterval: 15 * time.Second,
 			RequestTimeout:          5 * time.Minute,
 			CORSOrigins:             []string{"*"},
+			MaxRequestBodyBytes:     DefaultMaxRequestBodyBytes,
 		},
 		Database: DatabaseConfig{
 			Driver:          "sqlite",
@@ -409,6 +419,9 @@ func (c *Config) validate() error {
 	}
 	if c.Server.Port < 1 || c.Server.Port > 65535 {
 		return fmt.Errorf("server.port out of range: %d", c.Server.Port)
+	}
+	if c.Server.MaxRequestBodyBytes <= 0 {
+		c.Server.MaxRequestBodyBytes = DefaultMaxRequestBodyBytes
 	}
 	if c.Meter.BatchSize <= 0 {
 		c.Meter.BatchSize = 100

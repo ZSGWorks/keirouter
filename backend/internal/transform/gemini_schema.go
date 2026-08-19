@@ -326,7 +326,15 @@ func removeUnsupportedSchemaKeys(node any) any {
 			}
 		}
 		for k, child := range v {
-			v[k] = removeUnsupportedSchemaKeys(child)
+			if k == "properties" {
+				if props, ok := child.(map[string]any); ok {
+					for propName, propSchema := range props {
+						props[propName] = removeUnsupportedSchemaKeys(propSchema)
+					}
+				}
+			} else {
+				v[k] = removeUnsupportedSchemaKeys(child)
+			}
 		}
 		return v
 	case []any:

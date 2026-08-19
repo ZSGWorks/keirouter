@@ -6,14 +6,22 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/mydisha/keirouter/backend/internal/core"
 	"github.com/stretchr/testify/require"
 )
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -490,6 +498,103 @@ func TestAntigravity_Stream(t *testing.T) {
 	require.True(t, finished)
 }
 
+func TestAntigravity_StreamRetriesTransientContextCancellation(t *testing.T) {
+	previousClient := sharedClient
+	t.Cleanup(func() { sharedClient = previousClient })
+
+	var calls int
+	sharedClient = &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		calls++
+		if calls == 1 {
+			return nil, context.Canceled
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(strings.NewReader("data: " + geminiStreamStop() + "\n\n")),
+		}, nil
+	})}
+
+	c := NewAntigravity("antigravity", "https://unused.example")
+	req := &core.ChatRequest{
+		Model: "gemini-3.5-flash-high", Stream: true,
+		Messages: []core.Message{{Role: core.RoleUser, Content: []core.ContentPart{{Type: core.PartText, Text: "hello"}}}},
+	}
+	stream, err := c.Stream(context.Background(), req, core.Credentials{AccessToken: "test-token"}, core.StreamConfig{})
+	require.NoError(t, err)
+	for range stream {
+	}
+	require.Equal(t, 2, calls)
+}
+
+func TestAntigravity_ModelCatalogIncludesGemini37AndExcludesUnverifiedGemini36(t *testing.T) {
+	models := ModelsForProvider("antigravity")
+	ids := make(map[string]struct{}, len(models))
+	for _, model := range models {
+		ids[model.ID] = struct{}{}
+	}
+	for _, model := range []string{"gemini-3.7-flash-low", "gemini-3.7-flash-medium", "gemini-3.7-flash-high"} {
+		_, found := ids[model]
+		require.True(t, found, "Antigravity model %q is not listed", model)
+	}
+
+	for _, model := range []string{"gemini-3.6-flash", "gemini-3.6-flash-low", "gemini-3.6-flash-medium", "gemini-3.6-flash-high"} {
+		_, found := ids[model]
+		require.False(t, found, "unverified Antigravity model %q is still listed", model)
+	}
+	_, legacyGemini3Pro := ids["gemini-3-pro-preview"]
+	require.False(t, legacyGemini3Pro, "deprecated Antigravity model gemini-3-pro-preview is still listed")
+	for _, model := range []string{"gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"} {
+		_, found := ids[model]
+		require.False(t, found, "deprecated Antigravity model %q is still listed", model)
+	}
+}
+
+func TestAntigravity_DoesNotAliasUnverifiedGemini36(t *testing.T) {
+	require.Equal(t, "gemini-3.6-flash-high", resolveAntigravityModel("gemini-3.6-flash-high"))
+}
+
+func TestAntigravity_Gemini37AliasesTieredModel(t *testing.T) {
+	c := NewAntigravity("antigravity", "https://unused.example")
+
+	tests := []struct {
+		model          string
+		thinkingBudget *float64
+	}{
+		{model: "gemini-3.7-flash-low", thinkingBudget: float64Ptr(1024)},
+		{model: "gemini-3.7-flash-medium"},
+		{model: "gemini-3.7-flash-high", thinkingBudget: float64Ptr(8192)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			body, err := c.wrapRequest(&core.ChatRequest{
+				Model: tt.model,
+				Messages: []core.Message{{
+					Role:    core.RoleUser,
+					Content: []core.ContentPart{{Type: core.PartText, Text: "hello"}},
+				}},
+			}, core.Credentials{AccessToken: "test-token"}, "")
+			require.NoError(t, err)
+
+			var envelope map[string]any
+			require.NoError(t, json.Unmarshal(body, &envelope))
+			require.Equal(t, "gemini-3.7-flash-tiered", envelope["model"])
+
+			request := envelope["request"].(map[string]any)
+			generationConfig, _ := request["generationConfig"].(map[string]any)
+			thinkingConfig, _ := generationConfig["thinkingConfig"].(map[string]any)
+			if tt.thinkingBudget == nil {
+				require.NotContains(t, generationConfig, "thinkingConfig")
+				return
+			}
+			require.Equal(t, *tt.thinkingBudget, thinkingConfig["thinkingBudget"])
+			require.Equal(t, true, thinkingConfig["includeThoughts"])
+		})
+	}
+}
+
+func float64Ptr(value float64) *float64 { return &value }
+
 func TestAntigravity_Chat_AuthError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
@@ -540,6 +645,67 @@ func TestAntigravity_Chat_RateLimit(t *testing.T) {
 func TestAntigravity_Dialect(t *testing.T) {
 	c := NewAntigravity("antigravity", "http://unused")
 	require.Equal(t, core.DialectAntigravity, c.Dialect())
+}
+
+func TestAntigravity_FetchQuota(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/v1internal:fetchAvailableModels", r.URL.Path)
+		require.Equal(t, "Bearer test-token", r.Header.Get("Authorization"))
+
+		var body map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		require.Equal(t, "my-proj", body["project"])
+
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{
+			"models": {
+				"gemini-3.1-pro-high": {
+					"quotaInfo": {
+						"remainingFraction": 0.85,
+						"resetTime": "2026-07-18T00:00:00Z"
+					}
+				},
+				"gemini-2.5-pro": {
+					"quotaInfo": {
+						"remainingFraction": 1.0,
+						"resetTime": "2026-07-18T00:00:00Z"
+					}
+				},
+				"claude-opus": {
+					"quotaInfo": {
+						"resetTime": "2026-07-18T00:00:00Z"
+					}
+				},
+				"gemini-old": {
+					"quotaInfo": {}
+				}
+			}
+		}`)
+	}))
+	defer srv.Close()
+
+	c := NewAntigravity("antigravity", srv.URL)
+	creds := core.Credentials{
+		AccessToken: "test-token",
+		Extra:       map[string]string{"project_id": "my-proj"},
+	}
+
+	result, err := c.FetchQuota(context.Background(), creds)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, result.Quotas, 2)
+
+	require.Equal(t, "gemini-2.5-pro", result.Quotas[0].ResourceType)
+	require.Equal(t, 100, result.Quotas[0].Limit)
+	require.Equal(t, 100, result.Quotas[0].Remaining)
+	require.Equal(t, 0, result.Quotas[0].Used)
+	require.Equal(t, "2026-07-18T00:00:00Z", result.Quotas[0].ResetAt)
+
+	require.Equal(t, "gemini-3.1-pro-high", result.Quotas[1].ResourceType)
+	require.Equal(t, 100, result.Quotas[1].Limit)
+	require.Equal(t, 85, result.Quotas[1].Remaining)
+	require.Equal(t, 15, result.Quotas[1].Used)
+	require.Equal(t, "2026-07-18T00:00:00Z", result.Quotas[1].ResetAt)
 }
 
 // ---------------------------------------------------------------------------

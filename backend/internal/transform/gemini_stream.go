@@ -2,7 +2,9 @@ package transform
 
 import (
 	"bytes"
+	"encoding/base64"
 	"fmt"
+	"strings"
 
 	json "github.com/mydisha/keirouter/backend/internal/fastjson"
 
@@ -52,19 +54,23 @@ func (GeminiCodec) ParseStreamLine(line []byte, _ string) ([]core.StreamChunk, e
 					Type:  core.ChunkToolCall,
 					Index: partIdx,
 					ToolCall: &core.ToolCall{
-						ID:        geminiCallID(p.FunctionCall.Name),
+						ID:        geminiEncodeCallID(p.FunctionCall, p.ThoughtSignature),
 						Name:      p.FunctionCall.Name,
 						Arguments: p.FunctionCall.Args,
 					},
 				})
 			case p.Text != "":
-				chunks = append(chunks, core.StreamChunk{Type: core.ChunkText, Delta: p.Text})
+				if p.Thought {
+					chunks = append(chunks, core.StreamChunk{Type: core.ChunkThinking, Delta: p.Text})
+				} else {
+					chunks = append(chunks, core.StreamChunk{Type: core.ChunkText, Delta: p.Text})
+				}
 			}
 		}
 		if cand.FinishReason != "" {
 			chunks = append(chunks, core.StreamChunk{
 				Type:         core.ChunkFinish,
-				FinishReason: mapGemFinish(cand.FinishReason),
+				FinishReason: mapGemCandidateFinish(cand.Content, cand.FinishReason),
 			})
 		}
 	}
@@ -94,6 +100,17 @@ func (GeminiCodec) ParseStreamLine(line []byte, _ string) ([]core.StreamChunk, e
 // tool-call, finish, and usage chunks each become one "data:" line.
 func (GeminiCodec) RenderStreamChunk(chunk core.StreamChunk, _ *StreamState) ([][]byte, error) {
 	switch chunk.Type {
+	case core.ChunkThinking:
+		return [][]byte{gemEvent(map[string]any{
+			"candidates": []map[string]any{{
+				"content": map[string]any{
+					"role":  "model",
+					"parts": []map[string]any{{"text": chunk.Delta, "thought": true}},
+				},
+				"index": 0,
+			}},
+		})}, nil
+
 	case core.ChunkText:
 		return [][]byte{gemEvent(map[string]any{
 			"candidates": []map[string]any{{
@@ -113,14 +130,33 @@ func (GeminiCodec) RenderStreamChunk(chunk core.StreamChunk, _ *StreamState) ([]
 		if len(args) == 0 {
 			args = json.RawMessage("{}")
 		}
+
+		idStr := chunk.ToolCall.ID
+		idStr = strings.TrimPrefix(idStr, "call_")
+
+		var thoughtSig string
+		if idx := strings.Index(idStr, "__sig__"); idx >= 0 {
+			if sigB, err := base64.RawURLEncoding.DecodeString(idStr[idx+7:]); err == nil {
+				thoughtSig = string(sigB)
+			}
+			idStr = idStr[:idx]
+		}
+
+		idToSend := idStr
+		if idToSend == chunk.ToolCall.Name || idToSend == strings.ReplaceAll(chunk.ToolCall.Name, ":", "_") {
+			idToSend = ""
+		}
+
 		return [][]byte{gemEvent(map[string]any{
 			"candidates": []map[string]any{{
 				"content": map[string]any{
 					"role": "model",
 					"parts": []map[string]any{{
-						"functionCall": map[string]any{
-							"name": chunk.ToolCall.Name,
-							"args": args,
+						"thoughtSignature": thoughtSig,
+						"functionCall": gemFunctionCall{
+							ID:   idToSend,
+							Name: chunk.ToolCall.Name,
+							Args: args,
 						},
 					}},
 				},

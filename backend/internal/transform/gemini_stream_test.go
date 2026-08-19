@@ -36,6 +36,25 @@ func TestGemini_ParseStreamLine_FunctionCall(t *testing.T) {
 	require.JSONEq(t, `{"city":"SF"}`, string(chunks[0].ToolCall.Arguments))
 }
 
+func TestGemini_ParseResponse_FunctionCallStopUsesToolCalls(t *testing.T) {
+	body := []byte(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"get_weather","args":{"city":"SF"}}}]},"finishReason":"STOP"}]}`)
+	resp, err := GeminiCodec{}.ParseResponse(body, "gemini-2.0-flash")
+	require.NoError(t, err)
+	require.Equal(t, core.FinishToolCalls, resp.FinishReason)
+	require.Len(t, resp.Message.Content, 1)
+	require.Equal(t, core.PartToolCall, resp.Message.Content[0].Type)
+}
+
+func TestGemini_ParseStreamLine_FunctionCallStopUsesToolCalls(t *testing.T) {
+	line := []byte(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"get_weather","args":{"city":"SF"}}}]},"finishReason":"STOP"}]}`)
+	chunks, err := GeminiCodec{}.ParseStreamLine(line, "gemini-2.0-flash")
+	require.NoError(t, err)
+	require.Len(t, chunks, 2)
+	require.Equal(t, core.ChunkToolCall, chunks[0].Type)
+	require.Equal(t, core.ChunkFinish, chunks[1].Type)
+	require.Equal(t, core.FinishToolCalls, chunks[1].FinishReason)
+}
+
 func TestGemini_RenderStreamChunk_SSEShape(t *testing.T) {
 	state := &StreamState{Model: "gemini-2.0-flash"}
 	out, err := GeminiCodec{}.RenderStreamChunk(core.StreamChunk{Type: core.ChunkText, Delta: "hi"}, state)

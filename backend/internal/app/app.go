@@ -207,13 +207,17 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 		MaxEntries:          10000,
 	}, cacheStore)
 
-	// Timeout notifier: atomic cache of timeout values that can be updated
-	// at runtime from the dashboard settings without restarting.
-	timeoutNotifier := gateway.NewTimeoutNotifier(
+	// Timeout notifier: initialize from persisted dashboard settings, then keep
+	// accepting live updates without a restart. Previously startup ignored the
+	// persisted values and silently fell back to the shorter config timeout.
+	stallTimeout, responseHeaderTimeout, requestTimeout := initialTimeoutValues(
+		ctx,
+		db.Settings(),
 		cfg.Server.StreamStallTimeout,
-		30*time.Second, // ResponseHeaderTimeout fallback (from transport)
+		60*time.Second,
 		cfg.Server.RequestTimeout,
 	)
+	timeoutNotifier := gateway.NewTimeoutNotifier(stallTimeout, responseHeaderTimeout, requestTimeout)
 
 	// Proxy notifier: atomic cache of outbound proxy config that can be updated
 	// at runtime from the dashboard settings without restarting.

@@ -22,7 +22,8 @@ type ToolArgSanitizer struct {
 	buffers map[int]*toolBuffer
 	// flushed prevents double-emission when Flush is called multiple times
 	// (e.g. on duplicate ChunkFinish from upstream providers).
-	flushed bool
+	flushed     bool
+	sawToolCall bool
 }
 
 type toolBuffer struct {
@@ -51,10 +52,18 @@ func (s *ToolArgSanitizer) Process(chunk core.StreamChunk, emit func(core.Stream
 		// buffered — causing parse errors in CLI tools like Cline.
 		if chunk.Type == core.ChunkFinish {
 			s.Flush(emit)
+			// Gemini can put functionCall and STOP in separate SSE frames. Once
+			// this stream has emitted a tool call, STOP completes the tool-call
+			// turn rather than the whole conversation.
+			if s.sawToolCall && chunk.FinishReason == core.FinishStop {
+				chunk.FinishReason = core.FinishToolCalls
+			}
+			s.sawToolCall = false
 		}
 		emit(chunk)
 		return
 	}
+	s.sawToolCall = true
 
 	idx := chunk.Index
 

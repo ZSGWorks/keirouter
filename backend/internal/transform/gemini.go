@@ -2,7 +2,9 @@ package transform
 
 import (
 	"bytes"
+	"encoding/base64"
 	"fmt"
+	"strings"
 
 	json "github.com/mydisha/keirouter/backend/internal/fastjson"
 
@@ -45,6 +47,8 @@ type gemPart struct {
 	FunctionResponse *gemFunctionResult `json:"functionResponse,omitempty"`
 	InlineData       *gemInlineData     `json:"inlineData,omitempty"`
 	FileData         *gemFileData       `json:"fileData,omitempty"`
+	ThoughtSignature string             `json:"thoughtSignature,omitempty"`
+	Thought          bool               `json:"thought,omitempty"`
 }
 
 type gemInlineData struct {
@@ -58,11 +62,13 @@ type gemFileData struct {
 }
 
 type gemFunctionCall struct {
+	ID   string          `json:"id,omitempty"`
 	Name string          `json:"name"`
 	Args json.RawMessage `json:"args"`
 }
 
 type gemFunctionResult struct {
+	ID       string          `json:"id,omitempty"`
 	Name     string          `json:"name"`
 	Response json.RawMessage `json:"response"`
 }
@@ -113,19 +119,19 @@ func parseGemContent(c gemContent) core.Message {
 	for _, p := range c.Parts {
 		switch {
 		case p.FunctionCall != nil:
-			// Gemini has no native call id; derive a deterministic one from the
-			// function name so the matching functionResponse maps to the same
-			// tool-call id (downstream dialects require the pairing).
+			// Preserve Gemini's native call id and thought signature when present;
+			// otherwise derive a stable id from the function name so downstream
+			// dialects can pair the matching result.
 			msg.Content = append(msg.Content, core.ContentPart{
 				Type:     core.PartToolCall,
-				ToolCall: &core.ToolCall{ID: geminiCallID(p.FunctionCall.Name), Name: p.FunctionCall.Name, Arguments: p.FunctionCall.Args},
+				ToolCall: &core.ToolCall{ID: geminiEncodeCallID(p.FunctionCall, p.ThoughtSignature), Name: p.FunctionCall.Name, Arguments: p.FunctionCall.Args},
 			})
 		case p.FunctionResponse != nil:
-			// Pair the result back to the derived call id by name.
+			// Pair the result back to the native or name-derived call id.
 			msg.Content = append(msg.Content, core.ContentPart{
 				Type: core.PartToolResult,
 				ToolResult: &core.ToolResult{
-					CallID:  geminiCallID(p.FunctionResponse.Name),
+					CallID:  geminiEncodeResultID(p.FunctionResponse),
 					Content: string(p.FunctionResponse.Response),
 				},
 			})
@@ -140,7 +146,11 @@ func parseGemContent(c gemContent) core.Message {
 				Media: &core.MediaPayload{MIMEType: p.FileData.MIMEType, URL: p.FileData.FileURI},
 			})
 		case p.Text != "":
-			msg.Content = append(msg.Content, core.ContentPart{Type: core.PartText, Text: p.Text})
+			if p.Thought {
+				msg.Content = append(msg.Content, core.ContentPart{Type: core.PartThinking, Text: p.Text})
+			} else {
+				msg.Content = append(msg.Content, core.ContentPart{Type: core.PartText, Text: p.Text})
+			}
 		}
 	}
 	return msg
@@ -214,13 +224,38 @@ func buildGeminiCallNameMap(messages []core.Message) map[string]string {
 	return m
 }
 
-// geminiCallID derives a deterministic tool-call id from a function name, used
-// when parsing Gemini functionCall/functionResponse parts that carry no id.
-func geminiCallID(name string) string {
-	if name == "" {
-		return "call_unknown"
+// geminiEncodeCallID derives a deterministic tool-call id, preserving id and thoughtSignature if present.
+func geminiEncodeCallID(call *gemFunctionCall, thoughtSig string) string {
+	id := call.ID
+	if id == "" {
+		id = call.Name
 	}
-	return "call_" + name
+	if id == "" {
+		id = "unknown"
+	}
+	encoded := id
+	encoded = strings.ReplaceAll(encoded, ":", "_")
+	if !strings.HasPrefix(encoded, "call_") {
+		encoded = "call_" + encoded
+	}
+	if thoughtSig != "" && !strings.Contains(encoded, "__sig__") {
+		encoded += "__sig__" + base64.RawURLEncoding.EncodeToString([]byte(thoughtSig))
+	}
+	return encoded
+}
+
+func geminiEncodeResultID(res *gemFunctionResult) string {
+	id := res.ID
+	if id == "" {
+		id = res.Name
+	}
+	if id == "" {
+		id = "unknown"
+	}
+	if strings.HasPrefix(id, "call_") {
+		return id
+	}
+	return "call_" + id
 }
 
 func renderGemContent(m core.Message, callIDToName map[string]string) gemContent {
@@ -231,13 +266,35 @@ func renderGemContent(m core.Message, callIDToName map[string]string) gemContent
 	c := gemContent{Role: role}
 	for _, p := range m.Content {
 		switch p.Type {
+		case core.PartThinking:
+			c.Parts = append(c.Parts, gemPart{Text: p.Text, Thought: true})
 		case core.PartText:
 			c.Parts = append(c.Parts, gemPart{Text: p.Text})
 		case core.PartToolCall:
-			c.Parts = append(c.Parts, gemPart{FunctionCall: &gemFunctionCall{
-				Name: sanitizeGeminiName(p.ToolCall.Name),
-				Args: normalizeGeminiArgs(p.ToolCall.Arguments),
-			}})
+			name := sanitizeGeminiName(p.ToolCall.Name)
+			idStr := p.ToolCall.ID
+			idStr = strings.TrimPrefix(idStr, "call_")
+
+			var thoughtSig string
+			if idx := strings.Index(idStr, "__sig__"); idx >= 0 {
+				sigB, _ := base64.RawURLEncoding.DecodeString(idStr[idx+7:])
+				thoughtSig = string(sigB)
+				idStr = idStr[:idx]
+			}
+
+			idToSend := idStr
+			if idToSend == name || idToSend == strings.ReplaceAll(name, ":", "_") {
+				idToSend = ""
+			}
+
+			c.Parts = append(c.Parts, gemPart{
+				ThoughtSignature: thoughtSig,
+				FunctionCall: &gemFunctionCall{
+					ID:   idToSend,
+					Name: name,
+					Args: normalizeGeminiArgs(p.ToolCall.Arguments),
+				},
+			})
 		case core.PartToolResult:
 			// Recover the function name from the call id; Gemini requires the
 			// response name to match the originating functionCall name.
@@ -245,7 +302,19 @@ func renderGemContent(m core.Message, callIDToName map[string]string) gemContent
 			if name == "" {
 				name = "tool"
 			}
+
+			idStr := p.ToolResult.CallID
+			idStr = strings.TrimPrefix(idStr, "call_")
+			if idx := strings.Index(idStr, "__sig__"); idx >= 0 {
+				idStr = idStr[:idx]
+			}
+			idToSend := idStr
+			if idToSend == name || idToSend == strings.ReplaceAll(name, ":", "_") {
+				idToSend = ""
+			}
+
 			c.Parts = append(c.Parts, gemPart{FunctionResponse: &gemFunctionResult{
+				ID:       idToSend,
 				Name:     name,
 				Response: json.RawMessage(quoteIfNotJSON(p.ToolResult.Content)),
 			}})
@@ -276,12 +345,19 @@ func normalizeGeminiArgs(raw json.RawMessage) json.RawMessage {
 }
 
 // quoteIfNotJSON wraps a tool-result string as a JSON value if it isn't already
-// valid JSON, since Gemini's functionResponse.response expects a JSON object.
+// a valid JSON object, since Gemini's functionResponse.response expects a JSON object.
 func quoteIfNotJSON(s string) string {
-	var probe any
-	if json.Unmarshal([]byte(s), &probe) == nil {
+	var probe map[string]any
+	if err := json.Unmarshal([]byte(s), &probe); err == nil {
 		return s
 	}
+
+	var generic any
+	if err := json.Unmarshal([]byte(s), &generic); err == nil {
+		b, _ := json.Marshal(map[string]any{"result": generic})
+		return string(b)
+	}
+
 	b, _ := json.Marshal(map[string]string{"result": s})
 	return string(b)
 }
@@ -321,7 +397,7 @@ func (GeminiCodec) ParseResponse(body []byte, model string) (*core.ChatResponse,
 	return &core.ChatResponse{
 		Model:        model,
 		Message:      msg,
-		FinishReason: mapGemFinish(cand.FinishReason),
+		FinishReason: mapGemCandidateFinish(cand.Content, cand.FinishReason),
 		Usage: core.Usage{
 			PromptTokens:     raw.UsageMetadata.PromptTokenCount,
 			CompletionTokens: completionTokens,
@@ -349,6 +425,23 @@ func (GeminiCodec) RenderResponse(resp *core.ChatResponse) ([]byte, error) {
 		},
 	}
 	return json.Marshal(out)
+}
+
+// Gemini uses STOP for both a completed text response and a completed
+// function-call turn. Canonical/OpenAI-compatible clients need the latter to
+// be reported as tool_calls so their agent loop records and resumes the turn
+// with the correct protocol state.
+func mapGemCandidateFinish(content gemContent, reason string) core.FinishReason {
+	finish := mapGemFinish(reason)
+	if finish != core.FinishStop {
+		return finish
+	}
+	for _, part := range content.Parts {
+		if part.FunctionCall != nil {
+			return core.FinishToolCalls
+		}
+	}
+	return finish
 }
 
 func mapGemFinish(r string) core.FinishReason {

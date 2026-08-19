@@ -51,10 +51,9 @@ func (s *Server) mediaOptions(r *http.Request, model string) (pipeline.MediaOpti
 }
 
 // readJSON reads and decodes a JSON request body into v.
-func readJSON(w http.ResponseWriter, r *http.Request, v any) bool {
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "failed to read request body")
+func (s *Server) readJSON(w http.ResponseWriter, r *http.Request, v any) bool {
+	body, ok := s.readRequestBody(w, r)
+	if !ok {
 		return false
 	}
 	if err := json.Unmarshal(body, v); err != nil {
@@ -87,7 +86,7 @@ func (s *Server) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
 		Input      json.RawMessage `json:"input"`
 		Dimensions int             `json:"dimensions"`
 	}
-	if !readJSON(w, r, &body) {
+	if !s.readJSON(w, r, &body) {
 		return
 	}
 	if body.Model == "" {
@@ -150,7 +149,7 @@ func decodeEmbeddingInput(raw json.RawMessage) ([]string, error) {
 func (s *Server) handleImageGeneration(w http.ResponseWriter, r *http.Request) {
 	key, _ := authedKey(r.Context())
 	var req core.ImageRequest
-	if !readJSON(w, r, &req) {
+	if !s.readJSON(w, r, &req) {
 		return
 	}
 	if req.Model == "" || req.Prompt == "" {
@@ -178,7 +177,7 @@ func (s *Server) handleImageGeneration(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAudioTranscription(w http.ResponseWriter, r *http.Request) {
 	// Accept multipart/form-data (OpenAI standard) with a file + model field.
-	if err := r.ParseMultipartForm(maxBodyBytes); err != nil {
+	if err := r.ParseMultipartForm(s.requestBodyLimit()); err != nil {
 		writeError(w, http.StatusBadRequest, "expected multipart/form-data: "+err.Error())
 		return
 	}
@@ -193,7 +192,7 @@ func (s *Server) handleAudioTranscription(w http.ResponseWriter, r *http.Request
 		return
 	}
 	defer file.Close()
-	audio, err := io.ReadAll(io.LimitReader(file, maxBodyBytes))
+	audio, err := io.ReadAll(io.LimitReader(file, s.requestBodyLimit()))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "failed to read audio file")
 		return
@@ -231,7 +230,7 @@ func (s *Server) handleAudioTranscription(w http.ResponseWriter, r *http.Request
 
 func (s *Server) handleAudioSpeech(w http.ResponseWriter, r *http.Request) {
 	var req core.SpeechRequest
-	if !readJSON(w, r, &req) {
+	if !s.readJSON(w, r, &req) {
 		return
 	}
 	if req.Model == "" || req.Input == "" {
@@ -260,7 +259,7 @@ func (s *Server) handleAudioSpeech(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleWebSearch(w http.ResponseWriter, r *http.Request) {
 	key, _ := authedKey(r.Context())
 	var req core.SearchRequest
-	if !readJSON(w, r, &req) {
+	if !s.readJSON(w, r, &req) {
 		return
 	}
 	if req.Query == "" {
@@ -296,7 +295,7 @@ func (s *Server) handleWebSearch(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleWebFetch(w http.ResponseWriter, r *http.Request) {
 	key, _ := authedKey(r.Context())
 	var req core.FetchRequest
-	if !readJSON(w, r, &req) {
+	if !s.readJSON(w, r, &req) {
 		return
 	}
 	if req.URL == "" {
@@ -348,9 +347,8 @@ func (s *Server) handleVideoGeneration(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "failed to read request body")
+	raw, ok := s.readRequestBody(w, r)
+	if !ok {
 		return
 	}
 	var head struct {
@@ -451,7 +449,7 @@ func writeVideoResponse(w http.ResponseWriter, resp *core.VideoResponse) {
 func (s *Server) handleImageUnderstanding(w http.ResponseWriter, r *http.Request) {
 	key, _ := authedKey(r.Context())
 	var req core.ImageUnderstandingRequest
-	if !readJSON(w, r, &req) {
+	if !s.readJSON(w, r, &req) {
 		return
 	}
 	if req.Model == "" {
