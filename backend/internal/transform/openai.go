@@ -454,7 +454,7 @@ func renderOAIRequestForProvider(req *core.ChatRequest, providerID string, scope
 	if providerID == "codebuddy" {
 		applyCodebuddyRequestFixes(out, req)
 	}
-	if providerID == "kimchi" {
+	if stripReasoningFor(providerID) {
 		stripReasoningContent(out)
 	}
 	return json.Marshal(out)
@@ -705,6 +705,18 @@ func deepSeekToolCallIDs(msg oaiMessage) []string {
 // reasoning_content on the next turn. Real chain-of-thought blocks exceed this
 // length and are stripped to bound multi-turn input token growth.
 const reasoningPlaceholderMaxLen = 8
+
+// stripReasoningFor reports whether the target provider rejects echoed
+// reasoning_content from prior assistant turns. Non-reasoning providers such
+// as groq answer 400 with "property 'reasoning_content' is unsupported" when
+// history carries it, so their requests are stripped before dispatch.
+func stripReasoningFor(providerID string) bool {
+	switch providerID {
+	case "kimchi", "groq":
+		return true
+	}
+	return false
+}
 
 // stripReasoningContent removes echoed reasoning_content from assistant messages
 // in the outgoing request. Clients replay the full reasoning block from prior
