@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"net/http"
 	"regexp"
@@ -35,6 +36,10 @@ const (
 	kiroQuotaCacheTTL = 30 * time.Second
 
 	kiroShortFinalMaxChars = 800
+
+	kiroIntegrityBufferMaxBytes = 8 * 1024 * 1024
+	eventStreamMaxMessageBytes  = 24 * 1024 * 1024
+	eventStreamMaxHeadersBytes  = 128 * 1024
 )
 
 var (
@@ -905,6 +910,16 @@ func (c *Kiro) pipeKiroResponse(ctx context.Context, resp *http.Response, req *c
 		hasTool := false
 		usageSeen := false
 		outputChars := 0
+		terminalSeen := false
+		pendingBytes := 0
+		pending := make([]core.StreamChunk, 0, 64)
+
+		emitError := func(err error) {
+			select {
+			case ch <- core.StreamChunk{Type: core.ChunkError, Err: err}:
+			case <-ctx.Done():
+			}
+		}
 		for {
 			select {
 			case <-ctx.Done():
@@ -914,20 +929,16 @@ func (c *Kiro) pipeKiroResponse(ctx context.Context, resp *http.Response, req *c
 			frame, ferr := parser.next()
 			if ferr != nil {
 				if ferr != errEventStreamEOF {
-					errChunk := core.StreamChunk{
-						Type: core.ChunkError,
-						Err:  &core.ProviderError{Kind: core.ErrUpstream, Provider: c.id, Model: req.Model, Message: ferr.Error(), Cause: ferr},
-					}
-					select {
-					case ch <- errChunk:
-					case <-ctx.Done():
-						return
-					}
+					emitError(&core.ProviderError{Kind: core.ErrUpstream, Scope: core.FailureScopeRequest, Provider: c.id, Model: req.Model, Message: ferr.Error(), Cause: ferr})
+					return
 				}
 				break
 			}
 			if frame == nil {
 				continue
+			}
+			if frame.headers[":event-type"] == "messageStopEvent" {
+				terminalSeen = true
 			}
 			for _, chunk := range kiroFrameToChunks(frame, seenTools, &hasTool) {
 				if chunk.Type == core.ChunkError && chunk.Err != nil {
@@ -936,6 +947,8 @@ func (c *Kiro) pipeKiroResponse(ctx context.Context, resp *http.Response, req *c
 					copy.Provider = c.id
 					copy.Model = req.Model
 					chunk.Err = &copy
+					emitError(chunk.Err)
+					return
 				}
 				if chunk.Type == core.ChunkUsage {
 					usageSeen = true
@@ -943,30 +956,55 @@ func (c *Kiro) pipeKiroResponse(ctx context.Context, resp *http.Response, req *c
 				if chunk.Type == core.ChunkText || chunk.Type == core.ChunkThinking {
 					outputChars += len(chunk.Delta)
 				}
-				if ttft != nil {
-					ttft.maybeReport(chunk)
-				}
-				select {
-				case ch <- chunk:
-				case <-ctx.Done():
+				pendingBytes += kiroChunkSize(chunk)
+				if pendingBytes > kiroIntegrityBufferMaxBytes {
+					emitError(&core.ProviderError{
+						Kind: core.ErrUpstream, Scope: core.FailureScopeRequest, Provider: c.id, Model: req.Model,
+						Message: "kiro response integrity buffer exceeded before terminal event",
+					})
 					return
 				}
+				pending = append(pending, chunk)
 			}
+		}
+		if !terminalSeen {
+			emitError(&core.ProviderError{
+				Kind: core.ErrUpstream, Scope: core.FailureScopeRequest, Provider: c.id, Model: req.Model,
+				Message: "kiro stream ended without messageStopEvent",
+			})
+			return
 		}
 		if !usageSeen {
 			if u := estimateKiroUsage(req, outputChars); u != nil {
-				select {
-				case ch <- core.StreamChunk{Type: core.ChunkUsage, Usage: u}:
-				case <-ctx.Done():
-				}
+				pending = append(pending, core.StreamChunk{Type: core.ChunkUsage, Usage: u})
+			}
+		}
+		for _, chunk := range pending {
+			if ttft != nil {
+				ttft.maybeReport(chunk)
+			}
+			select {
+			case ch <- chunk:
+			case <-ctx.Done():
+				return
 			}
 		}
 	}()
 	return ch
 }
 
-// Stream performs a streaming call, parsing the AWS EventStream into canonical
-// chunks and forwarding each one as soon as it arrives.
+func kiroChunkSize(chunk core.StreamChunk) int {
+	size := len(chunk.Delta) + len(chunk.Signature) + 32
+	if chunk.ToolCall != nil {
+		size += len(chunk.ToolCall.ID) + len(chunk.ToolCall.Name) + len(chunk.ToolCall.Arguments)
+	}
+	return size
+}
+
+// Stream performs a streaming call and parses the AWS EventStream into
+// canonical chunks. Kiro output is held in a bounded integrity buffer until a
+// valid terminal event is observed, preventing partial turns from being
+// exposed as successful responses.
 func (c *Kiro) Stream(ctx context.Context, req *core.ChatRequest, creds core.Credentials, cfg core.StreamConfig) (<-chan core.StreamChunk, error) {
 	releaseAccount, err := c.acquireAccountSlot(ctx, creds, req.Model)
 	if err != nil {
@@ -1080,6 +1118,16 @@ func charsToTokens(chars int) int {
 func kiroFrameToChunks(frame *eventStreamFrame, seenTools map[string]bool, hasTool *bool) []core.StreamChunk {
 	eventType := frame.headers[":event-type"]
 	var chunks []core.StreamChunk
+	messageType := strings.ToLower(frame.headers[":message-type"])
+	if messageType == "error" || messageType == "exception" {
+		return []core.StreamChunk{{
+			Type: core.ChunkError,
+			Err: &core.ProviderError{
+				Kind: core.ErrUpstream, Scope: core.FailureScopeRequest,
+				Message: kiroErrorFrameMessage(frame),
+			},
+		}}
+	}
 
 	switch eventType {
 	case "assistantResponseEvent", "codeEvent":
@@ -1132,6 +1180,28 @@ func kiroFrameToChunks(frame *eventStreamFrame, seenTools map[string]bool, hasTo
 		}
 	}
 	return chunks
+}
+
+func kiroErrorFrameMessage(frame *eventStreamFrame) string {
+	var payload struct {
+		Message string `json:"message"`
+		Error   string `json:"error"`
+	}
+	_ = json.Unmarshal(frame.payload, &payload)
+	message := payload.Message
+	if message == "" {
+		message = payload.Error
+	}
+	if message == "" {
+		message = strings.TrimSpace(string(frame.payload))
+	}
+	if message == "" {
+		message = "kiro eventstream error"
+	}
+	if exceptionType := frame.headers[":exception-type"]; exceptionType != "" {
+		message = exceptionType + ": " + message
+	}
+	return message
 }
 
 // parseKiroUsage extracts token usage from a metricsEvent/usageEvent payload.
@@ -1330,6 +1400,16 @@ func (p *eventStreamParser) next() (*eventStreamFrame, error) {
 	if totalLen < 16 {
 		return nil, fmt.Errorf("eventstream: invalid frame length %d", totalLen)
 	}
+	if totalLen > eventStreamMaxMessageBytes {
+		return nil, fmt.Errorf("eventstream: frame length %d exceeds limit %d", totalLen, eventStreamMaxMessageBytes)
+	}
+	headersLen := int(binary.BigEndian.Uint32(p.buf[4:8]))
+	if headersLen > eventStreamMaxHeadersBytes {
+		return nil, fmt.Errorf("eventstream: headers length %d exceeds limit %d", headersLen, eventStreamMaxHeadersBytes)
+	}
+	if 12+headersLen+4 > totalLen {
+		return nil, fmt.Errorf("eventstream: headers length %d exceeds frame payload", headersLen)
+	}
 
 	// Buffer the whole frame.
 	for len(p.buf) < totalLen {
@@ -1363,7 +1443,22 @@ func decodeEventStreamFrame(frame []byte) (*eventStreamFrame, error) {
 	if len(frame) < 16 {
 		return nil, fmt.Errorf("eventstream: short frame")
 	}
+	if declared := int(binary.BigEndian.Uint32(frame[0:4])); declared != len(frame) {
+		return nil, fmt.Errorf("eventstream: declared frame length %d does not match %d bytes", declared, len(frame))
+	}
 	headersLen := int(binary.BigEndian.Uint32(frame[4:8]))
+	if len(frame) > eventStreamMaxMessageBytes {
+		return nil, fmt.Errorf("eventstream: frame exceeds maximum size")
+	}
+	if headersLen > eventStreamMaxHeadersBytes || 12+headersLen+4 > len(frame) {
+		return nil, fmt.Errorf("eventstream: invalid headers length %d", headersLen)
+	}
+	if want, got := binary.BigEndian.Uint32(frame[8:12]), crc32.ChecksumIEEE(frame[:8]); want != got {
+		return nil, fmt.Errorf("eventstream: prelude CRC mismatch")
+	}
+	if want, got := binary.BigEndian.Uint32(frame[len(frame)-4:]), crc32.ChecksumIEEE(frame[:len(frame)-4]); want != got {
+		return nil, fmt.Errorf("eventstream: message CRC mismatch")
+	}
 
 	headers := map[string]string{}
 	offset := 12 // after prelude (8) + prelude CRC (4)
@@ -1373,35 +1468,31 @@ func decodeEventStreamFrame(frame []byte) (*eventStreamFrame, error) {
 	}
 
 	for offset < headerEnd {
-		if offset >= len(frame) {
-			break
-		}
 		nameLen := int(frame[offset])
 		offset++
-		if offset+nameLen > len(frame) {
-			break
+		if nameLen == 0 || offset+nameLen > headerEnd {
+			return nil, fmt.Errorf("eventstream: malformed header name")
 		}
 		name := string(frame[offset : offset+nameLen])
 		offset += nameLen
-		if offset >= len(frame) {
-			break
+		if offset >= headerEnd {
+			return nil, fmt.Errorf("eventstream: missing header type")
 		}
 		headerType := frame[offset]
 		offset++
 		if headerType == 7 { // string
-			if offset+2 > len(frame) {
-				break
+			if offset+2 > headerEnd {
+				return nil, fmt.Errorf("eventstream: truncated header value length")
 			}
 			valueLen := int(binary.BigEndian.Uint16(frame[offset : offset+2]))
 			offset += 2
-			if offset+valueLen > len(frame) {
-				break
+			if offset+valueLen > headerEnd {
+				return nil, fmt.Errorf("eventstream: truncated header value")
 			}
 			headers[name] = string(frame[offset : offset+valueLen])
 			offset += valueLen
 		} else {
-			// Non-string header: we can't size it reliably, stop parsing headers.
-			break
+			return nil, fmt.Errorf("eventstream: unsupported header type %d", headerType)
 		}
 	}
 
