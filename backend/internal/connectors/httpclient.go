@@ -595,6 +595,13 @@ func parseSSEData(line string) (string, bool) {
 	return strings.TrimSpace(strings.TrimPrefix(line, "data:")), true
 }
 
+// isSSEKeepAlive reports whether a non-data SSE line is an explicit comment
+// heartbeat. Connectors can translate it to ChunkPing so the pipeline's stall
+// detector observes that the upstream connection is still active.
+func isSSEKeepAlive(line string) bool {
+	return strings.HasPrefix(strings.TrimSpace(line), ":")
+}
+
 // transportError classifies a transport-level failure (DNS, connection, ctx).
 func transportError(ctx context.Context, provider, model string, err error) error {
 	kind := core.ErrUpstream

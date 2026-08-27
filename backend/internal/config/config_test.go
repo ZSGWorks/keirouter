@@ -82,3 +82,27 @@ func unsetEnv(t *testing.T, key string) {
 		_ = os.Unsetenv(key)
 	})
 }
+
+func TestDefaultStreamStallTimeoutAllowsLongReasoningPauses(t *testing.T) {
+	if got := Default().Server.StreamStallTimeout; got != 5*time.Minute {
+		t.Fatalf("default stream stall timeout = %v, want 5m", got)
+	}
+}
+
+func TestDefaultMaxRequestBodyBytesAllowsLargeConversations(t *testing.T) {
+	if got := Default().Server.MaxRequestBodyBytes; got != 128<<20 {
+		t.Fatalf("default max request body = %d, want %d", got, int64(128<<20))
+	}
+}
+
+func TestLoadMaxRequestBodyBytesFromEnv(t *testing.T) {
+	t.Setenv("KEIROUTER_SERVER__MAX_REQUEST_BODY_BYTES", "67108864")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if got := cfg.Server.MaxRequestBodyBytes; got != 64<<20 {
+		t.Fatalf("max request body from env = %d, want %d", got, int64(64<<20))
+	}
+}

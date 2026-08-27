@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/mydisha/keirouter/backend/internal/core"
+	"github.com/stretchr/testify/require"
 )
 
 func TestToolArgSanitizer_PassesThroughNonToolChunks(t *testing.T) {
@@ -262,6 +263,28 @@ func TestToolArgSanitizer_KiroFragmentedArgs(t *testing.T) {
 	if args["path"] != "a/b/c.go" {
 		t.Errorf("expected path 'a/b/c.go', got %v", args["path"])
 	}
+}
+
+func TestToolArgSanitizer_ToolCallThenStopUsesToolCallsFinish(t *testing.T) {
+	s := NewToolArgSanitizer()
+	var emitted []core.StreamChunk
+	emit := func(chunk core.StreamChunk) { emitted = append(emitted, chunk) }
+
+	s.Process(core.StreamChunk{
+		Type:  core.ChunkToolCall,
+		Index: 0,
+		ToolCall: &core.ToolCall{
+			ID:        "call_1",
+			Name:      "get_weather",
+			Arguments: json.RawMessage(`{"city":"SF"}`),
+		},
+	}, emit)
+	s.Process(core.StreamChunk{Type: core.ChunkFinish, FinishReason: core.FinishStop}, emit)
+
+	require.Len(t, emitted, 2)
+	require.Equal(t, core.ChunkToolCall, emitted[0].Type)
+	require.Equal(t, core.ChunkFinish, emitted[1].Type)
+	require.Equal(t, core.FinishToolCalls, emitted[1].FinishReason)
 }
 
 func TestSanitizeToolArgs_InvalidJSON(t *testing.T) {

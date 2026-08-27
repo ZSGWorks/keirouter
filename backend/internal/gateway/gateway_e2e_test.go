@@ -30,6 +30,7 @@ import (
 // e2eHarness wires a full gateway against an in-memory store and a fake upstream.
 type e2eHarness struct {
 	server   *httptest.Server
+	gateway  *Server
 	apiKey   string
 	upstream *httptest.Server
 }
@@ -96,7 +97,7 @@ func newE2E(t *testing.T, upstreamHandler http.HandlerFunc) *e2eHarness {
 	srv := httptest.NewServer(gw.Handler())
 	t.Cleanup(srv.Close)
 
-	return &e2eHarness{server: srv, apiKey: issued.Plaintext, upstream: upstream}
+	return &e2eHarness{server: srv, gateway: gw, apiKey: issued.Plaintext, upstream: upstream}
 }
 
 func (h *e2eHarness) post(t *testing.T, path, body, auth string) *http.Response {
@@ -158,6 +159,26 @@ func TestE2E_RejectsBadKey(t *testing.T) {
 	resp := h.post(t, "/v1/chat/completions", `{"model":"openai/gpt-4o","messages":[]}`, "kr_invalid")
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
+func TestE2E_RequestBodyTooLargeReturns413(t *testing.T) {
+	h := newE2E(t, openAIUpstream())
+	h.gateway.cfg.Server.MaxRequestBodyBytes = 128
+
+	body := `{"model":"openai/gpt-4o","messages":[{"role":"user","content":"` + strings.Repeat("x", 256) + `"}]}`
+	resp := h.post(t, "/v1/chat/completions", body, h.apiKey)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusRequestEntityTooLarge, resp.StatusCode)
+	var out struct {
+		Error struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
+	require.Contains(t, out.Error.Message, "128 B")
+	require.Equal(t, "invalid_request_error", out.Error.Type)
 }
 
 func TestE2E_UnknownModelIsBadRequest(t *testing.T) {

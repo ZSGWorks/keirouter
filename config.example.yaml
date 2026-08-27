@@ -10,7 +10,7 @@ server:
   host: 127.0.0.1
   port: 20180
   # Abort an upstream stream that produces no bytes for this long.
-  stream_stall_timeout: 60s
+  stream_stall_timeout: 5m
   # Keep SSE client connections alive through proxy idle periods. Zero disables.
   stream_heartbeat_interval: 15s
   # Bound non-streaming upstream calls.
@@ -18,6 +18,8 @@ server:
   # Allowed dashboard origins. Use specific origins in production.
   cors_origins:
     - "*"
+  # Maximum inbound API request body size in bytes (default: 128 MiB).
+  max_request_body_bytes: 134217728
 
 database:
   # "sqlite" (default, zero-config) or "postgres".

@@ -2,7 +2,6 @@ package gateway
 
 import (
 	"errors"
-	"io"
 	"net/http"
 	"strings"
 
@@ -43,9 +42,8 @@ func (s *Server) handleGeminiGenerate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "failed to read request body")
+	body, ok := s.readRequestBody(w, r)
+	if !ok {
 		return
 	}
 

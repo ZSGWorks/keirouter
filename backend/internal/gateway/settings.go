@@ -107,7 +107,7 @@ func defaultEndpointSettings() EndpointSettings {
 		// the same conversation prefer the same account, while new conversations
 		// still spread across accounts.
 		RoutingStrategy:         string(dispatch.StrategySmartRoundRobin),
-		StreamStallTimeoutMs:    120000, // 2 min
+		StreamStallTimeoutMs:    300000, // 5 min
 		ResponseHeaderTimeoutMs: 60000,  // 60s
 		RequestTimeoutMs:        300000, // 5 min
 	}

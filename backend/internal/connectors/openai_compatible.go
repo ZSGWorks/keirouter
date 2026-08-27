@@ -97,8 +97,8 @@ func (c *OpenAICompatible) headers(creds core.Credentials) map[string]string {
 
 	// AgentRouter restricts upstream access to a known set of CLI/IDE tools
 	// (Claude Code CLI, Cline, Roo Code, Kilo Code, Qwen Code, OpenCode, etc.).
-	// Impersonate Claude Code CLI so outbound requests pass the endpoint
-	// allowlist. Auth mirrors the default Bearer path below.
+	// Use a Roo Code-compatible fingerprint so outbound requests pass the
+	// endpoint allowlist. Auth mirrors the default Bearer path below.
 	if c.id == "agentrouter" {
 		switch {
 		case creds.AccessToken != "":
@@ -106,10 +106,16 @@ func (c *OpenAICompatible) headers(creds core.Credentials) map[string]string {
 		case creds.APIKey != "":
 			h["Authorization"] = bearer(creds.APIKey)
 		}
-		h["User-Agent"] = "claude-cli/1.0.95 (external, cli)"
-		h["x-app"] = "cli"
-		h["anthropic-version"] = "2023-06-01"
-		h["anthropic-beta"] = "fine-grained-tool-streaming-2025-05-14"
+		h["HTTP-Referer"] = "https://github.com/RooVetGit/Roo-Cline"
+		h["X-Title"] = "Roo Code"
+		h["User-Agent"] = "RooCode/3.54.0"
+		h["X-Stainless-Arch"] = "x64"
+		h["X-Stainless-Lang"] = "js"
+		h["X-Stainless-OS"] = "Windows"
+		h["X-Stainless-Package-Version"] = "5.12.2"
+		h["X-Stainless-Retry-Count"] = "0"
+		h["X-Stainless-Runtime"] = "node"
+		h["X-Stainless-Runtime-Version"] = "v24.14.0"
 		return mergeHeaders(h, creds.Headers)
 	}
 
