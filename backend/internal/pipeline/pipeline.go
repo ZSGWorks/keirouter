@@ -787,6 +787,38 @@ func (p *Pipeline) streamExec(ctx context.Context, req *core.ChatRequest, opts O
 			continue
 		}
 
+		upstream, callErr = admitStream(callCtx, upstream, p.resolvedStallTimeout(), attempt.Target.Provider, attempt.Target.Model)
+		if callErr != nil {
+			cancelUpstream()
+			pe := providerErrorForAttempt(callErr, attempt)
+			lastErr = pe
+			p.dispatcher.NoteFailure(ctx, attempt.Account.ID, pe)
+			if p.metrics != nil {
+				p.metrics.RecordUpstreamError(attempt.Target.Provider, string(pe.Kind))
+			}
+			attemptLatency := time.Since(started)
+			lastLatency = attemptLatency
+			if !pe.Fallbackable() {
+				p.recordFailureTelemetry(req.Metadata, attempt, pe, attemptLatency, false)
+				release(0)
+				p.budgetRelease(scope)
+				return nil, pe, true, attempt, attemptLatency, fellBack
+			}
+			nextAttempt, canFallback := planner.AfterFailure(ctx, attempt, pe)
+			p.recordFailureTelemetry(req.Metadata, attempt, pe, attemptLatency, canFallback)
+			if !canFallback {
+				break
+			}
+			if p.metrics != nil {
+				p.metrics.RecordFallback(string(pe.Kind))
+			}
+			fellBack = true
+			p.log.Warn("stream rejected before output, falling back",
+				"provider", attempt.Target.Provider, "model", attempt.Target.Model, "kind", pe.Kind)
+			attempt = nextAttempt
+			continue
+		}
+
 		p.log.Debug("stream connected", "provider", attempt.Target.Provider,
 			"model", attempt.Target.Model, "account", attempt.Account.ID)
 
