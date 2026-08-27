@@ -1255,16 +1255,27 @@ func unwrapQoderSSELineWithError(line, provider, model string) (string, bool, er
 	}
 	if env.StatusCodeValue != 0 && env.StatusCodeValue != 200 {
 		kind := core.ErrUpstream
+		scope := core.FailureScopeProvider
 		switch {
+		case isQoderQuotaBlock(env.Body):
+			kind = core.ErrQuotaExhausted
+			scope = core.FailureScopeAccount
+		case isQoderQueueThrottle(env.Body):
+			kind = core.ErrRateLimit
+			scope = core.FailureScopeAccount
 		case env.StatusCodeValue == http.StatusUnauthorized || env.StatusCodeValue == http.StatusForbidden:
 			kind = core.ErrAuth
+			scope = core.FailureScopeAccount
 		case env.StatusCodeValue == http.StatusTooManyRequests:
 			kind = core.ErrRateLimit
+			scope = core.FailureScopeAccount
 		case env.StatusCodeValue >= 400 && env.StatusCodeValue < 500:
 			kind = core.ErrBadRequest
+			scope = core.FailureScopeRequest
 		}
 		return "", false, &core.ProviderError{
 			Kind:       kind,
+			Scope:      scope,
 			Provider:   provider,
 			Model:      model,
 			StatusCode: env.StatusCodeValue,
@@ -1278,6 +1289,21 @@ func unwrapQoderSSELineWithError(line, provider, model string) (string, bool, er
 		return "", false, nil
 	}
 	return env.Body, true, nil
+}
+
+func isQoderQuotaBlock(body string) bool {
+	lower := strings.ToLower(body)
+	return qoderErrorCode(body, "112") || strings.Contains(lower, "pricingurl")
+}
+
+func isQoderQueueThrottle(body string) bool {
+	return qoderErrorCode(body, "10605")
+}
+
+func qoderErrorCode(body, code string) bool {
+	compact := strings.NewReplacer(" ", "", "\t", "", "\r", "", "\n", "").Replace(body)
+	return strings.Contains(compact, `"code":"`+code+`"`) ||
+		strings.Contains(compact, `\"code\":\"`+code+`\"`)
 }
 
 // ListModels implements live model discovery by fetching the COSY-signed

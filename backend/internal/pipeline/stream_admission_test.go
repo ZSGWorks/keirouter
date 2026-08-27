@@ -61,6 +61,11 @@ func TestAdmitStreamReplaysPrefixWithoutDroppingChunks(t *testing.T) {
 	require.Equal(t, core.ChunkFinish, got[3].Type)
 }
 
+func TestRequiresParsedStreamAdmission(t *testing.T) {
+	require.True(t, requiresParsedStreamAdmission("codex"))
+	require.False(t, requiresParsedStreamAdmission("openai"))
+}
+
 func TestAdmitStreamReturnsTypedFirstFrameError(t *testing.T) {
 	want := &core.ProviderError{Kind: core.ErrQuotaExhausted, Scope: core.FailureScopeAccount, Message: "quota exhausted"}
 	out, err := admitStream(context.Background(), streamOf(core.StreamChunk{Type: core.ChunkError, Err: want}), time.Second, "qoder", "model")

@@ -158,6 +158,14 @@ func classifyRespStreamError(msg string) *core.ProviderError {
 	case strings.Contains(m, "rate limit") || strings.Contains(m, "rate_limit") ||
 		strings.Contains(m, "tokens per min"):
 		return &core.ProviderError{Kind: core.ErrRateLimit, Message: msg}
+	// Codex can report model capacity and service overload inside an otherwise
+	// successful HTTP 200 stream. This is not a bad credential: let the
+	// pipeline rotate attempts without cooling the account or provider.
+	case strings.Contains(m, "selected model is at capacity"),
+		strings.Contains(m, "model_at_capacity"),
+		strings.Contains(m, "server_is_overloaded"),
+		strings.Contains(m, "service_unavailable_error"):
+		return &core.ProviderError{Kind: core.ErrUpstream, Scope: core.FailureScopeRequest, Message: msg}
 	// Context overflow: the request itself is too large. Only the client can
 	// fix it (compact/trim), so scope it to the request — no cooldown, no
 	// fallback, surface the error straight back.

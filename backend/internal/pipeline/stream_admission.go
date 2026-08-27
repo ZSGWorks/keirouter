@@ -10,6 +10,13 @@ import (
 
 const defaultStreamAdmissionTimeout = 60 * time.Second
 
+// Providers in this set are known to report routing failures inside an HTTP
+// 200 stream. They must use the parsed channel path so admitStream can inspect
+// the first canonical chunks before the gateway commits bytes to the client.
+func requiresParsedStreamAdmission(provider string) bool {
+	return provider == "codex"
+}
+
 // admitStream delays committing a streaming attempt until it produces actual
 // model output. Providers sometimes return HTTP 200 and only report auth,
 // quota, or capacity failures in the first stream frame. Keeping those frames

@@ -656,7 +656,8 @@ func (p *Pipeline) streamExec(ctx context.Context, req *core.ChatRequest, opts O
 		// omits one. Raw byte piping can't inject a synthetic event, so we trade
 		// the zero-copy throughput for correct usage accounting on these opt-in
 		// requests.
-		if len(attemptReq.Tools) == 0 && !req.IncludeUsage && req.Metadata.SourceDialect == attempt.Conn.Dialect() {
+		if len(attemptReq.Tools) == 0 && !req.IncludeUsage && req.Metadata.SourceDialect == attempt.Conn.Dialect() &&
+			!requiresParsedStreamAdmission(attempt.Target.Provider) {
 			if ds, ok := attempt.Conn.(core.DirectStreamable); ok {
 				body, _, rawErr := ds.StreamRaw(callCtx, attemptReq, attempt.Creds, streamCfg)
 				if rawErr != nil {
