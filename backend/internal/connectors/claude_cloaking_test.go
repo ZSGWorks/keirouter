@@ -95,7 +95,7 @@ func TestDecloakClaudeToolNames(t *testing.T) {
 }
 
 func TestClaudeSpoofHeaders(t *testing.T) {
-	h := claudeCLISpoofHeaders()
+	h := claudeCLISpoofHeaders("claude-sonnet-4-5")
 	if !strings.HasPrefix(h["user-agent"], "claude-cli/") {
 		t.Errorf("user-agent should spoof claude-cli, got %q", h["user-agent"])
 	}
@@ -104,5 +104,14 @@ func TestClaudeSpoofHeaders(t *testing.T) {
 	}
 	if !strings.Contains(h["anthropic-beta"], "claude-code-20250219") {
 		t.Errorf("anthropic-beta should carry claude-code beta, got %q", h["anthropic-beta"])
+	}
+	if !strings.Contains(h["anthropic-beta"], "advanced-tool-use-2025-11-20") {
+		t.Errorf("sonnet should carry heavy-agent beta flags, got %q", h["anthropic-beta"])
+	}
+
+	haiku := claudeCLISpoofHeaders("claude-haiku-4-5")
+	if strings.Contains(haiku["anthropic-beta"], "advanced-tool-use-2025-11-20") ||
+		strings.Contains(haiku["anthropic-beta"], "effort-2025-11-24") {
+		t.Errorf("haiku must not carry heavy-agent beta flags, got %q", haiku["anthropic-beta"])
 	}
 }

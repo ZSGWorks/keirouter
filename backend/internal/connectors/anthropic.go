@@ -37,7 +37,7 @@ func (c *Anthropic) baseURL(creds core.Credentials) string {
 	return c.defaultBase
 }
 
-func (c *Anthropic) headers(creds core.Credentials) map[string]string {
+func (c *Anthropic) headers(creds core.Credentials, model string) map[string]string {
 	h := map[string]string{"anthropic-version": anthropicVersion}
 	// Anthropic uses x-api-key for keys and Authorization: Bearer for OAuth.
 	switch {
@@ -46,7 +46,7 @@ func (c *Anthropic) headers(creds core.Credentials) map[string]string {
 		// Claude subscription OAuth tokens require the full Claude Code CLI
 		// fingerprint, or Anthropic rejects/flags them. Merge the spoof headers.
 		if isClaudeOAuthToken(creds.AccessToken) {
-			h = mergeHeaders(h, claudeCLISpoofHeaders())
+			h = mergeHeaders(h, claudeCLISpoofHeaders(model))
 		}
 	case creds.APIKey != "":
 		h["x-api-key"] = creds.APIKey
@@ -67,7 +67,7 @@ func (c *Anthropic) Chat(ctx context.Context, req *core.ChatRequest, creds core.
 	body, toolNameMap := applyClaudeCloaking(body, creds.AccessToken)
 
 	url := joinURL(c.baseURL(creds), "messages")
-	respBody, err := doJSON(ctx, c.id, req.Model, url, body, c.headers(creds))
+	respBody, err := doJSON(ctx, c.id, req.Model, url, body, c.headers(creds, req.Model))
 	if err != nil {
 		return nil, err
 	}
@@ -90,7 +90,7 @@ func (c *Anthropic) Validate(ctx context.Context, creds core.Credentials) error 
 
 	// Try GET /models first (cheap, no token cost).
 	modelsURL := base + "/models"
-	_, err := doJSONMethod(ctx, http.MethodGet, c.id, "validate", modelsURL, nil, c.headers(creds))
+	_, err := doJSONMethod(ctx, http.MethodGet, c.id, "validate", modelsURL, nil, c.headers(creds, ""))
 	// An HTML response means the base URL points at a web frontend, not the API
 	// (e.g. a custom base URL missing the "/v1" path). Fail hard rather than
 	// falling through to the messages probe, which is skipped for custom
@@ -143,7 +143,7 @@ func (c *Anthropic) messagesAuthProbe(ctx context.Context, creds core.Credential
 	}
 	chatURL := joinURL(c.baseURL(creds), "messages")
 	probeBody := []byte(`{"model":"` + probeModel + `","max_tokens":1,"messages":[{"role":"user","content":"ping"}]}`)
-	_, err := doJSON(ctx, c.id, "validate", chatURL, probeBody, c.headers(creds))
+	_, err := doJSON(ctx, c.id, "validate", chatURL, probeBody, c.headers(creds, probeModel))
 	if err == nil {
 		return nil
 	}
@@ -167,7 +167,7 @@ func (c *Anthropic) StreamRaw(ctx context.Context, req *core.ChatRequest, creds 
 	body, _ = applyClaudeCloaking(body, creds.AccessToken)
 
 	url := joinURL(c.baseURL(creds), "messages")
-	resp, err := openStream(ctx, c.id, req.Model, url, body, c.headers(creds))
+	resp, err := openStream(ctx, c.id, req.Model, url, body, c.headers(creds, req.Model))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -186,7 +186,7 @@ func (c *Anthropic) Stream(ctx context.Context, req *core.ChatRequest, creds cor
 	body, toolNameMap := applyClaudeCloaking(body, creds.AccessToken)
 
 	url := joinURL(c.baseURL(creds), "messages")
-	resp, err := openStream(ctx, c.id, req.Model, url, body, c.headers(creds))
+	resp, err := openStream(ctx, c.id, req.Model, url, body, c.headers(creds, req.Model))
 	if err != nil {
 		return nil, err
 	}
