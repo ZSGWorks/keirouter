@@ -262,6 +262,29 @@ func TestHTTPStatusError_402SetsCreditsExhausted(t *testing.T) {
 	require.Equal(t, core.FailureScopeAccount, pe.EffectiveScope())
 }
 
+func TestGitHubMonthlyUsageRetryAfter(t *testing.T) {
+	now := time.Date(2026, time.August, 4, 19, 30, 0, 0, time.UTC)
+	body := []byte(`{"error":{"message":"You've reached your additional usage limit for your plan."}}`)
+
+	wait := githubMonthlyUsageRetryAfter("github", http.StatusPaymentRequired, body, now)
+	require.Equal(t, 27*24*time.Hour+4*time.Hour+30*time.Minute, wait)
+	require.Zero(t, githubMonthlyUsageRetryAfter("github", http.StatusPaymentRequired, []byte("Payment required"), now))
+	require.Zero(t, githubMonthlyUsageRetryAfter("other", http.StatusPaymentRequired, body, now))
+}
+
+func TestHTTPStatusError_GitHubMonthlyUsageIsResettableQuota(t *testing.T) {
+	resp := &http.Response{StatusCode: http.StatusPaymentRequired, Header: http.Header{}}
+	body := []byte(`{"error":{"message":"You've reached your additional usage limit for your plan."}}`)
+
+	pe := core.AsProviderError(httpStatusError("github", "model", resp, body))
+
+	require.Equal(t, core.ErrQuotaExhausted, pe.Kind)
+	require.Equal(t, core.FailureScopeAccount, pe.EffectiveScope())
+	require.False(t, pe.CreditsExhausted)
+	require.Greater(t, pe.RetryAfter, 24*time.Hour)
+	require.LessOrEqual(t, pe.RetryAfter, 32*24*time.Hour)
+}
+
 func TestHTTPStatusError_400CreditBalanceTooLow(t *testing.T) {
 	resp := &http.Response{
 		StatusCode: http.StatusBadRequest,
