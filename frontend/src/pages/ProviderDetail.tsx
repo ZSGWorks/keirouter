@@ -58,6 +58,7 @@ export function ProviderDetailPage() {
   const qc = useQueryClient();
   const toast = useToast();
   const [activeTab, setActiveTab] = useState<"accounts" | "routing" | "models">("accounts");
+  const [modelView, setModelView] = useState<"catalog" | "custom">("catalog");
 
   const providers = useQuery({ queryKey: ["providers"], queryFn: () => api.providers() });
   const accounts = useQuery({ queryKey: ["accounts"], queryFn: () => api.listAccounts() });
@@ -741,8 +742,21 @@ export function ProviderDetailPage() {
           )}
         </Card>}
 
+        {activeTab === "models" && (
+          <div className="border-b border-[var(--border)]">
+            <TabBar
+              active={modelView}
+              onChange={setModelView}
+              tabs={[
+                { value: "catalog", label: `Catalog (${activeModelCount})` },
+                { value: "custom", label: "Custom models" },
+              ]}
+            />
+          </div>
+        )}
+
         {/* Available Models */}
-        {activeTab === "models" && models.data && (
+        {activeTab === "models" && modelView === "catalog" && models.data && (
           <Card>
             <CardHeader
               title="Model catalog"
@@ -770,10 +784,21 @@ export function ProviderDetailPage() {
                   placeholder="Search by model name, ID, or capability…"
                   value={modelSearchQuery}
                   onChange={(event) => setModelSearchQuery(event.target.value)}
-                  className="pl-10"
+                  className="pl-10 pr-10"
                 />
+                {modelSearchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => setModelSearchQuery("")}
+                    aria-label="Clear model search"
+                    className="absolute right-2 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-lg text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-elevated)] hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/50"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                )}
               </div>
               <div className="flex min-h-10 flex-wrap items-center gap-2">
+                <span className="text-xs tabular-nums text-[var(--text-muted)]">{filteredModels.length} shown</span>
                 <label className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 text-sm text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-elevated)] hover:text-[var(--text)]">
                   <input
                     type="checkbox"
@@ -848,7 +873,7 @@ export function ProviderDetailPage() {
                 )}
               </div>
             ) : (
-              <div className="grid grid-cols-1 gap-3 border-t border-[var(--border)] bg-[var(--bg-subtle)] p-4 sm:grid-cols-2 sm:p-5 xl:grid-cols-3">
+              <div className="grid grid-cols-1 gap-px border-t border-[var(--border)] bg-[var(--border)] sm:grid-cols-2 xl:grid-cols-3">
                 {paginatedModels.map((m) => (
                   <ModelCell
                     key={m.id}
@@ -897,7 +922,7 @@ export function ProviderDetailPage() {
         )}
 
         {/* User-registered custom models (separate from the catalog list). */}
-        {activeTab === "models" && <CustomModelsSection provider={provider} />}
+        {activeTab === "models" && modelView === "custom" && <CustomModelsSection provider={provider} />}
       </div>
 
       {oauthOpen && oauthProvider && (
@@ -2681,7 +2706,7 @@ function ModelCell({
   onToggleSelect,
   onToggleDisable,
 }: {
-  model: { id: string; name: string; kind: string };
+  model: ProviderModel;
   provider: Provider;
   disabled?: boolean;
   selected?: boolean;
