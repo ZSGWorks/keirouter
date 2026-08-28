@@ -25,6 +25,7 @@ import {
   EmptyState,
   ErrorBanner,
   Modal,
+  TabBar,
   TablePagination,
   useClientPagination,
 } from "../components/ui";
@@ -55,6 +56,7 @@ export function ProviderDetailPage() {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const toast = useToast();
+  const [activeTab, setActiveTab] = useState<"accounts" | "routing" | "models">("accounts");
 
   const providers = useQuery({ queryKey: ["providers"], queryFn: () => api.providers() });
   const accounts = useQuery({ queryKey: ["accounts"], queryFn: () => api.listAccounts() });
@@ -495,34 +497,35 @@ export function ProviderDetailPage() {
         <span className="truncate text-[var(--text)]">{provider.display_name}</span>
       </nav>
 
-      <Card className="mb-8">
-        <div className="flex flex-col gap-6 p-5 sm:p-6 lg:flex-row lg:items-start lg:justify-between">
-          <div className="flex min-w-0 items-start gap-4 sm:gap-5">
-            <div className="rounded-2xl border border-[var(--border)] bg-[var(--bg-subtle)] p-2 shadow-sm">
-              <ProviderIcon provider={provider} size={56} />
+      <Card className="mb-5">
+        <div className="flex flex-col gap-5 px-5 py-5 sm:px-6 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex min-w-0 items-center gap-3.5 sm:gap-4">
+            <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-subtle)] p-2">
+              <ProviderIcon provider={provider} size={44} />
             </div>
-            <div className="min-w-0 pt-0.5">
+            <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
-                <h1 className="font-display text-2xl font-semibold tracking-tight sm:text-3xl">
+                <h1 className="font-display text-xl font-semibold tracking-tight sm:text-2xl">
                   {provider.display_name}
                 </h1>
                 {provider.deprecated && <Badge tone="warning">Limited support</Badge>}
                 {provider.auth_kind === "none" && <Badge tone="success">No credentials required</Badge>}
               </div>
-              <p className="mt-1.5 max-w-2xl text-sm leading-6 text-[var(--text-muted)]">
-                Manage credentials, routing behavior, and the model catalog used for requests to this provider.
-              </p>
-              <div className="mt-3 flex flex-wrap gap-1.5">
+              <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-[var(--text-muted)]">
+                <span>{provider.auth_kind === "none" ? "Public endpoint" : provider.auth_kind === "oauth" ? "OAuth" : "API key"}</span>
+                <span aria-hidden="true">·</span>
+                <span>{myAccounts.length} account{myAccounts.length === 1 ? "" : "s"}</span>
+                <span aria-hidden="true">·</span>
+                <span>{activeModelCount} model{activeModelCount === 1 ? "" : "s"} enabled</span>
+                {provider.custom && <Badge tone="secondary">Custom</Badge>}
+              </div>
+              <div className="mt-2 flex flex-wrap gap-1.5">
                 {(provider.service_kinds ?? []).map((kind) => (
                   <Badge key={kind} tone="accent">{kind}</Badge>
                 ))}
-                <Badge tone="neutral">{provider.auth_kind === "none" ? "Public endpoint" : provider.auth_kind === "oauth" ? "OAuth" : "API key"}</Badge>
-                {provider.custom && <Badge tone="secondary">Custom provider</Badge>}
               </div>
               {provider.custom && provider.base_url && (
-                <div className="mt-3">
-                  <BaseURLDisplay baseURL={provider.base_url} dialect={provider.dialect} />
-                </div>
+                <div className="mt-2.5"><BaseURLDisplay baseURL={provider.base_url} dialect={provider.dialect} /></div>
               )}
             </div>
           </div>
@@ -553,21 +556,6 @@ export function ProviderDetailPage() {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 border-t border-[var(--border)] bg-[var(--bg-subtle)] sm:grid-cols-3 sm:divide-x sm:divide-[var(--border)]">
-          <div className="px-5 py-4 sm:px-6">
-            <p className="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">Connected accounts</p>
-            <p className="mt-1 text-xl font-semibold tabular-nums">{myAccounts.length}</p>
-          </div>
-          <div className="border-t border-[var(--border)] px-5 py-4 sm:border-t-0 sm:px-6">
-            <p className="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">Enabled accounts</p>
-            <p className="mt-1 text-xl font-semibold tabular-nums">{enabledAccounts}</p>
-          </div>
-          <div className="border-t border-[var(--border)] px-5 py-4 sm:border-t-0 sm:px-6">
-            <p className="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">Enabled models</p>
-            <p className="mt-1 text-xl font-semibold tabular-nums">{models.isLoading ? "—" : activeModelCount}</p>
-          </div>
-        </div>
-
         {provider.deprecated && provider.notice && (
           <div className="flex items-start gap-3 border-t border-[color:var(--color-warning)]/25 bg-[color:var(--color-warning)]/8 px-5 py-4 text-sm leading-6 text-[color:var(--color-warning)] sm:px-6">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
@@ -576,8 +564,20 @@ export function ProviderDetailPage() {
         )}
       </Card>
 
-      <div className="space-y-6">
-        {routing.data && (
+      <div className="mb-5 sticky top-0 z-20 -mx-4 border-y border-[var(--border)] bg-[var(--bg)]/95 px-4 py-2 backdrop-blur-sm sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
+        <TabBar
+          active={activeTab}
+          onChange={setActiveTab}
+          tabs={[
+            { value: "accounts", label: `Accounts (${enabledAccounts})` },
+            { value: "routing", label: "Routing" },
+            { value: "models", label: `Models (${activeModelCount})` },
+          ]}
+        />
+      </div>
+
+      <div className="space-y-5">
+        {activeTab === "routing" && routing.data && (
           <Card>
             <CardHeader
               title="Routing policy"
@@ -591,7 +591,7 @@ export function ProviderDetailPage() {
           </Card>
         )}
 
-        <Card>
+        {activeTab === "accounts" && <Card>
           <CardHeader
             title="Connected accounts"
             description="Connected upstream credentials and their routing configuration."
@@ -711,10 +711,10 @@ export function ProviderDetailPage() {
               />
             </>
           )}
-        </Card>
+        </Card>}
 
         {/* Available Models */}
-        {models.data && (
+        {activeTab === "models" && models.data && (
           <Card>
             <CardHeader
               title="Model catalog"
@@ -869,7 +869,7 @@ export function ProviderDetailPage() {
         )}
 
         {/* User-registered custom models (separate from the catalog list). */}
-        <CustomModelsSection provider={provider} />
+        {activeTab === "models" && <CustomModelsSection provider={provider} />}
       </div>
 
       {oauthOpen && oauthProvider && (
