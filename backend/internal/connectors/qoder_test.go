@@ -3,10 +3,12 @@ package connectors
 import (
 	"encoding/json"
 	"errors"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/mydisha/keirouter/backend/internal/core"
+	"github.com/stretchr/testify/require"
 )
 
 func TestQoderSerializeTools_UsesOpenAIFunctionWrapper(t *testing.T) {
@@ -307,6 +309,30 @@ func TestUnwrapQoderSSELineWithError_SurfacesEnvelopeError(t *testing.T) {
 	}
 	if pe.Message != "Invalid tool parameters" {
 		t.Fatalf("message = %q, want Invalid tool parameters", pe.Message)
+	}
+}
+
+func TestUnwrapQoderSSELineWithError_ClassifiesBillingBlocks(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		kind core.ErrorKind
+	}{
+		{name: "quota code", body: `{"code":"112","message":"Quota exhausted"}`, kind: core.ErrQuotaExhausted},
+		{name: "pricing URL", body: `{"message":"Upgrade required","pricingUrl":"https://qoder.com/pricing"}`, kind: core.ErrQuotaExhausted},
+		{name: "queue throttle", body: `{"code":"10605","message":"Queue limit"}`, kind: core.ErrRateLimit},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			line := `data: {"statusCodeValue":403,"body":` + strconv.Quote(tc.body) + `}`
+			_, ok, err := unwrapQoderSSELineWithError(line, "qoder", "model")
+			require.False(t, ok)
+			var pe *core.ProviderError
+			require.ErrorAs(t, err, &pe)
+			require.Equal(t, tc.kind, pe.Kind)
+			require.Equal(t, core.FailureScopeAccount, pe.Scope)
+		})
 	}
 }
 

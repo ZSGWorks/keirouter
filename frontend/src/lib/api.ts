@@ -44,6 +44,25 @@ export interface ProviderModel {
   custom?: boolean;
   db_id?: string;
   discovered?: boolean;
+	capabilities?: ModelCapabilities;
+	capability_source?: CapabilitySource;
+}
+
+export type CapabilitySource = "provider" | "exact" | "pattern" | "service_kind" | "default";
+
+export interface ModelCapabilities {
+	vision: boolean;
+	pdf: boolean;
+	audio_input: boolean;
+	video_input: boolean;
+	image_output: boolean;
+	audio_output: boolean;
+	search: boolean;
+	tools: boolean;
+	reasoning: boolean;
+	structured_output: boolean;
+	context_window: number;
+	max_output: number;
 }
 
 // CustomProvider is a user-defined provider instance (OpenAI- or Anthropic-

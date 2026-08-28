@@ -2,7 +2,8 @@ import { useEffect, useRef, useState, useMemo } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Plus, Trash2, Plug, X, Zap, ArrowUp, ArrowDown, CheckCircle, ToggleLeft, ToggleRight, Search, Route, AlertCircle, AlertTriangle, RefreshCw, Globe, Copy, Check, Upload, Loader2, XCircle, Layers, FileText, Download, ChevronDown, Clock3, Package } from "lucide-react";
-import { api, type DeviceCode, type OAuthProvider, type Provider, type Account, type ProxyPool, type UpstreamQuota, type ProviderRoutingSettings, type BulkAccountResult } from "../lib/api";
+import { api, type DeviceCode, type OAuthProvider, type Provider, type ProviderModel, type Account, type ProxyPool, type UpstreamQuota, type ProviderRoutingSettings, type BulkAccountResult } from "../lib/api";
+import { ModelCapabilityIcons } from "../components/ModelCapabilityIcons";
 import { KiroConnectModal } from "../components/KiroConnectModal";
 import { QoderConnectModal } from "../components/QoderConnectModal";
 import { KilocodeConnectModal } from "../components/KilocodeConnectModal";
@@ -21,10 +22,12 @@ import {
   Input,
   Field,
   Badge,
+  StatusDot,
   Spinner,
   EmptyState,
   ErrorBanner,
   Modal,
+  TabBar,
   TablePagination,
   useClientPagination,
 } from "../components/ui";
@@ -55,6 +58,8 @@ export function ProviderDetailPage() {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const toast = useToast();
+  const [activeTab, setActiveTab] = useState<"accounts" | "routing" | "models">("accounts");
+  const [modelView, setModelView] = useState<"catalog" | "custom">("catalog");
 
   const providers = useQuery({ queryKey: ["providers"], queryFn: () => api.providers() });
   const accounts = useQuery({ queryKey: ["accounts"], queryFn: () => api.listAccounts() });
@@ -495,34 +500,35 @@ export function ProviderDetailPage() {
         <span className="truncate text-[var(--text)]">{provider.display_name}</span>
       </nav>
 
-      <Card className="mb-8">
-        <div className="flex flex-col gap-6 p-5 sm:p-6 lg:flex-row lg:items-start lg:justify-between">
-          <div className="flex min-w-0 items-start gap-4 sm:gap-5">
-            <div className="rounded-2xl border border-[var(--border)] bg-[var(--bg-subtle)] p-2 shadow-sm">
-              <ProviderIcon provider={provider} size={56} />
+      <Card className="mb-5">
+        <div className="flex flex-col gap-5 px-5 py-5 sm:px-6 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex min-w-0 items-center gap-3.5 sm:gap-4">
+            <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-subtle)] p-2">
+              <ProviderIcon provider={provider} size={44} />
             </div>
-            <div className="min-w-0 pt-0.5">
+            <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
-                <h1 className="font-display text-2xl font-semibold tracking-tight sm:text-3xl">
+                <h1 className="font-display text-xl font-semibold tracking-tight sm:text-2xl">
                   {provider.display_name}
                 </h1>
                 {provider.deprecated && <Badge tone="warning">Limited support</Badge>}
                 {provider.auth_kind === "none" && <Badge tone="success">No credentials required</Badge>}
               </div>
-              <p className="mt-1.5 max-w-2xl text-sm leading-6 text-[var(--text-muted)]">
-                Manage credentials, routing behavior, and the model catalog used for requests to this provider.
-              </p>
-              <div className="mt-3 flex flex-wrap gap-1.5">
+              <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-[var(--text-muted)]">
+                <span>{provider.auth_kind === "none" ? "Public endpoint" : provider.auth_kind === "oauth" ? "OAuth" : "API key"}</span>
+                <span aria-hidden="true">·</span>
+                <span>{myAccounts.length} account{myAccounts.length === 1 ? "" : "s"}</span>
+                <span aria-hidden="true">·</span>
+                <span>{activeModelCount} model{activeModelCount === 1 ? "" : "s"} enabled</span>
+                {provider.custom && <Badge tone="secondary">Custom</Badge>}
+              </div>
+              <div className="mt-2 flex flex-wrap gap-1.5">
                 {(provider.service_kinds ?? []).map((kind) => (
                   <Badge key={kind} tone="accent">{kind}</Badge>
                 ))}
-                <Badge tone="neutral">{provider.auth_kind === "none" ? "Public endpoint" : provider.auth_kind === "oauth" ? "OAuth" : "API key"}</Badge>
-                {provider.custom && <Badge tone="secondary">Custom provider</Badge>}
               </div>
               {provider.custom && provider.base_url && (
-                <div className="mt-3">
-                  <BaseURLDisplay baseURL={provider.base_url} dialect={provider.dialect} />
-                </div>
+                <div className="mt-2.5"><BaseURLDisplay baseURL={provider.base_url} dialect={provider.dialect} /></div>
               )}
             </div>
           </div>
@@ -553,21 +559,6 @@ export function ProviderDetailPage() {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 border-t border-[var(--border)] bg-[var(--bg-subtle)] sm:grid-cols-3 sm:divide-x sm:divide-[var(--border)]">
-          <div className="px-5 py-4 sm:px-6">
-            <p className="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">Connected accounts</p>
-            <p className="mt-1 text-xl font-semibold tabular-nums">{myAccounts.length}</p>
-          </div>
-          <div className="border-t border-[var(--border)] px-5 py-4 sm:border-t-0 sm:px-6">
-            <p className="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">Enabled accounts</p>
-            <p className="mt-1 text-xl font-semibold tabular-nums">{enabledAccounts}</p>
-          </div>
-          <div className="border-t border-[var(--border)] px-5 py-4 sm:border-t-0 sm:px-6">
-            <p className="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">Enabled models</p>
-            <p className="mt-1 text-xl font-semibold tabular-nums">{models.isLoading ? "—" : activeModelCount}</p>
-          </div>
-        </div>
-
         {provider.deprecated && provider.notice && (
           <div className="flex items-start gap-3 border-t border-[color:var(--color-warning)]/25 bg-[color:var(--color-warning)]/8 px-5 py-4 text-sm leading-6 text-[color:var(--color-warning)] sm:px-6">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
@@ -576,8 +567,20 @@ export function ProviderDetailPage() {
         )}
       </Card>
 
-      <div className="space-y-6">
-        {routing.data && (
+      <div className="mb-5 sticky top-0 z-20 -mx-4 border-y border-[var(--border)] bg-[var(--bg)]/95 px-4 py-2 backdrop-blur-sm sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
+        <TabBar
+          active={activeTab}
+          onChange={setActiveTab}
+          tabs={[
+            { value: "accounts", label: `Accounts (${enabledAccounts})` },
+            { value: "routing", label: "Routing" },
+            { value: "models", label: `Models (${activeModelCount})` },
+          ]}
+        />
+      </div>
+
+      <div key={activeTab} className="provider-workspace-panel space-y-5" role="region" aria-label={`${provider.display_name} ${activeTab} workspace`}>
+        {activeTab === "routing" && routing.data && (
           <Card>
             <CardHeader
               title="Routing policy"
@@ -591,10 +594,10 @@ export function ProviderDetailPage() {
           </Card>
         )}
 
-        <Card>
+        {activeTab === "accounts" && <Card>
           <CardHeader
-            title="Connected accounts"
-            description="Connected upstream credentials and their routing configuration."
+            title="Account routing"
+            description="Credentials available to this provider and the order used for routing."
             action={
               <div className="flex flex-wrap items-center justify-end gap-2">
                 {myAccounts.length > 0 && (
@@ -602,6 +605,7 @@ export function ProviderDetailPage() {
                     variant="ghost"
                     onClick={runTestAll}
                     disabled={testingAll}
+                    aria-live="polite"
                   >
                     {testingAll ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle className="h-4 w-4" />}
                     {testingAll
@@ -618,6 +622,27 @@ export function ProviderDetailPage() {
               </div>
             }
           />
+          {!accounts.isLoading && myAccounts.length > 0 && (
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-[var(--border)] bg-[var(--bg-subtle)] px-4 py-2.5 text-xs sm:px-5">
+              <span className="inline-flex items-center gap-1.5 text-[var(--text-muted)]">
+                <StatusDot tone="success" />
+                <strong className="font-semibold text-[var(--text)] tabular-nums">{enabledAccounts}</strong> active
+              </span>
+              {myAccounts.length > enabledAccounts && (
+                <span className="inline-flex items-center gap-1.5 text-[var(--text-muted)]">
+                  <StatusDot tone="secondary" />
+                  <strong className="font-semibold text-[var(--text)] tabular-nums">{myAccounts.length - enabledAccounts}</strong> paused
+                </span>
+              )}
+              {myAccounts.some((account) => account.needs_reconnect) && (
+                <span className="inline-flex items-center gap-1.5 text-[color:var(--color-warning)]">
+                  <StatusDot tone="warning" />
+                  Reconnect required
+                </span>
+              )}
+              <span className="ml-auto hidden text-[var(--text-muted)] lg:inline">Priority determines first-choice routing.</span>
+            </div>
+          )}
           {myAccounts.some((a) => a.needs_reconnect) && (
             <div className="flex items-start gap-2.5 border-t border-[color:var(--color-warning)]/25 bg-[color:var(--color-warning)]/8 px-6 py-3 text-xs leading-relaxed text-[color:var(--color-warning)]">
               <RefreshCw className="mt-0.5 h-3.5 w-3.5 shrink-0" />
@@ -683,6 +708,12 @@ export function ProviderDetailPage() {
                   </label>
                 </div>
               )}
+              <div className="hidden grid-cols-[minmax(0,1fr)_auto_minmax(10rem,0.7fr)_auto] items-center gap-3 border-b border-[var(--border)] bg-[var(--bg-elevated)] px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)] lg:grid">
+                <span className="pl-6">Account</span>
+                <span>Priority</span>
+                <span>Connection</span>
+                <span className="text-right">Actions</span>
+              </div>
               <div className="divide-y divide-[var(--border)]">
                 {paginatedAccounts.map((account, pageIndex) => (
                   <AccountRow
@@ -711,10 +742,23 @@ export function ProviderDetailPage() {
               />
             </>
           )}
-        </Card>
+        </Card>}
+
+        {activeTab === "models" && (
+          <div className="border-b border-[var(--border)]">
+            <TabBar
+              active={modelView}
+              onChange={setModelView}
+              tabs={[
+                { value: "catalog", label: `Catalog (${activeModelCount})` },
+                { value: "custom", label: "Custom models" },
+              ]}
+            />
+          </div>
+        )}
 
         {/* Available Models */}
-        {models.data && (
+        {activeTab === "models" && modelView === "catalog" && models.data && (
           <Card>
             <CardHeader
               title="Model catalog"
@@ -742,10 +786,21 @@ export function ProviderDetailPage() {
                   placeholder="Search by model name, ID, or capability…"
                   value={modelSearchQuery}
                   onChange={(event) => setModelSearchQuery(event.target.value)}
-                  className="pl-10"
+                  className="pl-10 pr-10"
                 />
+                {modelSearchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => setModelSearchQuery("")}
+                    aria-label="Clear model search"
+                    className="absolute right-2 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-lg text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-elevated)] hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/50"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                )}
               </div>
               <div className="flex min-h-10 flex-wrap items-center gap-2">
+                <span className="text-xs tabular-nums text-[var(--text-muted)]">{filteredModels.length} shown</span>
                 <label className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 text-sm text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-elevated)] hover:text-[var(--text)]">
                   <input
                     type="checkbox"
@@ -820,7 +875,7 @@ export function ProviderDetailPage() {
                 )}
               </div>
             ) : (
-              <div className="grid grid-cols-1 gap-3 border-t border-[var(--border)] bg-[var(--bg-subtle)] p-4 sm:grid-cols-2 sm:p-5 xl:grid-cols-3">
+              <div className="grid grid-cols-1 gap-px border-t border-[var(--border)] bg-[var(--border)] sm:grid-cols-2 xl:grid-cols-3">
                 {paginatedModels.map((m) => (
                   <ModelCell
                     key={m.id}
@@ -869,7 +924,7 @@ export function ProviderDetailPage() {
         )}
 
         {/* User-registered custom models (separate from the catalog list). */}
-        <CustomModelsSection provider={provider} />
+        {activeTab === "models" && modelView === "custom" && <CustomModelsSection provider={provider} />}
       </div>
 
       {oauthOpen && oauthProvider && (
@@ -1074,10 +1129,23 @@ function RoutingControls({
   saving: boolean;
   onUpdate: (patch: Partial<ProviderRoutingSettings>) => void;
 }) {
-  const mode = settings?.routing_strategy || "inherit";
-  const stickyLimit = settings?.sticky_limit || 3;
-  const ttlHours = Math.max(1, Math.round((settings?.affinity_ttl_minutes || 1440) / 60));
+  const [mode, setMode] = useState(settings?.routing_strategy || "inherit");
+  const [stickyLimit, setStickyLimit] = useState(settings?.sticky_limit || 3);
+  const [ttlHours, setTtlHours] = useState(Math.max(1, Math.round((settings?.affinity_ttl_minutes || 1440) / 60)));
   const rotatesAccounts = mode === "round-robin" || mode === "smart-round-robin";
+  const usesAffinity = mode === "smart-round-robin";
+  const savedMode = settings?.routing_strategy || "inherit";
+  const savedStickyLimit = settings?.sticky_limit || 3;
+  const savedTtlHours = Math.max(1, Math.round((settings?.affinity_ttl_minutes || 1440) / 60));
+  const dirty = mode !== savedMode || stickyLimit !== savedStickyLimit || ttlHours !== savedTtlHours;
+
+  useEffect(() => {
+    if (!saving) {
+      setMode(savedMode);
+      setStickyLimit(savedStickyLimit);
+      setTtlHours(savedTtlHours);
+    }
+  }, [savedMode, savedStickyLimit, savedTtlHours, saving]);
 
   const routingDescription = mode === "inherit"
     ? "Use the router-wide account strategy."
@@ -1088,57 +1156,84 @@ function RoutingControls({
         : "Preserve client affinity while balancing traffic across healthy accounts.";
 
   return (
-    <div className="grid gap-4 p-5 sm:p-6 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1fr)]">
-      <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-subtle)] p-4">
-        <label htmlFor="provider-routing-strategy" className="flex items-center gap-2 text-sm font-semibold">
-          <Route className="h-4 w-4 text-accent-600" />
-          Distribution strategy
-        </label>
-        <p className="mt-1 min-h-10 text-xs leading-5 text-[var(--text-muted)]">{routingDescription}</p>
-        <select
-          id="provider-routing-strategy"
-          value={mode}
-          disabled={saving}
-          onChange={(event) => onUpdate({ routing_strategy: event.target.value })}
-          className="mt-3 h-10 w-full rounded-xl border border-[var(--border)] bg-[var(--bg-elevated)] px-3 text-sm text-[var(--text)] outline-none transition-colors focus:border-accent-400 focus-visible:ring-2 focus-visible:ring-accent-400/40 disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          {routingOptions.map((option) => (
-            <option key={option.value} value={option.value}>{option.label}</option>
-          ))}
-        </select>
-      </div>
-
-      <div className={`rounded-xl border border-[var(--border)] p-4 ${rotatesAccounts ? "bg-[var(--bg-subtle)]" : "bg-[var(--bg-subtle)]/50 opacity-60"}`}>
-        <label htmlFor="provider-sticky-limit" className="text-sm font-semibold">Requests per account</label>
-        <p className="mt-1 min-h-10 text-xs leading-5 text-[var(--text-muted)]">Requests kept on one account before rotating.</p>
-        <Input
-          id="provider-sticky-limit"
-          type="number"
-          min={1}
-          max={100}
-          value={stickyLimit}
-          disabled={saving || !rotatesAccounts}
-          onChange={(event) => onUpdate({ sticky_limit: parseInt(event.target.value, 10) || 1 })}
-          className="mt-3"
-        />
-      </div>
-
-      <div className={`rounded-xl border border-[var(--border)] p-4 ${mode === "smart-round-robin" ? "bg-[var(--bg-subtle)]" : "bg-[var(--bg-subtle)]/50 opacity-60"}`}>
-        <label htmlFor="provider-affinity-ttl" className="text-sm font-semibold">Affinity lifetime</label>
-        <p className="mt-1 min-h-10 text-xs leading-5 text-[var(--text-muted)]">Hours before a client can be assigned to another account.</p>
-        <div className="relative mt-3">
-          <Input
-            id="provider-affinity-ttl"
-            type="number"
-            min={1}
-            max={168}
-            value={ttlHours}
-            disabled={saving || mode !== "smart-round-robin"}
-            onChange={(event) => onUpdate({ affinity_ttl_minutes: (parseInt(event.target.value, 10) || 1) * 60 })}
-            className="pr-14"
-          />
-          <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-[var(--text-muted)]">hours</span>
+    <div className="max-w-4xl p-5 sm:p-6">
+      <div className="flex items-start gap-3">
+        <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-accent-100 text-accent-700 dark:bg-accent-800/40 dark:text-accent-200">
+          <Route className="h-4 w-4" />
         </div>
+        <div>
+          <h3 className="text-sm font-semibold">Distribution strategy</h3>
+          <p className="mt-1 text-sm leading-5 text-[var(--text-muted)]">{routingDescription}</p>
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label="Distribution strategy">
+        {routingOptions.map((option) => {
+          const selected = mode === option.value;
+          return (
+            <button
+              key={option.value}
+              type="button"
+              role="radio"
+              aria-checked={selected}
+              disabled={saving}
+              onClick={() => setMode(option.value)}
+              className={`rounded-xl border px-3.5 py-3 text-left transition-[border-color,background-color,box-shadow] duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/50 disabled:cursor-not-allowed disabled:opacity-60 ${selected ? "border-accent-400 bg-accent-50 shadow-sm dark:bg-accent-900/20" : "border-[var(--border)] bg-[var(--bg-elevated)] hover:border-[var(--border-strong)] hover:bg-[var(--bg-subtle)]"}`}
+            >
+              <span className="block text-sm font-semibold">{option.label}</span>
+              <span className="mt-0.5 block text-xs leading-5 text-[var(--text-muted)]">
+                {option.value === "inherit" ? "Follow router-wide configuration." : option.value === "fill-first" ? "Keep the highest-priority healthy account in use." : option.value === "round-robin" ? "Rotate after a request window." : "Rotate while retaining client affinity."}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
+      {rotatesAccounts && (
+        <div className="mt-5 grid gap-4 border-t border-[var(--border)] pt-5 sm:grid-cols-2">
+          <Field label="Requests per account">
+            <Input
+              id="provider-sticky-limit"
+              type="number"
+              min={1}
+              max={100}
+              value={stickyLimit}
+              disabled={saving}
+              onChange={(event) => setStickyLimit(Math.max(1, parseInt(event.target.value, 10) || 1))}
+            />
+          </Field>
+          {usesAffinity && (
+            <Field label="Affinity lifetime (hours)">
+              <Input
+                id="provider-affinity-ttl"
+                type="number"
+                min={1}
+                max={168}
+                value={ttlHours}
+                disabled={saving}
+                onChange={(event) => setTtlHours(Math.max(1, parseInt(event.target.value, 10) || 1))}
+              />
+            </Field>
+          )}
+        </div>
+      )}
+
+      <div className="mt-5 flex flex-wrap items-center gap-3 border-t border-[var(--border)] pt-4">
+        <p className="min-w-0 flex-1 text-xs leading-5 text-[var(--text-muted)]" aria-live="polite">
+          {saving ? "Saving routing policy…" : dirty ? "Unsaved changes" : "Routing policy saved"}
+        </p>
+        {dirty && !saving && (
+          <Button variant="ghost" onClick={() => { setMode(savedMode); setStickyLimit(savedStickyLimit); setTtlHours(savedTtlHours); }}>
+            Discard
+          </Button>
+        )}
+        <Button
+          disabled={!dirty || saving}
+          onClick={() => onUpdate({ routing_strategy: mode, sticky_limit: stickyLimit, affinity_ttl_minutes: ttlHours * 60 })}
+        >
+          {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+          {saving ? "Saving…" : "Save changes"}
+        </Button>
       </div>
     </div>
   );
@@ -1204,19 +1299,20 @@ function AccountRow({
   const quotaRows = accountQuota.data?.quotas ?? [];
 
   return (
-    <div className={`px-3 py-2.5 transition-colors sm:px-4 ${a.disabled ? "bg-[var(--bg-subtle)]/50" : ""} ${selected ? "bg-accent-50/70 dark:bg-accent-900/15" : "hover:bg-[var(--bg-subtle)]/50"}`}>
-      <div className="flex flex-wrap items-center gap-2">
-        {onToggleSelect && (
-          <input
-            type="checkbox"
-            checked={!!selected}
-            onChange={onToggleSelect}
-            aria-label={`Select ${a.label || a.provider}`}
-            className="h-4 w-4 shrink-0 rounded border-[var(--border)] accent-[var(--color-accent-500)]"
-          />
-        )}
+    <div className={`px-3 py-3 transition-[background-color,opacity] duration-150 sm:px-4 ${a.disabled ? "bg-[var(--bg-subtle)]/50" : ""} ${selected ? "bg-accent-50/70 dark:bg-accent-900/15" : "hover:bg-[var(--bg-subtle)]/50"}`}>
+      <div className="grid gap-2.5 lg:grid-cols-[minmax(0,1fr)_auto_minmax(10rem,0.7fr)_auto] lg:items-center lg:gap-3">
+        <div className="flex min-w-0 items-center gap-2">
+          {onToggleSelect && (
+            <input
+              type="checkbox"
+              checked={!!selected}
+              onChange={onToggleSelect}
+              aria-label={`Select ${a.label || a.provider}`}
+              className="h-4 w-4 shrink-0 rounded border-[var(--border)] accent-[var(--color-accent-500)]"
+            />
+          )}
 
-        <div className="min-w-36 flex-1">
+          <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-1.5">
             <span className="truncate text-sm font-semibold" title={a.label || a.provider}>{a.label || a.provider}</span>
             <Badge tone="neutral">{a.auth_kind === "oauth" ? "OAuth" : "API key"}</Badge>
@@ -1231,9 +1327,10 @@ function AccountRow({
             {testResult?.status === "error" && <Badge tone="danger" title={testResult.message}>Test failed</Badge>}
             {testResult?.status === "testing" && <Badge tone="neutral">Testing…</Badge>}
           </div>
+          </div>
         </div>
 
-        <div className="order-3 flex w-full items-center gap-2 pl-6 lg:order-none lg:w-auto lg:pl-0">
+        <div className="order-3 flex items-center gap-2 pl-6 lg:order-none lg:pl-0">
           <div className="inline-flex shrink-0 items-center overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)]" title="Routing priority">
             <button
               type="button"
@@ -1268,30 +1365,33 @@ function AccountRow({
               <ArrowDown className="h-3.5 w-3.5" />
             </button>
           </div>
-
-          <select
-            value={a.proxy_pool_id || ""}
-            onChange={(event) => onUpdateProxy({ proxy_pool_id: event.target.value || "" })}
-            aria-label={`Proxy for ${a.label || a.provider}`}
-            className="h-10 min-w-0 flex-1 rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] px-2 text-xs focus:border-accent-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/40 lg:w-40 lg:flex-none"
-          >
-            <option value="">Direct connection</option>
-            {pools.map((pool) => (
-              <option key={pool.id} value={pool.id}>
-                {pool.name}{!pool.is_active ? " (inactive)" : ""}
-              </option>
-            ))}
-          </select>
-          {boundPool && (
-            <span className="hidden xl:inline-flex">
-              <Badge tone={boundPool.test_status === "active" ? "success" : boundPool.test_status === "error" ? "danger" : "neutral"}>
-                {boundPool.test_status === "active" ? "Proxy healthy" : boundPool.test_status === "error" ? "Proxy error" : "Proxy unknown"}
-              </Badge>
-            </span>
-          )}
+          <span className="text-xs text-[var(--text-muted)] lg:hidden">Routing priority</span>
         </div>
 
-        <div className="flex shrink-0 items-center gap-0.5">
+        <div className="order-4 min-w-0 pl-6 lg:order-none lg:pl-0">
+          <select
+              value={a.proxy_pool_id || ""}
+              onChange={(event) => onUpdateProxy({ proxy_pool_id: event.target.value || "" })}
+              aria-label={`Proxy for ${a.label || a.provider}`}
+              className="h-10 w-full min-w-0 rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] px-2 text-xs focus:border-accent-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/40"
+            >
+              <option value="">Direct connection</option>
+              {pools.map((pool) => (
+                <option key={pool.id} value={pool.id}>
+                  {pool.name}{!pool.is_active ? " (inactive)" : ""}
+                </option>
+              ))}
+            </select>
+          {boundPool && (
+              <span className="mt-1 hidden xl:inline-flex">
+                <Badge tone={boundPool.test_status === "active" ? "success" : boundPool.test_status === "error" ? "danger" : "neutral"}>
+                  {boundPool.test_status === "active" ? "Proxy healthy" : boundPool.test_status === "error" ? "Proxy error" : "Proxy unknown"}
+                </Badge>
+              </span>
+            )}
+        </div>
+
+        <div className="order-2 flex shrink-0 items-center gap-0.5 justify-self-end lg:order-none">
           <button
             type="button"
             onClick={onTest}
@@ -1324,7 +1424,7 @@ function AccountRow({
       </div>
 
       {testResult?.status === "error" && testResult.message && (
-        <div className="ml-6 mt-2 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 dark:border-red-900/40 dark:bg-red-900/15">
+        <div role="alert" className="ml-6 mt-2 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 dark:border-red-900/40 dark:bg-red-900/15">
           <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-red-500 dark:text-red-400" />
           <p className="break-words text-xs leading-5 text-red-700 dark:text-red-300">{testResult.message}</p>
         </div>
@@ -1335,6 +1435,7 @@ function AccountRow({
           type="button"
           onClick={() => setDetailsOpen((open) => !open)}
           aria-expanded={detailsOpen}
+          aria-controls={`account-details-${a.id}`}
           className="ml-6 mt-1 inline-flex h-10 items-center gap-1.5 rounded-lg px-2 text-xs font-medium text-[var(--text-muted)] transition-[transform,background-color,color] duration-150 hover:bg-[var(--bg-subtle)] hover:text-[var(--text)] active:scale-[0.96] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/50"
         >
           <Zap className="h-3.5 w-3.5" />
@@ -1346,7 +1447,7 @@ function AccountRow({
       )}
 
       {detailsOpen && (
-        <div className="ml-6 mt-2">
+        <div id={`account-details-${a.id}`} className="ml-6 mt-2 animate-[page-in_0.18s_ease-out]">
           {supportsQuota && (
             <AccountQuotaPanel
               loading={accountQuota.isLoading || accountQuota.isFetching}
@@ -2608,7 +2709,7 @@ function ModelCell({
   onToggleSelect,
   onToggleDisable,
 }: {
-  model: { id: string; name: string; kind: string };
+  model: ProviderModel;
   provider: Provider;
   disabled?: boolean;
   selected?: boolean;
@@ -2626,9 +2727,9 @@ function ModelCell({
 
   return (
     <article
-      className={`group relative flex min-h-44 flex-col rounded-xl border bg-[var(--bg-elevated)] p-4 shadow-sm transition-[transform,border-color,box-shadow] duration-200 hover:-translate-y-0.5 hover:border-[var(--border-strong)] hover:shadow-[var(--shadow-card)] ${
-        disabled ? "border-[var(--border)] opacity-70" : "border-[var(--border)]"
-      } ${selected ? "border-accent-400 ring-2 ring-accent-400/20" : ""}`}
+      className={`group relative flex min-h-36 flex-col bg-[var(--bg-elevated)] p-4 transition-[background-color,box-shadow] duration-150 hover:bg-[var(--bg-subtle)] ${
+        disabled ? "opacity-65" : ""
+      } ${selected ? "bg-accent-50/70 ring-2 ring-inset ring-accent-400/30 dark:bg-accent-900/15" : ""}`}
     >
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2">
@@ -2649,9 +2750,7 @@ function ModelCell({
       </div>
 
       <div className="mt-5 min-w-0 flex-1">
-        <h3 className="truncate text-sm font-semibold" title={model.name || model.id}>
-          {model.name || model.id}
-        </h3>
+        <h3 className="truncate text-sm font-semibold" title={model.name || model.id}>{model.name || model.id}</h3>
         <code
           className="mt-2 block truncate rounded-lg bg-[var(--bg-subtle)] px-2.5 py-2 font-mono text-xs text-[var(--text-muted)]"
           title={fullModel}
@@ -2660,8 +2759,11 @@ function ModelCell({
         </code>
       </div>
 
-      <div className="mt-4 flex items-center justify-between border-t border-[var(--border)] pt-3">
-        <span className="text-xs text-[var(--text-muted)]">{disabled ? "Excluded from routing" : "Enabled in catalog"}</span>
+      <div className="mt-4 flex items-center justify-between gap-3 border-t border-[var(--border)] pt-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="whitespace-nowrap text-xs text-[var(--text-muted)]">{disabled ? "Excluded from routing" : "Enabled in catalog"}</span>
+          <ModelCapabilityIcons capabilities={model.capabilities} />
+        </div>
         <div className="flex items-center gap-1">
           {onToggleDisable && (
             <button

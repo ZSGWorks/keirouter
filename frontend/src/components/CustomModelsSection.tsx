@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Pencil, Trash2, Sparkles, AlertTriangle, Loader2, CheckCircle, Search, Copy } from "lucide-react";
+import { Plus, Pencil, Trash2, Sparkles, AlertTriangle, Loader2, CheckCircle, Search, Copy, X } from "lucide-react";
 
 import { api, type CustomModel, type CustomModelInput, type Provider } from "../lib/api";
 import { Card, CardHeader, Button, Input, Field, Select, Badge, Modal, EmptyState } from "./ui";
@@ -129,8 +129,18 @@ export function CustomModelsSection({ provider }: { provider: Provider }) {
                   placeholder="Search custom models…"
                   value={searchQuery}
                   onChange={(event) => setSearchQuery(event.target.value)}
-                  className="pl-10"
+                  className="pl-10 pr-10"
                 />
+                {searchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => setSearchQuery("")}
+                    aria-label="Clear custom model search"
+                    className="absolute right-2 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-lg text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-elevated)] hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/50"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                )}
               </div>
               <span className="text-sm text-[var(--text-muted)]">
                 {filteredModels.length} of {models.length} {models.length === 1 ? "model" : "models"}
@@ -142,7 +152,7 @@ export function CustomModelsSection({ provider }: { provider: Provider }) {
               No custom models found matching "{searchQuery}"
             </div>
           ) : (
-            <div className="grid grid-cols-1 gap-3 border-t border-[var(--border)] bg-[var(--bg-subtle)] p-4 sm:grid-cols-2 sm:p-5 xl:grid-cols-3">
+            <div className="grid grid-cols-1 gap-px border-t border-[var(--border)] bg-[var(--border)] sm:grid-cols-2 xl:grid-cols-3">
               {paginatedModels.map((m) => (
                 <CustomModelCell
                   key={m.db_id}
@@ -265,7 +275,7 @@ function CustomModelCell({
   };
 
   return (
-    <article className="group flex min-h-44 flex-col rounded-xl border border-[var(--border)] bg-[var(--bg-elevated)] p-4 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-[var(--border-strong)] hover:shadow-[var(--shadow-card)]">
+    <article className="group flex min-h-36 flex-col bg-[var(--bg-elevated)] p-4 transition-colors duration-150 hover:bg-[var(--bg-subtle)]">
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2">
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-accent-100 text-accent-700 dark:bg-accent-800/40 dark:text-accent-200">
@@ -298,14 +308,14 @@ function CustomModelCell({
         </div>
       </div>
 
-      <div className="mt-5 min-w-0 flex-1">
+      <div className="mt-4 min-w-0 flex-1">
         <h3 className="truncate text-sm font-semibold" title={m.name || m.id}>{m.name || m.id}</h3>
-        <code className="mt-2 block truncate rounded-lg bg-[var(--bg-subtle)] px-2.5 py-2 font-mono text-xs text-[var(--text-muted)]" title={fullModel}>
+        <code className="mt-1.5 block truncate font-mono text-xs text-[var(--text-muted)]" title={fullModel}>
           {fullModel}
         </code>
       </div>
 
-      <div className="mt-4 flex items-center gap-2 border-t border-[var(--border)] pt-3">
+      <div className="mt-3 flex items-center gap-2 border-t border-[var(--border)] pt-2.5">
         {m.context_window > 0 && (
           <span className="text-xs text-[var(--text-muted)]">{m.context_window.toLocaleString()} context</span>
         )}

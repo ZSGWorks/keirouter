@@ -1,6 +1,6 @@
 // Reusable UI primitives styled with the KeiRouter design system. Calm,
 // generously spaced, soft shadows and rounded surfaces — no gradients or neon.
-import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import type {
   ButtonHTMLAttributes,
   InputHTMLAttributes,
@@ -480,8 +480,23 @@ export function TabBar<T extends string>({
   active: T;
   onChange: (v: T) => void;
 }) {
+  const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (!['ArrowRight', 'ArrowLeft', 'Home', 'End'].includes(event.key)) return;
+    const controls = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
+    const current = controls.indexOf(document.activeElement as HTMLButtonElement);
+    if (current < 0 || controls.length === 0) return;
+    event.preventDefault();
+    const next = event.key === 'Home'
+      ? 0
+      : event.key === 'End'
+        ? controls.length - 1
+        : (current + (event.key === 'ArrowRight' ? 1 : -1) + controls.length) % controls.length;
+    controls[next]?.focus();
+    controls[next]?.click();
+  };
+
   return (
-    <div className="flex gap-1 overflow-x-auto border-b border-[var(--border)] px-1 pb-px" role="tablist">
+    <div className="flex gap-1 overflow-x-auto border-b border-[var(--border)] px-1 pb-px" role="tablist" onKeyDown={onKeyDown}>
       {tabs.map((tab) => {
         const isActive = tab.value === active;
         return (
@@ -491,7 +506,7 @@ export function TabBar<T extends string>({
             role="tab"
             aria-selected={isActive}
             onClick={() => onChange(tab.value)}
-            className={`relative flex items-center gap-2 whitespace-nowrap rounded-t-lg px-4 py-2.5 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60 ${
+            className={`relative flex items-center gap-2 whitespace-nowrap rounded-t-lg px-4 py-2.5 text-sm font-medium transition-[color,background-color] duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60 ${
               isActive
                 ? "text-accent-700 dark:text-accent-200"
                 : "text-[var(--text-muted)] hover:text-[var(--text)]"

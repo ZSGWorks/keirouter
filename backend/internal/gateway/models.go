@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/mydisha/keirouter/backend/internal/capability"
 	"github.com/mydisha/keirouter/backend/internal/connectors"
 	"github.com/mydisha/keirouter/backend/internal/core"
 	"github.com/mydisha/keirouter/backend/internal/store"
@@ -16,13 +17,15 @@ import (
 // modelEntry is one entry in a /v1/models listing, in the OpenAI shape plus
 // KeiRouter extensions (provider, kind, dimensions).
 type modelEntry struct {
-	ID         string `json:"id"`
-	Object     string `json:"object"`
-	OwnedBy    string `json:"owned_by"`
-	Provider   string `json:"provider,omitempty"`
-	Kind       string `json:"kind,omitempty"`
-	Name       string `json:"name,omitempty"`
-	Dimensions int    `json:"dimensions,omitempty"`
+	ID               string                      `json:"id"`
+	Object           string                      `json:"object"`
+	OwnedBy          string                      `json:"owned_by"`
+	Provider         string                      `json:"provider,omitempty"`
+	Kind             string                      `json:"kind,omitempty"`
+	Name             string                      `json:"name,omitempty"`
+	Dimensions       int                         `json:"dimensions,omitempty"`
+	Capabilities     *modelCapabilities          `json:"capabilities,omitempty"`
+	CapabilitySource capability.CapabilitySource `json:"capability_source,omitempty"`
 }
 
 // handleListModels reports targetable models: the tenant's chains (as virtual
@@ -56,13 +59,15 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 		if !usableProviders[pm.Provider] {
 			continue
 		}
+		caps, source := capabilityPayload(pm.Provider, pm.Model.ID, core.ServiceLLM)
 		data = appendModelEntry(data, seen, modelEntry{
-			ID:       pm.Provider + "/" + pm.Model.ID,
-			Object:   "model",
-			OwnedBy:  pm.Provider,
-			Provider: pm.Provider,
-			Kind:     string(core.ServiceLLM),
-			Name:     pm.Model.Name,
+			ID:           pm.Provider + "/" + pm.Model.ID,
+			Object:       "model",
+			OwnedBy:      pm.Provider,
+			Provider:     pm.Provider,
+			Kind:         string(core.ServiceLLM),
+			Name:         pm.Model.Name,
+			Capabilities: &caps, CapabilitySource: source,
 		})
 	}
 
@@ -75,13 +80,15 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		for _, lm := range models {
+			caps, source := capabilityPayload(provider, lm.ID, lm.Kind)
 			data = appendModelEntry(data, seen, modelEntry{
-				ID:       provider + "/" + lm.ID,
-				Object:   "model",
-				OwnedBy:  provider,
-				Provider: provider,
-				Kind:     string(lm.Kind),
-				Name:     lm.Name,
+				ID:           provider + "/" + lm.ID,
+				Object:       "model",
+				OwnedBy:      provider,
+				Provider:     provider,
+				Kind:         string(lm.Kind),
+				Name:         lm.Name,
+				Capabilities: &caps, CapabilitySource: source,
 			})
 		}
 	}
@@ -116,14 +123,16 @@ func (s *Server) handleListModelsByKind(w http.ResponseWriter, r *http.Request) 
 		if !usableProviders[pm.Provider] {
 			continue
 		}
+		caps, source := capabilityPayload(pm.Provider, pm.Model.ID, pm.Model.Kind)
 		data = appendModelEntry(data, seen, modelEntry{
-			ID:         pm.Provider + "/" + pm.Model.ID,
-			Object:     "model",
-			OwnedBy:    pm.Provider,
-			Provider:   pm.Provider,
-			Kind:       string(pm.Model.Kind),
-			Name:       pm.Model.Name,
-			Dimensions: pm.Model.Dimensions,
+			ID:           pm.Provider + "/" + pm.Model.ID,
+			Object:       "model",
+			OwnedBy:      pm.Provider,
+			Provider:     pm.Provider,
+			Kind:         string(pm.Model.Kind),
+			Name:         pm.Model.Name,
+			Dimensions:   pm.Model.Dimensions,
+			Capabilities: &caps, CapabilitySource: source,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "kind": kindParam, "data": data})

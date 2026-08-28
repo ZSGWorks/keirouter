@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -28,8 +29,7 @@ func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 // ---------------------------------------------------------------------------
 
 // buildEventStreamFrame builds a full AWS EventStream binary frame with the
-// given event-type header and JSON payload. CRC fields are zeroed (the parser
-// does not validate them).
+// given event-type header and JSON payload, including valid CRC fields.
 func buildEventStreamFrame(eventType string, payload []byte) []byte {
 	name := ":event-type"
 	var hdr bytes.Buffer
@@ -51,10 +51,12 @@ func buildEventStreamFrame(eventType string, payload []byte) []byte {
 	out.Write(u32[:])
 	binary.BigEndian.PutUint32(u32[:], uint32(headersLen))
 	out.Write(u32[:])
-	out.Write([]byte{0, 0, 0, 0}) // prelude CRC
+	binary.BigEndian.PutUint32(u32[:], crc32.ChecksumIEEE(out.Bytes()))
+	out.Write(u32[:])
 	out.Write(headers)
 	out.Write(payload)
-	out.Write([]byte{0, 0, 0, 0}) // message CRC
+	binary.BigEndian.PutUint32(u32[:], crc32.ChecksumIEEE(out.Bytes()))
+	out.Write(u32[:])
 	return out.Bytes()
 }
 

@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/mydisha/keirouter/backend/internal/budget"
+	"github.com/mydisha/keirouter/backend/internal/capability"
 	"github.com/mydisha/keirouter/backend/internal/connectors"
 	"github.com/mydisha/keirouter/backend/internal/consolelog"
 	"github.com/mydisha/keirouter/backend/internal/core"
@@ -247,12 +248,14 @@ func (s *Server) adminProviderModels(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type modelInfo struct {
-		ID         string `json:"id"`
-		Name       string `json:"name"`
-		Kind       string `json:"kind"`
-		Custom     bool   `json:"custom,omitempty"`
-		DBID       string `json:"db_id,omitempty"`
-		Discovered bool   `json:"discovered,omitempty"`
+		ID               string                      `json:"id"`
+		Name             string                      `json:"name"`
+		Kind             string                      `json:"kind"`
+		Capabilities     modelCapabilities           `json:"capabilities"`
+		CapabilitySource capability.CapabilitySource `json:"capability_source"`
+		Custom           bool                        `json:"custom,omitempty"`
+		DBID             string                      `json:"db_id,omitempty"`
+		Discovered       bool                        `json:"discovered,omitempty"`
 	}
 	modelKind := func(kind core.ServiceKind) core.ServiceKind {
 		if kind == "" {
@@ -280,7 +283,8 @@ func (s *Server) adminProviderModels(w http.ResponseWriter, r *http.Request) {
 		if kindFilter != "" && kind != kindFilter {
 			continue
 		}
-		mi := modelInfo{ID: m.ID, Name: m.Name, Kind: string(kind)}
+		caps, source := capabilityPayload(providerID, m.ID, kind)
+		mi := modelInfo{ID: m.ID, Name: m.Name, Kind: string(kind), Capabilities: caps, CapabilitySource: source}
 		if cm, ok := customByID[m.ID]; ok {
 			mi.Custom = true
 			mi.DBID = cm.ID
@@ -311,7 +315,8 @@ func (s *Server) adminProviderModels(w http.ResponseWriter, r *http.Request) {
 				if seen[lm.ID] {
 					continue
 				}
-				out = append(out, modelInfo{ID: lm.ID, Name: lm.Name, Kind: string(kind)})
+				caps, source := capabilityPayload(providerID, lm.ID, kind)
+				out = append(out, modelInfo{ID: lm.ID, Name: lm.Name, Kind: string(kind), Capabilities: caps, CapabilitySource: source, Discovered: true})
 				seen[lm.ID] = true
 				added = true
 			}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"hash/crc32"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,21 +18,23 @@ import (
 	"github.com/mydisha/keirouter/backend/internal/core"
 )
 
-// encodeEventStreamFrame builds a minimal AWS EventStream frame with a single
-// ":event-type" string header and a JSON payload. CRC fields are zeroed (the
-// parser does not validate them). This mirrors the frame layout the Kiro
-// connector decodes.
+// encodeEventStreamFrame builds a valid AWS EventStream frame with a single
+// ":event-type" string header and both CRC fields populated.
 func encodeEventStreamFrame(eventType string, payload []byte) []byte {
-	// Header: 1-byte name len, name, 1-byte type(7), 2-byte value len, value.
-	name := ":event-type"
+	return encodeEventStreamFrameHeaders(map[string]string{":event-type": eventType}, payload)
+}
+
+func encodeEventStreamFrameHeaders(values map[string]string, payload []byte) []byte {
 	var hdr bytes.Buffer
-	hdr.WriteByte(byte(len(name)))
-	hdr.WriteString(name)
-	hdr.WriteByte(7) // string type
-	var vl [2]byte
-	binary.BigEndian.PutUint16(vl[:], uint16(len(eventType)))
-	hdr.Write(vl[:])
-	hdr.WriteString(eventType)
+	for name, value := range values {
+		hdr.WriteByte(byte(len(name)))
+		hdr.WriteString(name)
+		hdr.WriteByte(7) // string type
+		var vl [2]byte
+		binary.BigEndian.PutUint16(vl[:], uint16(len(value)))
+		hdr.Write(vl[:])
+		hdr.WriteString(value)
+	}
 
 	headers := hdr.Bytes()
 	headersLen := len(headers)
@@ -43,10 +46,12 @@ func encodeEventStreamFrame(eventType string, payload []byte) []byte {
 	out.Write(u32[:])
 	binary.BigEndian.PutUint32(u32[:], uint32(headersLen))
 	out.Write(u32[:])
-	out.Write([]byte{0, 0, 0, 0}) // prelude CRC (ignored)
+	binary.BigEndian.PutUint32(u32[:], crc32.ChecksumIEEE(out.Bytes()))
+	out.Write(u32[:])
 	out.Write(headers)
 	out.Write(payload)
-	out.Write([]byte{0, 0, 0, 0}) // message CRC (ignored)
+	binary.BigEndian.PutUint32(u32[:], crc32.ChecksumIEEE(out.Bytes()))
+	out.Write(u32[:])
 	return out.Bytes()
 }
 
@@ -112,6 +117,37 @@ func TestEventStreamParserRejectsTruncatedFrame(t *testing.T) {
 
 	_, err := parser.next()
 	require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+}
+
+func TestEventStreamParserRejectsInvalidCRCs(t *testing.T) {
+	t.Run("prelude", func(t *testing.T) {
+		frame := encodeEventStreamFrame("assistantResponseEvent", []byte(`{"content":"hello"}`))
+		frame[8] ^= 0xff
+		_, err := newEventStreamParser(bytes.NewReader(frame)).next()
+		require.ErrorContains(t, err, "prelude CRC mismatch")
+	})
+
+	t.Run("message", func(t *testing.T) {
+		frame := encodeEventStreamFrame("assistantResponseEvent", []byte(`{"content":"hello"}`))
+		frame[len(frame)-1] ^= 0xff
+		_, err := newEventStreamParser(bytes.NewReader(frame)).next()
+		require.ErrorContains(t, err, "message CRC mismatch")
+	})
+}
+
+func TestKiroFrameToChunksSurfacesExceptionFrame(t *testing.T) {
+	frame, err := decodeEventStreamFrame(encodeEventStreamFrameHeaders(map[string]string{
+		":message-type":   "exception",
+		":exception-type": "ThrottlingException",
+	}, []byte(`{"message":"capacity unavailable"}`)))
+	require.NoError(t, err)
+
+	chunks := kiroFrameToChunks(frame, map[string]bool{}, new(bool))
+	require.Len(t, chunks, 1)
+	require.Equal(t, core.ChunkError, chunks[0].Type)
+	pe := core.AsProviderError(chunks[0].Err)
+	require.Equal(t, core.FailureScopeRequest, pe.Scope)
+	require.Contains(t, pe.Message, "ThrottlingException")
 }
 
 func TestKiroFrameToChunks_TextAndStop(t *testing.T) {
@@ -574,7 +610,7 @@ func TestKiroToolUseChunksValidatesArgumentsAtomically(t *testing.T) {
 	})
 }
 
-func TestKiroStreamForwardsBeforeUpstreamEOF(t *testing.T) {
+func TestKiroStreamWaitsForTerminalIntegrityBeforeForwarding(t *testing.T) {
 	release := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -584,7 +620,6 @@ func TestKiroStreamForwardsBeforeUpstreamEOF(t *testing.T) {
 		_, _ = w.Write(encodeEventStreamFrame("messageStopEvent", []byte(`{}`)))
 	}))
 	defer srv.Close()
-	defer close(release)
 
 	conn := NewKiro("kiro", srv.URL)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -600,11 +635,41 @@ func TestKiroStreamForwardsBeforeUpstreamEOF(t *testing.T) {
 
 	select {
 	case chunk := <-stream:
+		t.Fatalf("stream emitted before terminal validation: %+v", chunk)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+
+	select {
+	case chunk := <-stream:
 		require.Equal(t, core.ChunkText, chunk.Type)
 		require.Equal(t, "hello", chunk.Delta)
 	case <-time.After(time.Second):
-		t.Fatal("first chunk was not forwarded while the upstream stream remained open")
+		t.Fatal("validated stream was not forwarded after messageStopEvent")
 	}
+}
+
+func TestKiroStreamRejectsEOFWithoutTerminalEvent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(encodeEventStreamFrame("assistantResponseEvent", []byte(`{"content":"partial"}`)))
+	}))
+	defer srv.Close()
+
+	conn := NewKiro("kiro", srv.URL)
+	stream, err := conn.Stream(context.Background(), &core.ChatRequest{
+		Model: "model",
+		Messages: []core.Message{{
+			Role: core.RoleUser, Content: []core.ContentPart{{Type: core.PartText, Text: "hello"}},
+		}},
+	}, core.Credentials{BaseURL: srv.URL}, core.StreamConfig{})
+	require.NoError(t, err)
+
+	chunk := <-stream
+	require.Equal(t, core.ChunkError, chunk.Type)
+	pe := core.AsProviderError(chunk.Err)
+	require.Equal(t, core.FailureScopeRequest, pe.Scope)
+	require.Contains(t, pe.Message, "without messageStopEvent")
 }
 
 func TestKiroChatIncompleteResponseReturnsRoutedRepair(t *testing.T) {

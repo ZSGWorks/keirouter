@@ -43,6 +43,7 @@ const (
 	geminiCLIAPIClient            = "google-genai-sdk/1.41.0 gl-node/v22.19.0"
 	antigravityUA                 = "antigravity/1.104.0"
 	antigravityClaudeContinuation = "Continue."
+	antigravityCompetitivePrompt  = "You are a Claude agent, built on Anthropic's Claude Agent SDK."
 	// CloudCode occasionally resets an HTTP/2 request before it returns SSE
 	// headers. Retrying once is safe: no response bytes have reached the client.
 	cloudCodeStreamOpenAttempts = 2
@@ -249,6 +250,7 @@ func (c *CloudCode) wrapRequestWithConversationRepair(req *core.ChatRequest, cre
 	}
 
 	if c.variant == variantAntigravity {
+		stripAntigravityCompetitivePrompt(innerObj)
 		// Antigravity adds session id + agent metadata to the inner request.
 		sessionID := req.Metadata.ContextAffinityKey
 		if sessionID != "" {
@@ -309,6 +311,45 @@ func (c *CloudCode) wrapRequestWithConversationRepair(req *core.ChatRequest, cre
 	}
 	body, err := json.Marshal(envelope)
 	return body, repaired, err
+}
+
+func stripAntigravityCompetitivePrompt(inner map[string]any) bool {
+	system, ok := inner["systemInstruction"].(map[string]any)
+	if !ok {
+		return false
+	}
+	parts, ok := system["parts"].([]any)
+	if !ok {
+		return false
+	}
+	changed := false
+	cleaned := make([]any, 0, len(parts))
+	for _, raw := range parts {
+		part, ok := raw.(map[string]any)
+		if !ok {
+			cleaned = append(cleaned, raw)
+			continue
+		}
+		text, ok := part["text"].(string)
+		if !ok || !strings.Contains(text, antigravityCompetitivePrompt) {
+			cleaned = append(cleaned, raw)
+			continue
+		}
+		changed = true
+		part["text"] = strings.TrimSpace(strings.ReplaceAll(text, antigravityCompetitivePrompt, ""))
+		if part["text"] != "" {
+			cleaned = append(cleaned, part)
+		}
+	}
+	if !changed {
+		return false
+	}
+	if len(cleaned) == 0 {
+		delete(inner, "systemInstruction")
+	} else {
+		system["parts"] = cleaned
+	}
+	return true
 }
 
 func (c *CloudCode) renderCloudCodeInnerRequest(req *core.ChatRequest) (map[string]any, error) {

@@ -659,7 +659,11 @@ func httpStatusError(provider, model string, resp *http.Response, body []byte) e
 		}
 	case resp.StatusCode == http.StatusPaymentRequired:
 		kind = core.ErrQuotaExhausted
-		creditsExhausted = true
+		if wait := githubMonthlyUsageRetryAfter(provider, resp.StatusCode, body, time.Now()); wait > 0 {
+			retryAfter = wait
+		} else {
+			creditsExhausted = true
+		}
 	case resp.StatusCode == http.StatusNotFound:
 		kind = core.ErrModelUnavailable
 	case resp.StatusCode >= 400 && resp.StatusCode < 500:
@@ -714,6 +718,22 @@ func httpStatusError(provider, model string, resp *http.Response, body []byte) e
 		}
 	}
 	return pe
+}
+
+const githubMonthlyUsageLimitMessage = "you've reached your additional usage limit for your plan"
+
+// githubMonthlyUsageRetryAfter identifies GitHub Copilot's resettable monthly
+// premium-request limit. It is intentionally narrow: unrelated HTTP 402
+// responses may represent a depleted paid balance and keep their existing
+// credits-exhausted treatment.
+func githubMonthlyUsageRetryAfter(provider string, status int, body []byte, now time.Time) time.Duration {
+	if provider != "github" || status != http.StatusPaymentRequired ||
+		!strings.Contains(strings.ToLower(string(body)), githubMonthlyUsageLimitMessage) {
+		return 0
+	}
+	now = now.UTC()
+	reset := time.Date(now.Year(), now.Month()+1, 1, 0, 0, 0, 0, time.UTC)
+	return reset.Sub(now)
 }
 
 // modelUnsupportedPhrases are error-body fragments that reliably indicate the

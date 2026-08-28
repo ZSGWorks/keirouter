@@ -10,6 +10,7 @@ export const routeLoaders = {
   "/providers": () => named(import("./pages/Providers"), "ProvidersPage"),
   "/provider-detail": () => named(import("./pages/ProviderDetail"), "ProviderDetailPage"),
   "/chains": () => named(import("./pages/Chains"), "ChainsPage"),
+  "/chain-editor": () => named(import("./pages/ChainEditor"), "ChainEditorPage"),
   "/keys": () => named(import("./pages/Keys"), "KeysPage"),
   "/key-detail": () => named(import("./pages/KeyDetail"), "KeyDetailPage"),
   "/plans": () => named(import("./pages/Plans"), "PlansPage"),

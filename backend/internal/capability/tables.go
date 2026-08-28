@@ -63,6 +63,9 @@ var modelCapabilities = map[string]caps{
 // providerCapabilities holds provider-specific overrides keyed by provider
 // alias then full model id. These win over modelCapabilities and patterns.
 var providerCapabilities = map[string]map[string]caps{
+	"cloudflare-ai": {
+		"@cf/zai-org/glm-5.3-flash": {Vision: true, Reasoning: true, ThinkingFormat: "openai", ContextWindow: 1048576},
+	},
 	// CodeBuddy exposes authoritative per-model metadata via its gateway
 	// config; every model reasons through OpenAI-style reasoning_effort.
 	// onlyReasoning models cannot disable thinking (clamped to minimal).

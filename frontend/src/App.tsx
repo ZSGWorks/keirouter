@@ -11,6 +11,7 @@ const OverviewPage = lazy(routeLoaders["/"]);
 const ProvidersPage = lazy(routeLoaders["/providers"]);
 const ProviderDetailPage = lazy(routeLoaders["/provider-detail"]);
 const ChainsPage = lazy(routeLoaders["/chains"]);
+const ChainEditorPage = lazy(routeLoaders["/chain-editor"]);
 const KeysPage = lazy(routeLoaders["/keys"]);
 const PlansPage = lazy(routeLoaders["/plans"]);
 const SettingsPage = lazy(routeLoaders["/settings"]);
@@ -60,6 +61,8 @@ export function App() {
                 <Route path="providers/:id" element={<ProviderDetailPage />} />
                 <Route path="endpoints" element={<EndpointsPage />} />
                 <Route path="chains" element={<ChainsPage />} />
+                <Route path="chains/new" element={<ChainEditorPage />} />
+                <Route path="chains/:id/edit" element={<ChainEditorPage />} />
                 <Route path="usage" element={<UsagePage />} />
                 <Route path="quota" element={<QuotaPage />} />
                 <Route path="cli-tools" element={<CLIToolsPage />} />

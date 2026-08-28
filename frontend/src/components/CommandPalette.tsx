@@ -245,7 +245,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
       // Quick actions
       { id: "action-new-key", label: "Create API Key", icon: Plus, section: "Actions", kind: "action", action: () => go("/keys", "action-new-key"), keywords: ["new", "generate", "add key"] },
       { id: "action-new-account", label: "Add Provider Account", icon: Plus, section: "Actions", kind: "action", action: () => go("/providers", "action-new-account"), keywords: ["new", "connect", "credential", "oauth"] },
-      { id: "action-new-chain", label: "Create Chain", icon: Plus, section: "Actions", kind: "action", action: () => go("/chains", "action-new-chain"), keywords: ["new", "chain", "routing", "fallback"] },
+      { id: "action-new-chain", label: "Create Chain", icon: Plus, section: "Actions", kind: "action", action: () => go("/chains/new", "action-new-chain"), keywords: ["new", "chain", "routing", "fallback"] },
       { id: "action-new-plan", label: "Create Plan", icon: Plus, section: "Actions", kind: "action", action: () => go("/plans", "action-new-plan"), keywords: ["new", "budget", "limit"] },
       { id: "action-new-skill", label: "Create Skill", icon: Plus, section: "Actions", kind: "action", action: () => go("/skills", "action-new-skill"), keywords: ["new", "prompt"] },
       { id: "action-new-pool", label: "Add Proxy Pool", icon: Plus, section: "Actions", kind: "action", action: () => go("/proxy-pools", "action-new-pool"), keywords: ["new", "proxy"] },

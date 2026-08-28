@@ -43,6 +43,19 @@ func OfProvider(provider, model string) core.CapabilitySet {
 	return profileSet(ResolveProfile(provider, model))
 }
 
+// ResolveForServiceKind merges reliable service-kind metadata for API clients.
+func ResolveForServiceKind(provider, model string, kind core.ServiceKind) Resolution {
+	r := Resolve(provider, model)
+	if c, ok := capabilitiesFromServiceKind(string(kind)); ok {
+		r.Profile = c.merge(r.Profile)
+		if c.Vision && r.VisionState != SupportSupported {
+			r.VisionState = SupportSupported
+			r.Source = SourceServiceKind
+		}
+	}
+	return r
+}
+
 // profileSet projects a resolved Profile onto the discrete capability set used
 // by the routing guard. Streaming is granted to every model; long context is
 // derived from the context-window threshold.

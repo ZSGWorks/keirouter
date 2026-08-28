@@ -20,7 +20,7 @@ type CloudflareModelSource struct {
 }
 
 // ListModels fetches available models from the Cloudflare Workers AI API.
-// The endpoint is GET /accounts/{accountId}/ai/v1/models, authenticated with
+// The endpoint is GET /accounts/{accountId}/ai/models/search, authenticated with
 // the bearer token. The response uses Cloudflare's envelope format.
 func (s *CloudflareModelSource) ListModels(ctx context.Context, creds core.Credentials) ([]ModelSpec, error) {
 	base := s.defaultBase
@@ -37,9 +37,9 @@ func (s *CloudflareModelSource) ListModels(ctx context.Context, creds core.Crede
 		return nil, fmt.Errorf("cloudflare: account ID not available for model discovery")
 	}
 
-	// Cloudflare uses POST /models/search, not GET /models.
+	// Model search is scoped to the resolved account base URL.
 	url := joinURL(base, "models/search")
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -59,7 +59,7 @@ func (s *CloudflareModelSource) ListModels(ctx context.Context, creds core.Crede
 
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8*1024))
-		return nil, fmt.Errorf("GET /models returned %d: %s", resp.StatusCode, truncateError(body))
+		return nil, fmt.Errorf("GET /models/search returned %d: %s", resp.StatusCode, truncateError(body))
 	}
 
 	// Cloudflare returns: {"success":true,"result":[{"id":"...","name":"..."},...]}

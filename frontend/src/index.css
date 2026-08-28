@@ -277,6 +277,23 @@ select:disabled,
   }
 }
 
+/* A single, restrained transition when switching operational workspaces.
+   The default is fully visible; motion is only a short confirmation of context. */
+@keyframes workspace-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.provider-workspace-panel {
+  animation: workspace-panel-in var(--duration-normal) ease-out;
+}
+
 /* Skeleton shimmer — a moving highlight over a neutral block while data loads.
    Used by the <Skeleton> placeholder so pages show their shape immediately
    instead of an empty spinner, which makes loads feel faster. */

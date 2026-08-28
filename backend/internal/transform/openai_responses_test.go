@@ -521,8 +521,15 @@ func TestClassifyRespStreamError(t *testing.T) {
 	pe = classifyRespStreamError("Rate limit reached for gpt-5-codex: too many tokens per min. Limit 30000, Requested 31000.")
 	require.Equal(t, core.ErrRateLimit, pe.Kind)
 
-	// Anything else stays a provider-scoped upstream error.
-	pe = classifyRespStreamError("server_is_overloaded")
-	require.Equal(t, core.ErrUpstream, pe.Kind)
-	require.Equal(t, core.FailureScopeProvider, pe.EffectiveScope())
+	for _, message := range []string{
+		"server_is_overloaded",
+		"service_unavailable_error",
+		"Selected model is at capacity. Please try a different model.",
+		"model_at_capacity",
+	} {
+		pe = classifyRespStreamError(message)
+		require.Equal(t, core.ErrUpstream, pe.Kind)
+		require.Equal(t, core.FailureScopeRequest, pe.EffectiveScope())
+		require.True(t, pe.Fallbackable())
+	}
 }

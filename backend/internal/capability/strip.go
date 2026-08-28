@@ -18,6 +18,27 @@ import (
 	"github.com/mydisha/keirouter/backend/internal/core"
 )
 
+type ImageDisposition int
+
+const (
+	ImageStrip ImageDisposition = iota
+	ImagePreserve
+	ImageOptimistic
+)
+
+func ImagePolicy(provider, model string) ImageDisposition {
+	r := Resolve(provider, model)
+	switch r.VisionState {
+	case SupportSupported:
+		return ImagePreserve
+	case SupportUnknown:
+		if provider == "cloudflare-ai" {
+			return ImageOptimistic
+		}
+	}
+	return ImageStrip
+}
+
 // Placeholder text substituted where a media part is removed. The current turn
 // gets an explanatory message (the user just sent media this model can't read);
 // earlier turns get a neutral note, since a fallback chain may route different
@@ -43,7 +64,8 @@ func StripUnsupportedModalities(req *core.ChatRequest, provider, model string) b
 		return false
 	}
 	caps := OfProvider(provider, model)
-	hasVision := caps.Has(core.CapVision)
+	imagePolicy := ImagePolicy(provider, model)
+	hasVision := imagePolicy != ImageStrip
 	hasAudioInput := caps.Has(core.CapAudioInput)
 
 	// Fast exit: the model supports every modality we would strip, so there is
@@ -70,6 +92,24 @@ func StripUnsupportedModalities(req *core.ChatRequest, provider, model string) b
 					*p = core.ContentPart{Type: core.PartText, Text: audioPlaceholder(isCurrent)}
 					stripped = true
 				}
+			}
+		}
+	}
+	return stripped
+}
+
+// StripImages forcefully replaces images irrespective of declared capability.
+func StripImages(req *core.ChatRequest) bool {
+	if req == nil || len(req.Messages) == 0 {
+		return false
+	}
+	last := len(req.Messages) - 1
+	stripped := false
+	for i := range req.Messages {
+		for j := range req.Messages[i].Content {
+			if req.Messages[i].Content[j].Type == core.PartImage {
+				req.Messages[i].Content[j] = core.ContentPart{Type: core.PartText, Text: imagePlaceholder(i == last)}
+				stripped = true
 			}
 		}
 	}

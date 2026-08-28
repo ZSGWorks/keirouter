@@ -50,6 +50,30 @@ type ThinkingRange struct {
 	Max int
 }
 
+type SupportState string
+
+const (
+	SupportUnknown     SupportState = "unknown"
+	SupportSupported   SupportState = "supported"
+	SupportUnsupported SupportState = "unsupported"
+)
+
+type CapabilitySource string
+
+const (
+	SourceProvider    CapabilitySource = "provider"
+	SourceExact       CapabilitySource = "exact"
+	SourcePattern     CapabilitySource = "pattern"
+	SourceServiceKind CapabilitySource = "service_kind"
+	SourceDefault     CapabilitySource = "default"
+)
+
+type Resolution struct {
+	Profile     Profile
+	Source      CapabilitySource
+	VisionState SupportState
+}
+
 // defaultProfile is the safe floor every resolved profile is built on. Most
 // modern chat models meet these limits, so unknown models resolve to a usable
 // baseline rather than being treated as text-only.
@@ -150,8 +174,9 @@ type patternCaps struct {
 
 // compiledPattern is a patternCaps with its glob pre-compiled to a regexp.
 type compiledPattern struct {
-	re   *regexp.Regexp
-	caps caps
+	re      *regexp.Regexp
+	caps    caps
+	pattern string
 }
 
 // compiledPatterns holds patternCapabilities compiled once at package load, so
@@ -159,7 +184,7 @@ type compiledPattern struct {
 var compiledPatterns = func() []compiledPattern {
 	out := make([]compiledPattern, len(patternCapabilities))
 	for i, p := range patternCapabilities {
-		out[i] = compiledPattern{re: globToRegexp(p.pattern), caps: p.caps}
+		out[i] = compiledPattern{re: globToRegexp(p.pattern), caps: p.caps, pattern: p.pattern}
 	}
 	return out
 }()
@@ -185,17 +210,18 @@ func globToRegexp(pattern string) *regexp.Regexp {
 //
 // The provider argument is optional; pass "" when the upstream provider is
 // unknown.
-func ResolveProfile(provider, model string) Profile {
+func Resolve(provider, model string) Resolution {
 	p := defaultProfile()
 	if model == "" {
-		return p
+		return Resolution{Profile: p, Source: SourceDefault, VisionState: SupportUnknown}
 	}
 
 	// 1. Provider-specific override, keyed by the full model id.
 	if provider != "" {
 		if byModel, ok := providerCapabilities[provider]; ok {
 			if c, ok := byModel[model]; ok {
-				return c.merge(p)
+				p = c.merge(p)
+				return Resolution{Profile: p, Source: SourceProvider, VisionState: visionState(p)}
 			}
 		}
 	}
@@ -207,19 +233,37 @@ func ResolveProfile(provider, model string) Profile {
 		base = model[i+1:]
 	}
 	if c, ok := modelCapabilities[base]; ok {
-		return c.merge(p)
+		p = c.merge(p)
+		return Resolution{Profile: p, Source: SourceExact, VisionState: visionState(p)}
 	}
 	if c, ok := modelCapabilities[model]; ok {
-		return c.merge(p)
+		p = c.merge(p)
+		return Resolution{Profile: p, Source: SourceExact, VisionState: visionState(p)}
 	}
 
 	// 3. Glob pattern fallback.
 	for _, cp := range compiledPatterns {
+		if provider == "cloudflare-ai" && cp.pattern == "*@cf/*" {
+			continue
+		}
 		if cp.re.MatchString(base) || cp.re.MatchString(model) {
-			return cp.caps.merge(p)
+			p = cp.caps.merge(p)
+			return Resolution{Profile: p, Source: SourcePattern, VisionState: visionState(p)}
 		}
 	}
 
 	// 4. Floor.
-	return p
+	return Resolution{Profile: p, Source: SourceDefault, VisionState: SupportUnknown}
+}
+
+func visionState(p Profile) SupportState {
+	if p.Vision {
+		return SupportSupported
+	}
+	return SupportUnsupported
+}
+
+// ResolveProfile retains the original resolver API for existing callers.
+func ResolveProfile(provider, model string) Profile {
+	return Resolve(provider, model).Profile
 }
