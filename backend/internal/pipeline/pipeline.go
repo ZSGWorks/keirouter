@@ -290,6 +290,20 @@ func (p *Pipeline) Chat(ctx context.Context, req *core.ChatRequest, opts Options
 		if cancelTimeout != nil {
 			cancelTimeout() // cancel immediately to avoid timer goroutine leak
 		}
+		if callErr != nil && isUnsupportedCloudflareImageError(callErr, attempt.Target.Provider, attempt.Target.Model, attemptReq) {
+			p.log.Debug("retrying Cloudflare request without images", "model", attempt.Target.Model)
+			retryReq := cloneForAttempt(attemptBaseReq, attempt.Target.Model)
+			capability.StripImages(retryReq)
+			retryCtx := core.WithProxy(ctx, attempt.Creds)
+			var retryCancel context.CancelFunc
+			if reqTimeout := p.resolvedRequestTimeout(); reqTimeout > 0 {
+				retryCtx, retryCancel = context.WithTimeout(retryCtx, reqTimeout)
+			}
+			resp, callErr = attempt.Conn.Chat(retryCtx, retryReq, attempt.Creds)
+			if retryCancel != nil {
+				retryCancel()
+			}
+		}
 		latency := time.Since(started)
 
 		// Some upstream providers reject non-streaming requests with 400
@@ -660,6 +674,13 @@ func (p *Pipeline) streamExec(ctx context.Context, req *core.ChatRequest, opts O
 			!requiresParsedStreamAdmission(attempt.Target.Provider) {
 			if ds, ok := attempt.Conn.(core.DirectStreamable); ok {
 				body, _, rawErr := ds.StreamRaw(callCtx, attemptReq, attempt.Creds, streamCfg)
+				if rawErr != nil && isUnsupportedCloudflareImageError(rawErr, attempt.Target.Provider, attempt.Target.Model, attemptReq) {
+					cancelUpstream()
+					retryReq := cloneForAttempt(req, attempt.Target.Model)
+					capability.StripImages(retryReq)
+					callCtx, cancelUpstream = context.WithCancel(core.WithProxy(ctx, attempt.Creds))
+					body, _, rawErr = ds.StreamRaw(callCtx, retryReq, attempt.Creds, streamCfg)
+				}
 				if rawErr != nil {
 					cancelUpstream()
 					pe := providerErrorForAttempt(rawErr, attempt)
@@ -756,6 +777,13 @@ func (p *Pipeline) streamExec(ctx context.Context, req *core.ChatRequest, opts O
 		// Standard channel path: parse upstream SSE into canonical chunks,
 		// then render back to the client's dialect.
 		upstream, callErr := attempt.Conn.Stream(callCtx, attemptReq, attempt.Creds, streamCfg)
+		if callErr != nil && isUnsupportedCloudflareImageError(callErr, attempt.Target.Provider, attempt.Target.Model, attemptReq) {
+			cancelUpstream()
+			retryReq := cloneForAttempt(req, attempt.Target.Model)
+			capability.StripImages(retryReq)
+			callCtx, cancelUpstream = context.WithCancel(core.WithProxy(ctx, attempt.Creds))
+			upstream, callErr = attempt.Conn.Stream(callCtx, retryReq, attempt.Creds, streamCfg)
+		}
 		if callErr != nil {
 			cancelUpstream()
 			pe := providerErrorForAttempt(callErr, attempt)
@@ -1738,6 +1766,11 @@ func (p *Pipeline) cacheStore(ctx context.Context, vec []float32, resp *core.Cha
 // the shared request.
 func cloneForAttempt(req *core.ChatRequest, model string) *core.ChatRequest {
 	clone := *req
+	clone.Messages = make([]core.Message, len(req.Messages))
+	for i, message := range req.Messages {
+		clone.Messages[i] = message
+		clone.Messages[i].Content = append([]core.ContentPart(nil), message.Content...)
+	}
 	clone.Model = model
 	return &clone
 }

@@ -5,7 +5,8 @@ import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { useQuery, useQueries } from "@tanstack/react-query";
 import { X, Search, ChevronDown, Check, Cpu } from "lucide-react";
-import { api } from "../lib/api";
+import { api, type ModelCapabilities } from "../lib/api";
+import { ModelCapabilityIcons } from "./ModelCapabilityIcons";
 
 // ── Token Formatting ─────────────────────────────────────────────────
 
@@ -52,6 +53,7 @@ export interface ModelCatalogOption {
   providerId: string;
   providerName: string;
   icon: string;
+	capabilities?: ModelCapabilities;
 }
 
 export function useModelCatalog() {
@@ -77,6 +79,7 @@ export function useModelCatalog() {
           providerId: provider.id,
           providerName: provider.display_name,
           icon: provider.icon || `/providers/${provider.id}.png`,
+			capabilities: model.capabilities,
         });
       }
     });
@@ -181,7 +184,9 @@ export function ModelMultiSelect({
         m.id.toLowerCase().includes(q) ||
         m.name.toLowerCase().includes(q) ||
         m.providerId.toLowerCase().includes(q) ||
-        m.providerName.toLowerCase().includes(q),
+		m.providerName.toLowerCase().includes(q) ||
+		(m.capabilities?.vision ? "vision" : "").includes(q) ||
+		(m.capabilities?.reasoning ? "reasoning" : "").includes(q),
     );
   }, [allModels, providerFilter, query]);
 
@@ -353,7 +358,7 @@ export function ModelMultiSelect({
                         {value.includes(m.id) && <Check className="h-3 w-3 text-white" />}
                       </div>
                       <span className="min-w-0 flex-1">
-                        <span className="block truncate font-medium">{m.name}</span>
+						<span className="flex items-center gap-1"><span className="block truncate font-medium">{m.name}</span><ModelCapabilityIcons capabilities={m.capabilities} size={14} /></span>
                         {m.id !== m.name && <span className="block truncate font-mono text-[11px] text-[var(--text-muted)]">{m.id}</span>}
                       </span>
                     </button>

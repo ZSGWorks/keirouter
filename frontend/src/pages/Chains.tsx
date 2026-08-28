@@ -12,7 +12,8 @@ import {
   type Node, type Edge,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { api, type Chain, type Provider } from "../lib/api";
+import { api, type Chain, type Provider, type ModelCapabilities } from "../lib/api";
+import { ModelCapabilityIcons } from "../components/ModelCapabilityIcons";
 import { PageHeader } from "../components/Layout";
 import { useToast } from "../components/Toast";
 import { Card, Button, Input, Field, Badge, Spinner, EmptyState } from "../components/ui";
@@ -43,6 +44,7 @@ interface SelectOption {
   label: string;
   sublabel?: string;
   icon?: string;
+	capabilities?: ModelCapabilities;
 }
 
 function SearchableSelect({
@@ -209,7 +211,7 @@ function SearchableSelect({
                 <img src={opt.icon} alt="" className="h-5 w-5 shrink-0 rounded-sm object-contain" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
               )}
               <div className="min-w-0 flex-1">
-                <span className="block truncate font-medium">{opt.label}</span>
+				<span className="flex items-center gap-1"><span className="block truncate font-medium">{opt.label}</span><ModelCapabilityIcons capabilities={opt.capabilities} size={14} /></span>
                 {opt.sublabel && <span className="block truncate text-[11px] text-[var(--text-muted)]">{opt.sublabel}</span>}
               </div>
               {opt.value === value && <Check className="h-4 w-4 shrink-0 text-accent-500" />}
@@ -793,6 +795,7 @@ function ChainModal({ chain, providers, onClose }: {
     value: m.id,
     label: m.name || m.id,
     sublabel: m.id !== m.name ? m.id : undefined,
+	capabilities: m.capabilities,
   }));
 
   return (
@@ -960,6 +963,7 @@ function StepRow({
     value: m.id,
     label: m.name || m.id,
     sublabel: m.id !== m.name ? m.id : undefined,
+	capabilities: m.capabilities,
   }));
 
   const providerColor = step.provider ? providers.find((p) => p.id === step.provider)?.color : undefined;

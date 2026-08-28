@@ -206,6 +206,7 @@ var providerModels = map[string][]ModelSpec{
 		m("@cf/moonshotai/kimi-k2.5", "Kimi K2.5"),
 		// GLM
 		m("@cf/zai-org/glm-4.7-flash", "GLM 4.7 Flash"),
+		m("@cf/zai-org/glm-5.3-flash", "GLM 5.3 Flash"),
 		// Qwen
 		m("@cf/qwen/qwq-32b", "QwQ 32B"),
 		m("@cf/qwen/qwen2.5-coder-32b-instruct", "Qwen 2.5 Coder 32B"),
