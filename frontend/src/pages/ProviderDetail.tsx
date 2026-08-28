@@ -21,6 +21,7 @@ import {
   Input,
   Field,
   Badge,
+  StatusDot,
   Spinner,
   EmptyState,
   ErrorBanner,
@@ -593,8 +594,8 @@ export function ProviderDetailPage() {
 
         {activeTab === "accounts" && <Card>
           <CardHeader
-            title="Connected accounts"
-            description="Connected upstream credentials and their routing configuration."
+            title="Account routing"
+            description="Credentials available to this provider and the order used for routing."
             action={
               <div className="flex flex-wrap items-center justify-end gap-2">
                 {myAccounts.length > 0 && (
@@ -618,6 +619,27 @@ export function ProviderDetailPage() {
               </div>
             }
           />
+          {!accounts.isLoading && myAccounts.length > 0 && (
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-[var(--border)] bg-[var(--bg-subtle)] px-4 py-2.5 text-xs sm:px-5">
+              <span className="inline-flex items-center gap-1.5 text-[var(--text-muted)]">
+                <StatusDot tone="success" />
+                <strong className="font-semibold text-[var(--text)] tabular-nums">{enabledAccounts}</strong> active
+              </span>
+              {myAccounts.length > enabledAccounts && (
+                <span className="inline-flex items-center gap-1.5 text-[var(--text-muted)]">
+                  <StatusDot tone="secondary" />
+                  <strong className="font-semibold text-[var(--text)] tabular-nums">{myAccounts.length - enabledAccounts}</strong> paused
+                </span>
+              )}
+              {myAccounts.some((account) => account.needs_reconnect) && (
+                <span className="inline-flex items-center gap-1.5 text-[color:var(--color-warning)]">
+                  <StatusDot tone="warning" />
+                  Reconnect required
+                </span>
+              )}
+              <span className="ml-auto hidden text-[var(--text-muted)] lg:inline">Priority determines first-choice routing.</span>
+            </div>
+          )}
           {myAccounts.some((a) => a.needs_reconnect) && (
             <div className="flex items-start gap-2.5 border-t border-[color:var(--color-warning)]/25 bg-[color:var(--color-warning)]/8 px-6 py-3 text-xs leading-relaxed text-[color:var(--color-warning)]">
               <RefreshCw className="mt-0.5 h-3.5 w-3.5 shrink-0" />
@@ -683,6 +705,12 @@ export function ProviderDetailPage() {
                   </label>
                 </div>
               )}
+              <div className="hidden grid-cols-[minmax(0,1fr)_auto_minmax(10rem,0.7fr)_auto] items-center gap-3 border-b border-[var(--border)] bg-[var(--bg-elevated)] px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)] lg:grid">
+                <span className="pl-6">Account</span>
+                <span>Priority</span>
+                <span>Connection</span>
+                <span className="text-right">Actions</span>
+              </div>
               <div className="divide-y divide-[var(--border)]">
                 {paginatedAccounts.map((account, pageIndex) => (
                   <AccountRow
@@ -1204,19 +1232,20 @@ function AccountRow({
   const quotaRows = accountQuota.data?.quotas ?? [];
 
   return (
-    <div className={`px-3 py-2.5 transition-colors sm:px-4 ${a.disabled ? "bg-[var(--bg-subtle)]/50" : ""} ${selected ? "bg-accent-50/70 dark:bg-accent-900/15" : "hover:bg-[var(--bg-subtle)]/50"}`}>
-      <div className="flex flex-wrap items-center gap-2">
-        {onToggleSelect && (
-          <input
-            type="checkbox"
-            checked={!!selected}
-            onChange={onToggleSelect}
-            aria-label={`Select ${a.label || a.provider}`}
-            className="h-4 w-4 shrink-0 rounded border-[var(--border)] accent-[var(--color-accent-500)]"
-          />
-        )}
+    <div className={`px-3 py-3 transition-[background-color,opacity] duration-150 sm:px-4 ${a.disabled ? "bg-[var(--bg-subtle)]/50" : ""} ${selected ? "bg-accent-50/70 dark:bg-accent-900/15" : "hover:bg-[var(--bg-subtle)]/50"}`}>
+      <div className="grid gap-2.5 lg:grid-cols-[minmax(0,1fr)_auto_minmax(10rem,0.7fr)_auto] lg:items-center lg:gap-3">
+        <div className="flex min-w-0 items-center gap-2">
+          {onToggleSelect && (
+            <input
+              type="checkbox"
+              checked={!!selected}
+              onChange={onToggleSelect}
+              aria-label={`Select ${a.label || a.provider}`}
+              className="h-4 w-4 shrink-0 rounded border-[var(--border)] accent-[var(--color-accent-500)]"
+            />
+          )}
 
-        <div className="min-w-36 flex-1">
+          <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-1.5">
             <span className="truncate text-sm font-semibold" title={a.label || a.provider}>{a.label || a.provider}</span>
             <Badge tone="neutral">{a.auth_kind === "oauth" ? "OAuth" : "API key"}</Badge>
@@ -1231,9 +1260,10 @@ function AccountRow({
             {testResult?.status === "error" && <Badge tone="danger" title={testResult.message}>Test failed</Badge>}
             {testResult?.status === "testing" && <Badge tone="neutral">Testing…</Badge>}
           </div>
+          </div>
         </div>
 
-        <div className="order-3 flex w-full items-center gap-2 pl-6 lg:order-none lg:w-auto lg:pl-0">
+        <div className="order-3 flex items-center gap-2 pl-6 lg:order-none lg:pl-0">
           <div className="inline-flex shrink-0 items-center overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)]" title="Routing priority">
             <button
               type="button"
@@ -1268,30 +1298,33 @@ function AccountRow({
               <ArrowDown className="h-3.5 w-3.5" />
             </button>
           </div>
-
-          <select
-            value={a.proxy_pool_id || ""}
-            onChange={(event) => onUpdateProxy({ proxy_pool_id: event.target.value || "" })}
-            aria-label={`Proxy for ${a.label || a.provider}`}
-            className="h-10 min-w-0 flex-1 rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] px-2 text-xs focus:border-accent-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/40 lg:w-40 lg:flex-none"
-          >
-            <option value="">Direct connection</option>
-            {pools.map((pool) => (
-              <option key={pool.id} value={pool.id}>
-                {pool.name}{!pool.is_active ? " (inactive)" : ""}
-              </option>
-            ))}
-          </select>
-          {boundPool && (
-            <span className="hidden xl:inline-flex">
-              <Badge tone={boundPool.test_status === "active" ? "success" : boundPool.test_status === "error" ? "danger" : "neutral"}>
-                {boundPool.test_status === "active" ? "Proxy healthy" : boundPool.test_status === "error" ? "Proxy error" : "Proxy unknown"}
-              </Badge>
-            </span>
-          )}
+          <span className="text-xs text-[var(--text-muted)] lg:hidden">Routing priority</span>
         </div>
 
-        <div className="flex shrink-0 items-center gap-0.5">
+        <div className="order-4 min-w-0 pl-6 lg:order-none lg:pl-0">
+          <select
+              value={a.proxy_pool_id || ""}
+              onChange={(event) => onUpdateProxy({ proxy_pool_id: event.target.value || "" })}
+              aria-label={`Proxy for ${a.label || a.provider}`}
+              className="h-10 w-full min-w-0 rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] px-2 text-xs focus:border-accent-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/40"
+            >
+              <option value="">Direct connection</option>
+              {pools.map((pool) => (
+                <option key={pool.id} value={pool.id}>
+                  {pool.name}{!pool.is_active ? " (inactive)" : ""}
+                </option>
+              ))}
+            </select>
+          {boundPool && (
+              <span className="mt-1 hidden xl:inline-flex">
+                <Badge tone={boundPool.test_status === "active" ? "success" : boundPool.test_status === "error" ? "danger" : "neutral"}>
+                  {boundPool.test_status === "active" ? "Proxy healthy" : boundPool.test_status === "error" ? "Proxy error" : "Proxy unknown"}
+                </Badge>
+              </span>
+            )}
+        </div>
+
+        <div className="order-2 flex shrink-0 items-center gap-0.5 justify-self-end lg:order-none">
           <button
             type="button"
             onClick={onTest}
