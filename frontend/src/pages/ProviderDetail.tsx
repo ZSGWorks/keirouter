@@ -2,7 +2,8 @@ import { useEffect, useRef, useState, useMemo } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Plus, Trash2, Plug, X, Zap, ArrowUp, ArrowDown, CheckCircle, ToggleLeft, ToggleRight, Search, Route, AlertCircle, AlertTriangle, RefreshCw, Globe, Copy, Check, Upload, Loader2, XCircle, Layers, FileText, Download, ChevronDown, Clock3, Package } from "lucide-react";
-import { api, type DeviceCode, type OAuthProvider, type Provider, type Account, type ProxyPool, type UpstreamQuota, type ProviderRoutingSettings, type BulkAccountResult } from "../lib/api";
+import { api, type DeviceCode, type OAuthProvider, type Provider, type ProviderModel, type Account, type ProxyPool, type UpstreamQuota, type ProviderRoutingSettings, type BulkAccountResult } from "../lib/api";
+import { ModelCapabilityIcons } from "../components/ModelCapabilityIcons";
 import { KiroConnectModal } from "../components/KiroConnectModal";
 import { QoderConnectModal } from "../components/QoderConnectModal";
 import { KilocodeConnectModal } from "../components/KilocodeConnectModal";
@@ -2749,9 +2750,7 @@ function ModelCell({
       </div>
 
       <div className="mt-5 min-w-0 flex-1">
-        <h3 className="truncate text-sm font-semibold" title={model.name || model.id}>
-          {model.name || model.id}
-        </h3>
+        <h3 className="truncate text-sm font-semibold" title={model.name || model.id}>{model.name || model.id}</h3>
         <code
           className="mt-2 block truncate rounded-lg bg-[var(--bg-subtle)] px-2.5 py-2 font-mono text-xs text-[var(--text-muted)]"
           title={fullModel}
@@ -2760,8 +2759,11 @@ function ModelCell({
         </code>
       </div>
 
-      <div className="mt-4 flex items-center justify-between border-t border-[var(--border)] pt-3">
-        <span className="text-xs text-[var(--text-muted)]">{disabled ? "Excluded from routing" : "Enabled in catalog"}</span>
+      <div className="mt-4 flex items-center justify-between gap-3 border-t border-[var(--border)] pt-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="whitespace-nowrap text-xs text-[var(--text-muted)]">{disabled ? "Excluded from routing" : "Enabled in catalog"}</span>
+          <ModelCapabilityIcons capabilities={model.capabilities} />
+        </div>
         <div className="flex items-center gap-1">
           {onToggleDisable && (
             <button
