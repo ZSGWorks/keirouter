@@ -1446,7 +1446,7 @@ function AccountRow({
       )}
 
       {detailsOpen && (
-        <div className="ml-6 mt-2">
+        <div id={`account-details-${a.id}`} className="ml-6 mt-2 animate-[page-in_0.18s_ease-out]">
           {supportsQuota && (
             <AccountQuotaPanel
               loading={accountQuota.isLoading || accountQuota.isFetching}
