@@ -2726,9 +2726,9 @@ function ModelCell({
 
   return (
     <article
-      className={`group relative flex min-h-44 flex-col rounded-xl border bg-[var(--bg-elevated)] p-4 shadow-sm transition-[transform,border-color,box-shadow] duration-200 hover:-translate-y-0.5 hover:border-[var(--border-strong)] hover:shadow-[var(--shadow-card)] ${
-        disabled ? "border-[var(--border)] opacity-70" : "border-[var(--border)]"
-      } ${selected ? "border-accent-400 ring-2 ring-accent-400/20" : ""}`}
+      className={`group relative flex min-h-36 flex-col bg-[var(--bg-elevated)] p-4 transition-[background-color,box-shadow] duration-150 hover:bg-[var(--bg-subtle)] ${
+        disabled ? "opacity-65" : ""
+      } ${selected ? "bg-accent-50/70 ring-2 ring-inset ring-accent-400/30 dark:bg-accent-900/15" : ""}`}
     >
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2">
