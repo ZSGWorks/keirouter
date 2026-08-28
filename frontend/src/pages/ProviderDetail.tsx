@@ -578,7 +578,7 @@ export function ProviderDetailPage() {
         />
       </div>
 
-      <div className="space-y-5">
+      <div key={activeTab} className="provider-workspace-panel space-y-5" role="region" aria-label={`${provider.display_name} ${activeTab} workspace`}>
         {activeTab === "routing" && routing.data && (
           <Card>
             <CardHeader
@@ -604,6 +604,7 @@ export function ProviderDetailPage() {
                     variant="ghost"
                     onClick={runTestAll}
                     disabled={testingAll}
+                    aria-live="polite"
                   >
                     {testingAll ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle className="h-4 w-4" />}
                     {testingAll
@@ -1422,7 +1423,7 @@ function AccountRow({
       </div>
 
       {testResult?.status === "error" && testResult.message && (
-        <div className="ml-6 mt-2 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 dark:border-red-900/40 dark:bg-red-900/15">
+        <div role="alert" className="ml-6 mt-2 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 dark:border-red-900/40 dark:bg-red-900/15">
           <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-red-500 dark:text-red-400" />
           <p className="break-words text-xs leading-5 text-red-700 dark:text-red-300">{testResult.message}</p>
         </div>
@@ -1433,6 +1434,7 @@ function AccountRow({
           type="button"
           onClick={() => setDetailsOpen((open) => !open)}
           aria-expanded={detailsOpen}
+          aria-controls={`account-details-${a.id}`}
           className="ml-6 mt-1 inline-flex h-10 items-center gap-1.5 rounded-lg px-2 text-xs font-medium text-[var(--text-muted)] transition-[transform,background-color,color] duration-150 hover:bg-[var(--bg-subtle)] hover:text-[var(--text)] active:scale-[0.96] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/50"
         >
           <Zap className="h-3.5 w-3.5" />
