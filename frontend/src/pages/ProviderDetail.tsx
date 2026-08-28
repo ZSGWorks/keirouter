@@ -1102,10 +1102,23 @@ function RoutingControls({
   saving: boolean;
   onUpdate: (patch: Partial<ProviderRoutingSettings>) => void;
 }) {
-  const mode = settings?.routing_strategy || "inherit";
-  const stickyLimit = settings?.sticky_limit || 3;
-  const ttlHours = Math.max(1, Math.round((settings?.affinity_ttl_minutes || 1440) / 60));
+  const [mode, setMode] = useState(settings?.routing_strategy || "inherit");
+  const [stickyLimit, setStickyLimit] = useState(settings?.sticky_limit || 3);
+  const [ttlHours, setTtlHours] = useState(Math.max(1, Math.round((settings?.affinity_ttl_minutes || 1440) / 60)));
   const rotatesAccounts = mode === "round-robin" || mode === "smart-round-robin";
+  const usesAffinity = mode === "smart-round-robin";
+  const savedMode = settings?.routing_strategy || "inherit";
+  const savedStickyLimit = settings?.sticky_limit || 3;
+  const savedTtlHours = Math.max(1, Math.round((settings?.affinity_ttl_minutes || 1440) / 60));
+  const dirty = mode !== savedMode || stickyLimit !== savedStickyLimit || ttlHours !== savedTtlHours;
+
+  useEffect(() => {
+    if (!saving) {
+      setMode(savedMode);
+      setStickyLimit(savedStickyLimit);
+      setTtlHours(savedTtlHours);
+    }
+  }, [savedMode, savedStickyLimit, savedTtlHours, saving]);
 
   const routingDescription = mode === "inherit"
     ? "Use the router-wide account strategy."
@@ -1116,57 +1129,84 @@ function RoutingControls({
         : "Preserve client affinity while balancing traffic across healthy accounts.";
 
   return (
-    <div className="grid gap-4 p-5 sm:p-6 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1fr)]">
-      <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-subtle)] p-4">
-        <label htmlFor="provider-routing-strategy" className="flex items-center gap-2 text-sm font-semibold">
-          <Route className="h-4 w-4 text-accent-600" />
-          Distribution strategy
-        </label>
-        <p className="mt-1 min-h-10 text-xs leading-5 text-[var(--text-muted)]">{routingDescription}</p>
-        <select
-          id="provider-routing-strategy"
-          value={mode}
-          disabled={saving}
-          onChange={(event) => onUpdate({ routing_strategy: event.target.value })}
-          className="mt-3 h-10 w-full rounded-xl border border-[var(--border)] bg-[var(--bg-elevated)] px-3 text-sm text-[var(--text)] outline-none transition-colors focus:border-accent-400 focus-visible:ring-2 focus-visible:ring-accent-400/40 disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          {routingOptions.map((option) => (
-            <option key={option.value} value={option.value}>{option.label}</option>
-          ))}
-        </select>
-      </div>
-
-      <div className={`rounded-xl border border-[var(--border)] p-4 ${rotatesAccounts ? "bg-[var(--bg-subtle)]" : "bg-[var(--bg-subtle)]/50 opacity-60"}`}>
-        <label htmlFor="provider-sticky-limit" className="text-sm font-semibold">Requests per account</label>
-        <p className="mt-1 min-h-10 text-xs leading-5 text-[var(--text-muted)]">Requests kept on one account before rotating.</p>
-        <Input
-          id="provider-sticky-limit"
-          type="number"
-          min={1}
-          max={100}
-          value={stickyLimit}
-          disabled={saving || !rotatesAccounts}
-          onChange={(event) => onUpdate({ sticky_limit: parseInt(event.target.value, 10) || 1 })}
-          className="mt-3"
-        />
-      </div>
-
-      <div className={`rounded-xl border border-[var(--border)] p-4 ${mode === "smart-round-robin" ? "bg-[var(--bg-subtle)]" : "bg-[var(--bg-subtle)]/50 opacity-60"}`}>
-        <label htmlFor="provider-affinity-ttl" className="text-sm font-semibold">Affinity lifetime</label>
-        <p className="mt-1 min-h-10 text-xs leading-5 text-[var(--text-muted)]">Hours before a client can be assigned to another account.</p>
-        <div className="relative mt-3">
-          <Input
-            id="provider-affinity-ttl"
-            type="number"
-            min={1}
-            max={168}
-            value={ttlHours}
-            disabled={saving || mode !== "smart-round-robin"}
-            onChange={(event) => onUpdate({ affinity_ttl_minutes: (parseInt(event.target.value, 10) || 1) * 60 })}
-            className="pr-14"
-          />
-          <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-[var(--text-muted)]">hours</span>
+    <div className="max-w-4xl p-5 sm:p-6">
+      <div className="flex items-start gap-3">
+        <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-accent-100 text-accent-700 dark:bg-accent-800/40 dark:text-accent-200">
+          <Route className="h-4 w-4" />
         </div>
+        <div>
+          <h3 className="text-sm font-semibold">Distribution strategy</h3>
+          <p className="mt-1 text-sm leading-5 text-[var(--text-muted)]">{routingDescription}</p>
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label="Distribution strategy">
+        {routingOptions.map((option) => {
+          const selected = mode === option.value;
+          return (
+            <button
+              key={option.value}
+              type="button"
+              role="radio"
+              aria-checked={selected}
+              disabled={saving}
+              onClick={() => setMode(option.value)}
+              className={`rounded-xl border px-3.5 py-3 text-left transition-[border-color,background-color,box-shadow] duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/50 disabled:cursor-not-allowed disabled:opacity-60 ${selected ? "border-accent-400 bg-accent-50 shadow-sm dark:bg-accent-900/20" : "border-[var(--border)] bg-[var(--bg-elevated)] hover:border-[var(--border-strong)] hover:bg-[var(--bg-subtle)]"}`}
+            >
+              <span className="block text-sm font-semibold">{option.label}</span>
+              <span className="mt-0.5 block text-xs leading-5 text-[var(--text-muted)]">
+                {option.value === "inherit" ? "Follow router-wide configuration." : option.value === "fill-first" ? "Keep the highest-priority healthy account in use." : option.value === "round-robin" ? "Rotate after a request window." : "Rotate while retaining client affinity."}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
+      {rotatesAccounts && (
+        <div className="mt-5 grid gap-4 border-t border-[var(--border)] pt-5 sm:grid-cols-2">
+          <Field label="Requests per account">
+            <Input
+              id="provider-sticky-limit"
+              type="number"
+              min={1}
+              max={100}
+              value={stickyLimit}
+              disabled={saving}
+              onChange={(event) => setStickyLimit(Math.max(1, parseInt(event.target.value, 10) || 1))}
+            />
+          </Field>
+          {usesAffinity && (
+            <Field label="Affinity lifetime (hours)">
+              <Input
+                id="provider-affinity-ttl"
+                type="number"
+                min={1}
+                max={168}
+                value={ttlHours}
+                disabled={saving}
+                onChange={(event) => setTtlHours(Math.max(1, parseInt(event.target.value, 10) || 1))}
+              />
+            </Field>
+          )}
+        </div>
+      )}
+
+      <div className="mt-5 flex flex-wrap items-center gap-3 border-t border-[var(--border)] pt-4">
+        <p className="min-w-0 flex-1 text-xs leading-5 text-[var(--text-muted)]" aria-live="polite">
+          {saving ? "Saving routing policy…" : dirty ? "Unsaved changes" : "Routing policy saved"}
+        </p>
+        {dirty && !saving && (
+          <Button variant="ghost" onClick={() => { setMode(savedMode); setStickyLimit(savedStickyLimit); setTtlHours(savedTtlHours); }}>
+            Discard
+          </Button>
+        )}
+        <Button
+          disabled={!dirty || saving}
+          onClick={() => onUpdate({ routing_strategy: mode, sticky_limit: stickyLimit, affinity_ttl_minutes: ttlHours * 60 })}
+        >
+          {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+          {saving ? "Saving…" : "Save changes"}
+        </Button>
       </div>
     </div>
   );
