@@ -13,7 +13,6 @@ services:
         # VERSION is given, the Dockerfile falls back to this so the dashboard
         # shows the commit instead of "dev".
         SOURCE_COMMIT: ${SOURCE_COMMIT:-}
-    image: ${KEIROUTER_IMAGE:-ghcr.io/zsgworks/keirouter:latest}
     restart: unless-stopped
     ports:
       - "${KEIROUTER_PORT:-20180}:20180"

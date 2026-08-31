@@ -1,33 +1,9 @@
 # Deploy KeiRouter
 
-KeiRouter can run as a local binary, a single Docker container with SQLite, or a
-container plus Postgres for team/VPS deployments.
-
-## Quick Start (Pre-built Docker Image)
-
-Pull and run the latest public image from GitHub Container Registry:
-
-```bash
-docker pull ghcr.io/zsgworks/keirouter:latest
-
-# Run with docker compose (recommended)
-docker compose up -d
-```
-
-Or run directly with Docker:
-
-```bash
-docker run -d \
-  --name keirouter \
-  -p 20180:20180 \
-  -v keirouter-data:/data \
-  ghcr.io/zsgworks/keirouter:latest
-```
-
-Available tags:
-- `ghcr.io/zsgworks/keirouter:latest` — latest stable from `main`
-- `ghcr.io/zsgworks/keirouter:1.2.3` — specific version
-- `ghcr.io/zsgworks/keirouter:sha-abc1234` — pinned to a commit
+KeiRouter runs from source as a local binary, a single Docker container with
+SQLite, or a container plus Postgres for team/VPS deployments. Docker Compose
+and Coolify build `deploy/Dockerfile` from this repository; no pre-built
+container images are published.
 
 ## Local Development (One-Liner)
 
@@ -57,7 +33,8 @@ curl -fsSL https://raw.githubusercontent.com/ZSGWorks/keirouter/main/scripts/ins
 keirouter
 ```
 
-If you prefer Docker and do not want Go/Node.js on the machine:
+If you prefer Docker and do not want Go or Node.js on the host, Docker Compose
+builds the source checkout inside the container:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ZSGWorks/keirouter/main/scripts/install.sh | bash -s -- --docker
@@ -148,7 +125,7 @@ Deploying KeiRouter on [Coolify](https://coolify.io/) is highly recommended as i
 6. **Persistent Storage**:
     `compose.coolify-postgres.yaml` declares `keirouter-data` at `/data` for runtime secrets. Database data stays in the separate Coolify Postgres resource.
 7. **Network**: The Compose file joins Coolify's external `coolify` network so it can resolve the Postgres resource's internal hostname. Change that network name in the file if your Coolify host uses a different one.
-8. **Deploy**: Click **Deploy**. Coolify builds `deploy/Dockerfile` from this repository before starting KeiRouter. Set `KEIROUTER_VERSION` to stamp a release version; otherwise the Coolify-injected `SOURCE_COMMIT` is shown in the dashboard.
+8. **Deploy**: Click **Deploy**. Coolify builds `deploy/Dockerfile` from this repository before starting KeiRouter. The Coolify-injected `SOURCE_COMMIT` is shown in the dashboard; leave `KEIROUTER_VERSION` unset for normal development deployments.
 
 ### Using External/Managed Postgres on Coolify
 

@@ -42,7 +42,7 @@ React dashboard; SQLite default, PostgreSQL optional.
 - `@keirouter-opencode-plugin/`: independent Node 22+ TypeScript OpenCode plugin.
 - `skills/`: agent `SKILL.md` gateway integrations.
 - `deploy/`, `compose*.yaml`: production image, SQLite/Postgres/Presidio deployments.
-- `.github/workflows/`: CI, releases, Docker publish.
+- `.github/workflows/`: issue and pull-request templates only; no CI, release, or Docker publishing automation.
 
 ### Local Run
 
