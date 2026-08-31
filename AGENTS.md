@@ -52,16 +52,23 @@ make dev                 # backend :20180; Vite dashboard :5180
 make build               # frontend assets + Go binary
 make test                # backend: go test ./...
 make vet                 # backend: go vet ./...
+./scripts/verify.sh      # former CI-equivalent local verification
 cd frontend && npm run typecheck
 cd @keirouter-opencode-plugin && npm test && npm run build
 ```
 
-Frontend Vite proxy sends API calls to backend `:20180`. CI runs Go vet/tests,
-PostgreSQL store compatibility test, frontend typecheck/build, Compose validation,
-Docker image build. No `frontend` lint script exists; do not run or document one.
+Frontend Vite proxy sends API calls to backend `:20180`. Before handoff, run
+`./scripts/verify.sh` for changes spanning backend, frontend, deployment, or
+workflow-equivalent validation. It installs locked dependencies, starts and removes
+a temporary PostgreSQL container, and runs Go, frontend, Compose, and Docker checks.
+Plugin edits additionally require `cd @keirouter-opencode-plugin && npm test && npm run build`.
+No `frontend` lint script exists; do not run or document one.
 
 ### Change Rules
 
+- Fork maintenance: point user-facing operational ownership (URLs, images, installers,
+  skills, and update targets) at `ZSGWorks/keirouter`. Preserve the Go module/import
+  path, repository layout, and `upstream` remote so upstream merges remain mechanical.
 - Go: keep tests beside code; run `gofmt`, `make vet`, `make test` for backend changes.
 - Frontend: strict TypeScript; run `npm run typecheck`; build when assets/routes change.
 - Plugin: run its own tests/build after plugin edits.

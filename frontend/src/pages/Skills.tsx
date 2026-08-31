@@ -152,7 +152,7 @@ export function SkillsPage() {
 
 function ReferenceSkillRow({ skill }: { skill: { id: string; name: string; endpoint: string | null; description: string } }) {
   const [copied, setCopied] = useState(false);
-  const url = `https://raw.githubusercontent.com/mydisha/keirouter/main/skills/${skill.id}/SKILL.md`;
+  const url = `https://raw.githubusercontent.com/ZSGWorks/keirouter/main/skills/${skill.id}/SKILL.md`;
 
   const copy = () => {
     navigator.clipboard.writeText(url);

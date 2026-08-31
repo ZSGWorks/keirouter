@@ -8,7 +8,7 @@ If you discover a security vulnerability in KeiRouter, please report it responsi
 
 Instead, please report via one of these methods:
 
-1. **GitHub Private Advisory** (preferred): Use [GitHub's private vulnerability reporting](https://github.com/mydisha/keirouter/security/advisories/new)
+1. **GitHub Private Advisory** (preferred): Use [GitHub's private vulnerability reporting](https://github.com/ZSGWorks/keirouter/security/advisories/new)
 2. **Email**: Send details to the maintainers via the contact information in the repository
 
 Please include:

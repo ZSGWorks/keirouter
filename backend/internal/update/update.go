@@ -17,7 +17,7 @@ import (
 )
 
 // defaultRepo is the GitHub "owner/name" slug releases are fetched from.
-const defaultRepo = "mydisha/keirouter"
+const defaultRepo = "ZSGWorks/keirouter"
 
 // defaultTTL is how long a successful check is cached before refreshing.
 const defaultTTL = 15 * time.Minute

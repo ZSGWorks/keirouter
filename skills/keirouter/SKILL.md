@@ -45,13 +45,13 @@ When the user needs a specific capability, fetch that skill's `SKILL.md` from it
 
 | Capability | Raw URL |
 |---|---|
-| Chat / code-gen | https://raw.githubusercontent.com/mydisha/keirouter/main/skills/keirouter-chat/SKILL.md |
-| Image generation | https://raw.githubusercontent.com/mydisha/keirouter/main/skills/keirouter-image/SKILL.md |
-| Text-to-speech | https://raw.githubusercontent.com/mydisha/keirouter/main/skills/keirouter-tts/SKILL.md |
-| Speech-to-text | https://raw.githubusercontent.com/mydisha/keirouter/main/skills/keirouter-stt/SKILL.md |
-| Embeddings | https://raw.githubusercontent.com/mydisha/keirouter/main/skills/keirouter-embeddings/SKILL.md |
-| Web search | https://raw.githubusercontent.com/mydisha/keirouter/main/skills/keirouter-web-search/SKILL.md |
-| Web fetch (URL → markdown) | https://raw.githubusercontent.com/mydisha/keirouter/main/skills/keirouter-web-fetch/SKILL.md |
+| Chat / code-gen | https://raw.githubusercontent.com/ZSGWorks/keirouter/main/skills/keirouter-chat/SKILL.md |
+| Image generation | https://raw.githubusercontent.com/ZSGWorks/keirouter/main/skills/keirouter-image/SKILL.md |
+| Text-to-speech | https://raw.githubusercontent.com/ZSGWorks/keirouter/main/skills/keirouter-tts/SKILL.md |
+| Speech-to-text | https://raw.githubusercontent.com/ZSGWorks/keirouter/main/skills/keirouter-stt/SKILL.md |
+| Embeddings | https://raw.githubusercontent.com/ZSGWorks/keirouter/main/skills/keirouter-embeddings/SKILL.md |
+| Web search | https://raw.githubusercontent.com/ZSGWorks/keirouter/main/skills/keirouter-web-search/SKILL.md |
+| Web fetch (URL → markdown) | https://raw.githubusercontent.com/ZSGWorks/keirouter/main/skills/keirouter-web-fetch/SKILL.md |
 
 ## Supported providers (highlights)
 

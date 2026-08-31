@@ -5,7 +5,7 @@ description: Web search via KeiRouter /v1/search using Tavily / Exa / Brave / Se
 
 # KeiRouter — Web Search
 
-Requires `KEIROUTER_URL` (and `KEIROUTER_KEY` if auth enabled). See https://raw.githubusercontent.com/mydisha/keirouter/main/skills/keirouter/SKILL.md for setup.
+Requires `KEIROUTER_URL` (and `KEIROUTER_KEY` if auth enabled). See https://raw.githubusercontent.com/ZSGWorks/keirouter/main/skills/keirouter/SKILL.md for setup.
 
 ## Discover
 

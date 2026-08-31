@@ -8,7 +8,7 @@ container plus Postgres for team/VPS deployments.
 Pull and run the latest public image from GitHub Container Registry:
 
 ```bash
-docker pull ghcr.io/mydisha/keirouter:latest
+docker pull ghcr.io/zsgworks/keirouter:latest
 
 # Run with docker compose (recommended)
 docker compose up -d
@@ -21,20 +21,20 @@ docker run -d \
   --name keirouter \
   -p 20180:20180 \
   -v keirouter-data:/data \
-  ghcr.io/mydisha/keirouter:latest
+  ghcr.io/zsgworks/keirouter:latest
 ```
 
 Available tags:
-- `ghcr.io/mydisha/keirouter:latest` — latest stable from `main`
-- `ghcr.io/mydisha/keirouter:1.2.3` — specific version
-- `ghcr.io/mydisha/keirouter:sha-abc1234` — pinned to a commit
+- `ghcr.io/zsgworks/keirouter:latest` — latest stable from `main`
+- `ghcr.io/zsgworks/keirouter:1.2.3` — specific version
+- `ghcr.io/zsgworks/keirouter:sha-abc1234` — pinned to a commit
 
 ## Local Development (One-Liner)
 
 Run this single command — it clones, installs deps, and starts everything:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mydisha/keirouter/main/scripts/quickstart.sh | bash
+curl -fsSL https://raw.githubusercontent.com/ZSGWorks/keirouter/main/scripts/quickstart.sh | bash
 ```
 
 No `.env`, no config, no manual steps. It will:
@@ -53,14 +53,14 @@ Dashboard: http://localhost:5180 (password: `keirouter`)
 Build and install the binary + dashboard assets system-wide:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mydisha/keirouter/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/ZSGWorks/keirouter/main/scripts/install.sh | bash
 keirouter
 ```
 
 If you prefer Docker and do not want Go/Node.js on the machine:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mydisha/keirouter/main/scripts/install.sh | bash -s -- --docker
+curl -fsSL https://raw.githubusercontent.com/ZSGWorks/keirouter/main/scripts/install.sh | bash -s -- --docker
 ```
 
 ## VPS Deployment Guide
@@ -71,7 +71,7 @@ This is the simplest way to get KeiRouter running on a clean VPS (Ubuntu/Debian)
 
 **1. Clone the repository**
 ```bash
-git clone https://github.com/mydisha/keirouter.git
+git clone https://github.com/ZSGWorks/keirouter.git
 cd keirouter
 ```
 
@@ -126,7 +126,7 @@ Deploying KeiRouter on [Coolify](https://coolify.io/) is highly recommended as i
 
 1. **Create Postgres**: In your Coolify project and environment, add a **PostgreSQL** resource first. Copy its internal connection URL from the resource's Connection tab.
 2. **Create KeiRouter Resource**: Add a **Git Repository** resource and enter:
-    - **Repository URL**: `https://github.com/mydisha/keirouter`
+    - **Repository URL**: `https://github.com/ZSGWorks/keirouter`
     - **Branch**: `main`
 3. **Build Pack**: Select **Docker Compose**. Set **Docker Compose Location** to `compose.coolify-postgres.yaml`.
 4. **Configuration**:
