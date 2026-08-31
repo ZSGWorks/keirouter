@@ -95,5 +95,11 @@ jobs:
       - name: Validate Postgres Compose override
         run: docker compose -f compose.yaml -f compose.postgres.yaml config
 
+      - name: Validate Coolify Postgres Compose
+        env:
+          KEIROUTER_MASTER_KEY: test-master-key
+          KEIROUTER_DATABASE__DSN: postgres://user:password@postgres:5432/keirouter?sslmode=disable
+        run: docker compose -f compose.coolify-postgres.yaml config
+
       - name: Build Docker image
         run: docker build -f deploy/Dockerfile -t keirouter:test .
