@@ -1,0 +1,33 @@
+name: keirouter
+
+services:
+  keirouter:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+      args:
+        VERSION: ${KEIROUTER_VERSION:-dev}
+        SOURCE_COMMIT: ${SOURCE_COMMIT:-}
+    restart: unless-stopped
+    environment:
+      KEIROUTER_DATA__DIR: /data
+      KEIROUTER_SERVER__HOST: 0.0.0.0
+      KEIROUTER_SERVER__PORT: 20180
+      KEIROUTER_SECURITY__BIND_LOOPBACK_ONLY: ${KEIROUTER_BIND_LOOPBACK_ONLY:-false}
+      KEIROUTER_SECURITY__TRUST_FORWARDED_HEADERS: ${KEIROUTER_TRUST_FORWARDED_HEADERS:-true}
+      KEIROUTER_SECURITY__MASTER_KEY: ${KEIROUTER_MASTER_KEY:?set master key}
+      KEIROUTER_DATABASE__DRIVER: postgres
+      KEIROUTER_DATABASE__DSN: ${KEIROUTER_DATABASE__DSN:?set postgres DSN}
+      KEIROUTER_LOG__FORMAT: ${KEIROUTER_LOG_FORMAT:-json}
+      KEIROUTER_SECURITY__ALLOW_PRIVATE_BASE_URL: ${KEIROUTER_SECURITY__ALLOW_PRIVATE_BASE_URL:-false}
+    volumes:
+      - keirouter-data:/data
+    networks:
+      - coolify
+
+networks:
+  coolify:
+    external: true
+
+volumes:
+  keirouter-data:

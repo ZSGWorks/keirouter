@@ -12,7 +12,7 @@ Thanks for your interest in contributing! This document covers everything you ne
 
 ```bash
 # Clone the repo
-git clone https://github.com/mydisha/keirouter.git
+git clone https://github.com/ZSGWorks/keirouter.git
 cd keirouter
 
 # Install dependencies
@@ -73,11 +73,11 @@ deploy/              Dockerfile + compose
 
 ## Reporting bugs
 
-Open a [GitHub Issue](https://github.com/mydisha/keirouter/issues/new?template=bug_report.md) with steps to reproduce, expected behavior, and your environment.
+Open a [GitHub Issue](https://github.com/ZSGWorks/keirouter/issues/new?template=bug_report.md) with steps to reproduce, expected behavior, and your environment.
 
 ## Suggesting features
 
-Open a [GitHub Issue](https://github.com/mydisha/keirouter/issues/new?template=feature_request.md) describing the problem you want solved and your proposed approach.
+Open a [GitHub Issue](https://github.com/ZSGWorks/keirouter/issues/new?template=feature_request.md) describing the problem you want solved and your proposed approach.
 
 ## Security
 

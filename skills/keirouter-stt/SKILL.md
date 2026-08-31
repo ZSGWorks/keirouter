@@ -5,7 +5,7 @@ description: Speech-to-text via KeiRouter /v1/audio/transcriptions using OpenAI 
 
 # KeiRouter — Speech-to-Text
 
-Requires `KEIROUTER_URL` (and `KEIROUTER_KEY` if auth enabled). See https://raw.githubusercontent.com/mydisha/keirouter/main/skills/keirouter/SKILL.md for setup.
+Requires `KEIROUTER_URL` (and `KEIROUTER_KEY` if auth enabled). See https://raw.githubusercontent.com/ZSGWorks/keirouter/main/skills/keirouter/SKILL.md for setup.
 
 ## Discover
 

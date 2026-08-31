@@ -54,3 +54,4 @@ data/
 *.swp
 .kiro/*
 node_modules/
+opencode.json

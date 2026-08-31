@@ -5,7 +5,7 @@ description: Generate images via KeiRouter /v1/images/generations using OpenAI D
 
 # KeiRouter — Image Generation
 
-Requires `KEIROUTER_URL` (and `KEIROUTER_KEY` if auth enabled). See https://raw.githubusercontent.com/mydisha/keirouter/main/skills/keirouter/SKILL.md for setup.
+Requires `KEIROUTER_URL` (and `KEIROUTER_KEY` if auth enabled). See https://raw.githubusercontent.com/ZSGWorks/keirouter/main/skills/keirouter/SKILL.md for setup.
 
 ## Discover
 

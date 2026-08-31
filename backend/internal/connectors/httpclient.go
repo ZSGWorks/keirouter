@@ -641,6 +641,10 @@ func shouldRetryFreshConnection(ctx context.Context, err error) bool {
 
 // httpStatusError maps an HTTP error status to a structured ProviderError.
 func httpStatusError(provider, model string, resp *http.Response, body []byte) error {
+	return httpStatusErrorAt(provider, model, resp, body, time.Now())
+}
+
+func httpStatusErrorAt(provider, model string, resp *http.Response, body []byte, now time.Time) error {
 	kind := core.ErrUpstream
 	var retryAfter time.Duration
 	var creditsExhausted bool
@@ -659,7 +663,7 @@ func httpStatusError(provider, model string, resp *http.Response, body []byte) e
 		}
 	case resp.StatusCode == http.StatusPaymentRequired:
 		kind = core.ErrQuotaExhausted
-		if wait := githubMonthlyUsageRetryAfter(provider, resp.StatusCode, body, time.Now()); wait > 0 {
+		if wait := githubMonthlyUsageRetryAfter(provider, resp.StatusCode, body, now); wait > 0 {
 			retryAfter = wait
 		} else {
 			creditsExhausted = true

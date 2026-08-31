@@ -5,7 +5,7 @@ description: Chat / code generation via KeiRouter using OpenAI /v1/chat/completi
 
 # KeiRouter — Chat
 
-Requires `KEIROUTER_URL` (and `KEIROUTER_KEY` if auth enabled). See https://raw.githubusercontent.com/mydisha/keirouter/main/skills/keirouter/SKILL.md for setup.
+Requires `KEIROUTER_URL` (and `KEIROUTER_KEY` if auth enabled). See https://raw.githubusercontent.com/ZSGWorks/keirouter/main/skills/keirouter/SKILL.md for setup.
 
 ## Endpoints
 

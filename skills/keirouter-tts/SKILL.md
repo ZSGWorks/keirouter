@@ -5,7 +5,7 @@ description: Text-to-speech via KeiRouter /v1/audio/speech using OpenAI / Eleven
 
 # KeiRouter — Text-to-Speech
 
-Requires `KEIROUTER_URL` (and `KEIROUTER_KEY` if auth enabled). See https://raw.githubusercontent.com/mydisha/keirouter/main/skills/keirouter/SKILL.md for setup.
+Requires `KEIROUTER_URL` (and `KEIROUTER_KEY` if auth enabled). See https://raw.githubusercontent.com/ZSGWorks/keirouter/main/skills/keirouter/SKILL.md for setup.
 
 ## Discover
 

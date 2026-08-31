@@ -6,7 +6,7 @@
 #   bash scripts/quickstart.sh
 #
 # Or from anywhere via curl:
-#   curl -fsSL https://raw.githubusercontent.com/mydisha/keirouter/main/scripts/quickstart.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/ZSGWorks/keirouter/main/scripts/quickstart.sh | bash
 #
 # What it does:
 #   1. Detects or clones the repo
@@ -23,7 +23,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
-REPO="https://github.com/mydisha/keirouter.git"
+REPO="https://github.com/ZSGWorks/keirouter.git"
 BRANCH="${KEIROUTER_BRANCH:-main}"
 
 # ── Pretty output ────────────────────────────────────────────────────────────

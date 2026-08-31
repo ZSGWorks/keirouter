@@ -44,13 +44,13 @@ func TestCheckerFetchAndCache(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(githubRelease{
 			TagName:     "v0.2.0",
 			Body:        "## What's New\n- Faster routing\n- Bug fixes",
-			HTMLURL:     "https://github.com/mydisha/keirouter/releases/tag/v0.2.0",
+			HTMLURL:     "https://github.com/ZSGWorks/keirouter/releases/tag/v0.2.0",
 			PublishedAt: "2026-06-01T00:00:00Z",
 		})
 	}))
 	defer srv.Close()
 
-	c := NewChecker("v0.1.0", "mydisha/keirouter")
+	c := NewChecker("v0.1.0", "ZSGWorks/keirouter")
 	// Point the checker at the test server by overriding fetch URL via a custom
 	// client transport that rewrites the host.
 	c.client = srv.Client()

@@ -9,9 +9,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/mydisha/keirouter/actions/workflows/ci.yml"><img src="https://github.com/mydisha/keirouter/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://go.dev/"><img src="https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go&logoColor=white" alt="Go 1.24+"></a>
-  <a href="https://github.com/mydisha/keirouter/pkgs/container/keirouter"><img src="https://img.shields.io/badge/Docker-GHCR-2496ED?logo=docker&logoColor=white" alt="Docker Image"></a>
+  <a href="https://github.com/ZSGWorks/keirouter/pkgs/container/keirouter"><img src="https://img.shields.io/badge/Docker-GHCR-2496ED?logo=docker&logoColor=white" alt="Docker Image"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
 </p>
 
@@ -101,8 +100,6 @@ Grab whichever path matches what's already on your machine — no need to instal
 
 | Method | You'll need | Great for |
 |---|---|---|
-| **Homebrew** | macOS or Linux with Homebrew | The fastest way to a prebuilt binary |
-| **Windows** | Windows 10/11 with PowerShell | Prebuilt binary, no Go/Node |
 | **From source** | Go 1.24+ and Node.js 20+ | Local hacking / latest `main` |
 | **Docker** | Just Docker | Clean, isolated runs |
 | **Docker Compose** | Docker + Docker Compose | VPS / production / Coolify |
@@ -110,25 +107,12 @@ Grab whichever path matches what's already on your machine — no need to instal
 ### Pick your install
 
 <details open>
-<summary><strong>Option A — Homebrew (macOS &amp; Linux)</strong> · the easy button</summary>
-
-```bash
-brew tap mydisha/keirouter https://github.com/mydisha/keirouter
-brew install keirouter
-
-keirouter -bootstrap   # mint your first API key (printed once — don't blink)
-keirouter start        # fire up the server on :20180
-keirouter tray         # or run in background with system tray icon
-```
-</details>
-
-<details>
-<summary><strong>Option B — One-line from source</strong> · for the tinkerers</summary>
+<summary><strong>Option A — One-line from source</strong> · for the tinkerers</summary>
 
 Needs **Go 1.24+** and **Node.js 20+**. No cloning, no `.env`, no config wrangling:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mydisha/keirouter/main/scripts/quickstart.sh | bash
+curl -fsSL https://raw.githubusercontent.com/ZSGWorks/keirouter/main/scripts/quickstart.sh | bash
 ```
 
 It clones the repo to `~/keirouter`, installs everything, and starts the backend on `:20180` and the dashboard on `:5180`.
@@ -137,44 +121,24 @@ It clones the repo to `~/keirouter`, installs everything, and starts the backend
 </details>
 
 <details>
-<summary><strong>Option C — Docker</strong> · no Go/Node, no problem</summary>
+<summary><strong>Option B — Docker</strong> · no Go/Node, no problem</summary>
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mydisha/keirouter/main/scripts/install.sh | bash -s -- --docker
+curl -fsSL https://raw.githubusercontent.com/ZSGWorks/keirouter/main/scripts/install.sh | bash -s -- --docker
 ```
 </details>
 
 <details>
-<summary><strong>Option D — Docker Compose</strong> · ship it (VPS / production / Coolify)</summary>
+<summary><strong>Option C — Docker Compose</strong> · ship it (VPS / production / Coolify)</summary>
 
 ```bash
-git clone https://github.com/mydisha/keirouter.git
+git clone https://github.com/ZSGWorks/keirouter.git
 cd keirouter
 cp .env.example .env       # set KEIROUTER_MASTER_KEY before going to prod
 docker compose up -d --build
 ```
 
 VPS, PostgreSQL, and Coolify notes live in [deploy/README.md](deploy/README.md).
-</details>
-
-<details>
-<summary><strong>Option E — Windows</strong> · prebuilt, no Go/Node needed</summary>
-
-Open **PowerShell** and run:
-
-```powershell
-irm https://raw.githubusercontent.com/mydisha/keirouter/main/scripts/install.ps1 | iex
-```
-
-It downloads the latest prebuilt binary, drops it (plus the dashboard) into `%LOCALAPPDATA%\KeiRouter`, and adds it to your PATH. Open a **new** terminal afterwards, then:
-
-```powershell
-keirouter -bootstrap   # mint your first API key (printed once)
-keirouter start        # start the server on :20180
-keirouter tray         # or run in background with system tray icon
-```
-
-> Pin a version or change the location with `$env:KEIROUTER_VERSION` / `$env:KEIROUTER_DIR` before running the one-liner.
 </details>
 
 ### First login

@@ -1,40 +1,16 @@
 # Deploy KeiRouter
 
-KeiRouter can run as a local binary, a single Docker container with SQLite, or a
-container plus Postgres for team/VPS deployments.
-
-## Quick Start (Pre-built Docker Image)
-
-Pull and run the latest public image from GitHub Container Registry:
-
-```bash
-docker pull ghcr.io/mydisha/keirouter:latest
-
-# Run with docker compose (recommended)
-docker compose up -d
-```
-
-Or run directly with Docker:
-
-```bash
-docker run -d \
-  --name keirouter \
-  -p 20180:20180 \
-  -v keirouter-data:/data \
-  ghcr.io/mydisha/keirouter:latest
-```
-
-Available tags:
-- `ghcr.io/mydisha/keirouter:latest` — latest stable from `main`
-- `ghcr.io/mydisha/keirouter:1.2.3` — specific version
-- `ghcr.io/mydisha/keirouter:sha-abc1234` — pinned to a commit
+KeiRouter runs from source as a local binary, a single Docker container with
+SQLite, or a container plus Postgres for team/VPS deployments. Docker Compose
+and Coolify build `deploy/Dockerfile` from this repository; no pre-built
+container images are published.
 
 ## Local Development (One-Liner)
 
 Run this single command — it clones, installs deps, and starts everything:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mydisha/keirouter/main/scripts/quickstart.sh | bash
+curl -fsSL https://raw.githubusercontent.com/ZSGWorks/keirouter/main/scripts/quickstart.sh | bash
 ```
 
 No `.env`, no config, no manual steps. It will:
@@ -53,14 +29,15 @@ Dashboard: http://localhost:5180 (password: `keirouter`)
 Build and install the binary + dashboard assets system-wide:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mydisha/keirouter/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/ZSGWorks/keirouter/main/scripts/install.sh | bash
 keirouter
 ```
 
-If you prefer Docker and do not want Go/Node.js on the machine:
+If you prefer Docker and do not want Go or Node.js on the host, Docker Compose
+builds the source checkout inside the container:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mydisha/keirouter/main/scripts/install.sh | bash -s -- --docker
+curl -fsSL https://raw.githubusercontent.com/ZSGWorks/keirouter/main/scripts/install.sh | bash -s -- --docker
 ```
 
 ## VPS Deployment Guide
@@ -71,7 +48,7 @@ This is the simplest way to get KeiRouter running on a clean VPS (Ubuntu/Debian)
 
 **1. Clone the repository**
 ```bash
-git clone https://github.com/mydisha/keirouter.git
+git clone https://github.com/ZSGWorks/keirouter.git
 cd keirouter
 ```
 
@@ -124,39 +101,37 @@ Deploying KeiRouter on [Coolify](https://coolify.io/) is highly recommended as i
 
 ### Deployment Steps
 
-1. **Create a New Resource**: In your Coolify dashboard, create a new resource and select **Project** -> **Environment** -> **Add New Resource**.
-2. **Select Source**: Choose **Git Repository** (Public) and enter:
-   - **Repository URL**: `https://github.com/mydisha/keirouter`
-   - **Branch**: `main`
-3. **Build Pack**: Select **Docker Compose** as the build pack. Pastikan Anda mengatur **Docker Compose Location** (atau *Compose file path*) ke `compose.yaml` karena Coolify mungkin mencari `docker-compose.yaml` secara default.
+1. **Create Postgres**: In your Coolify project and environment, add a **PostgreSQL** resource first. Copy its internal connection URL from the resource's Connection tab.
+2. **Create KeiRouter Resource**: Add a **Git Repository** resource and enter:
+    - **Repository URL**: `https://github.com/ZSGWorks/keirouter`
+    - **Branch**: `main`
+3. **Build Pack**: Select **Docker Compose**. Set **Docker Compose Location** to `compose.coolify-postgres.yaml`.
 4. **Configuration**:
-   - **Domains**: Enter your custom domain (e.g., `https://keirouter.yourdomain.com`). Coolify will automatically map this to the exposed port.
-   - **Port**: Make sure the container port is set to `20180` (this is the port KeiRouter listens on inside the container).
+    - **Domains**: Enter your custom domain with its container target port (e.g., `https://keirouter.yourdomain.com:20180`). Coolify uses the suffix to route to port `20180`; it does not expose port `20180` publicly.
 5. **Environment Variables**:
-   Navigate to the Environment Variables tab in Coolify and add the following variables (Switch to Developer view to edit as text):
-   ```env
-   KEIROUTER_SERVER__HOST=0.0.0.0
-   KEIROUTER_SERVER__PORT=20180
-   KEIROUTER_SECURITY__BIND_LOOPBACK_ONLY=false
+    Navigate to the Environment Variables tab in Coolify and add the following variables (Switch to Developer view to edit as text):
+    ```env
+    KEIROUTER_BIND_LOOPBACK_ONLY=false
    # Coolify terminates TLS and forwards via X-Forwarded-Proto; trusting it
    # (the default) makes the dashboard session cookie Secure over HTTPS.
-   KEIROUTER_SECURITY__TRUST_FORWARDED_HEADERS=true
-   # Generate a 32-byte base64 key locally and paste it here:
-   KEIROUTER_SECURITY__MASTER_KEY=<your_generated_master_key>
-   KEIROUTER_LOG__FORMAT=json
-   ```
+    KEIROUTER_TRUST_FORWARDED_HEADERS=true
+    # Generate a 32-byte base64 key locally and paste it here:
+    KEIROUTER_MASTER_KEY=<your_generated_master_key>
+    # Use the Coolify Postgres resource's internal connection URL. Add
+    # sslmode=require when the resource enforces TLS.
+    KEIROUTER_DATABASE__DSN=postgres://USER:PASSWORD@HOST:5432/DB?sslmode=disable
+    KEIROUTER_LOG_FORMAT=json
+    ```
 6. **Persistent Storage**:
-   KeiRouter needs persistent storage for its SQLite database and runtime secrets. In Coolify, go to the **Storages** tab and create a volume:
-   - **Name**: `keirouter-data`
-   - **Destination**: `/data`
-7. **Deploy**: Click the **Deploy** button. Coolify will build the Docker image and start the container.
+    `compose.coolify-postgres.yaml` declares `keirouter-data` at `/data` for runtime secrets. Database data stays in the separate Coolify Postgres resource.
+7. **Network**: The Compose file joins Coolify's external `coolify` network so it can resolve the Postgres resource's internal hostname. Change that network name in the file if your Coolify host uses a different one.
+8. **Deploy**: Click **Deploy**. Coolify builds `deploy/Dockerfile` from this repository before starting KeiRouter. The Coolify-injected `SOURCE_COMMIT` is shown in the dashboard; leave `KEIROUTER_VERSION` unset for normal development deployments.
 
 ### Using External/Managed Postgres on Coolify
 
-If you provisioned a Postgres database on Coolify or use an external managed DB, add these additional environment variables to your KeiRouter resource:
+`compose.coolify-postgres.yaml` already sets the Postgres driver. Supply its required DSN in the Coolify environment:
 
 ```env
-KEIROUTER_DATABASE__DRIVER=postgres
 KEIROUTER_DATABASE__DSN=postgres://USER:PASSWORD@HOST:5432/DB?sslmode=require
 ```
 *(Replace `USER`, `PASSWORD`, `HOST`, and `DB` with your Postgres credentials).*
@@ -172,7 +147,7 @@ For the local source installer, rerun the install command.
 
 ## Security Notes
 
-- Keep `KEIROUTER_SECURITY__MASTER_KEY` stable and backed up.
+- Keep `KEIROUTER_MASTER_KEY` stable and backed up.
 - Use HTTPS when exposing the dashboard outside localhost.
 - The dashboard has session auth, but production deployments should still sit
   behind a reverse proxy, firewall, or platform access control.

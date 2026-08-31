@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="${KEIROUTER_REPO:-https://github.com/mydisha/keirouter.git}"
+REPO="${KEIROUTER_REPO:-https://github.com/ZSGWorks/keirouter.git}"
 BRANCH="${KEIROUTER_BRANCH:-main}"
 INSTALL_DIR="${KEIROUTER_DIR:-$HOME/.keirouter}"
 BIN_DIR="${KEIROUTER_BIN_DIR:-/usr/local/bin}"

@@ -85,7 +85,7 @@ func (t *Tray) Run(ctx context.Context) error {
 	// Documentation
 	menu.Add("Documentation", func() {
 		if t.opts.OnOpenURL != nil {
-			t.opts.OnOpenURL("https://github.com/mydisha/keirouter")
+			t.opts.OnOpenURL("https://github.com/ZSGWorks/keirouter")
 		}
 	})
 
