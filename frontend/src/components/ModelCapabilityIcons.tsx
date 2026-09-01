@@ -6,7 +6,7 @@ export function ModelCapabilityIcons({
   size = 15,
   className = "",
 }: {
-  capabilities?: ModelCapabilities;
+  capabilities?: Partial<ModelCapabilities>;
   size?: number;
   className?: string;
 }) {

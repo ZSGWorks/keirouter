@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"log/slog"
@@ -12,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/require"
 
+	"github.com/mydisha/keirouter/backend/internal/capability"
 	"github.com/mydisha/keirouter/backend/internal/config"
 	"github.com/mydisha/keirouter/backend/internal/connectors"
 	"github.com/mydisha/keirouter/backend/internal/core"
@@ -181,4 +183,89 @@ func TestDeleteCustomProvider_RepoReturnsNotFoundForMissing(t *testing.T) {
 	// And the handler maps it to 404 when it slips past the probe.
 	code, body := deleteCustomProvider(t, s, "custom-anthropic-ghost")
 	require.Equal(t, http.StatusNotFound, code, body)
+}
+
+// TestCustomModelCapabilityRoundTrip covers the user-declared capability
+// override end to end: create a custom model with capability ticks on an
+// Ollama provider, verify they persist through the store and resolve through
+// the capability registry (dispatch/stripping source of truth).
+func TestCustomModelCapabilityRoundTrip(t *testing.T) {
+	s, db := newCustomProviderTestServer(t)
+	ctx := context.Background()
+
+	const providerID = "ollama-local"
+
+	// A text-only model whose id would otherwise match the *gemma* vision
+	// pattern, plus a vision model with an id no heuristic knows.
+	create := func(modelID string, caps map[string]bool) store.CustomModel {
+		body, err := json.Marshal(map[string]any{
+			"id": modelID, "kind": "llm", "capabilities": caps,
+		})
+		require.NoError(t, err)
+		req := withChiID(http.MethodPost, "/providers/"+providerID+"/custom-models", providerID)
+		req = httptest.NewRequest(http.MethodPost, "/providers/"+providerID+"/custom-models", bytes.NewReader(body)).WithContext(req.Context())
+		rec := httptest.NewRecorder()
+		s.adminCreateCustomModel(rec, req)
+		require.Equal(t, http.StatusCreated, rec.Code, "create %s: %s", modelID, rec.Body.String())
+		var out struct {
+			Capabilities map[string]bool `json:"capabilities"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
+		require.Equal(t, caps, out.Capabilities, "handler should echo the persisted capabilities")
+		models, gerr := db.CustomProviders().ListManualModelsByProvider(ctx, providerID)
+		require.NoError(t, gerr)
+		for _, cm := range models {
+			if cm.ModelID == modelID {
+				return cm
+			}
+		}
+		t.Fatalf("created model %s not found", modelID)
+		return store.CustomModel{}
+	}
+
+	textOnly := create("gemma3:4b-test", map[string]bool{"vision": false})
+	_ = create("my-vision-finetune", map[string]bool{"vision": true, "reasoning": true})
+
+	// Unknown capability names are rejected.
+	badReq := withChiID(http.MethodPost, "/providers/"+providerID+"/custom-models", providerID)
+	badReq = httptest.NewRequest(http.MethodPost, "/providers/"+providerID+"/custom-models",
+		bytes.NewReader([]byte(`{"id":"bad","kind":"llm","capabilities":{"telepathy":true}}`))).WithContext(badReq.Context())
+	badRec := httptest.NewRecorder()
+	s.adminCreateCustomModel(badRec, badReq)
+	require.Equal(t, http.StatusBadRequest, badRec.Code)
+
+	// Registry reflects the declarations through capability.Resolve, the
+	// choke point for dispatch eligibility and modality stripping.
+	res := capability.Resolve(providerID, "gemma3:4b-test")
+	require.Equal(t, capability.SourceUser, res.Source)
+	require.False(t, res.Profile.Vision, "stated vision=false must beat the *gemma* pattern")
+
+	vision := capability.Resolve(providerID, "my-vision-finetune")
+	require.Equal(t, capability.SourceUser, vision.Source)
+	require.True(t, vision.Profile.Vision)
+	require.True(t, vision.Profile.Reasoning)
+
+	// Admin payload surfaces the declaration for the dashboard.
+	listReq := withChiID(http.MethodGet, "/providers/"+providerID+"/custom-models", providerID)
+	listRec := httptest.NewRecorder()
+	s.adminListCustomModels(listRec, listReq)
+	require.Equal(t, http.StatusOK, listRec.Code)
+
+	// Update clears the override; heuristic resolution returns.
+	patchBody, err := json.Marshal(map[string]any{"capabilities": map[string]bool{}})
+	require.NoError(t, err)
+	patchRctx := chi.NewRouteContext()
+	patchRctx.URLParams.Add("id", providerID)
+	patchRctx.URLParams.Add("modelDBID", textOnly.ID)
+	patchReq := httptest.NewRequest(http.MethodPatch, "/providers/"+providerID+"/custom-models/"+textOnly.ID,
+		bytes.NewReader(patchBody)).WithContext(context.WithValue(context.Background(), chi.RouteCtxKey, patchRctx))
+	patchRec := httptest.NewRecorder()
+	s.adminUpdateCustomModel(patchRec, patchReq)
+	require.Equal(t, http.StatusOK, patchRec.Code, patchRec.Body.String())
+
+	after, err := db.CustomProviders().GetModel(ctx, textOnly.ID)
+	require.NoError(t, err)
+	require.Empty(t, after.Capabilities)
+	cleared := capability.Resolve(providerID, "gemma3:4b-test")
+	require.NotEqual(t, capability.SourceUser, cleared.Source, "empty override should restore heuristics")
 }

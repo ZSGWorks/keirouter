@@ -19,6 +19,7 @@ import (
 	"github.com/mydisha/keirouter/backend/internal/auth"
 	"github.com/mydisha/keirouter/backend/internal/budget"
 	"github.com/mydisha/keirouter/backend/internal/cache"
+	"github.com/mydisha/keirouter/backend/internal/capability"
 	"github.com/mydisha/keirouter/backend/internal/config"
 	"github.com/mydisha/keirouter/backend/internal/connectors"
 	"github.com/mydisha/keirouter/backend/internal/core"
@@ -736,6 +737,7 @@ func loadCustomProviders(ctx context.Context, db *store.DB, log *slog.Logger) {
 		return
 	}
 	byProvider := map[string][]connectors.ModelSpec{}
+	userCapsByProvider := map[string]map[string]string{}
 	for _, m := range models {
 		kind := core.ServiceKind(m.Kind)
 		if kind == "" {
@@ -744,9 +746,18 @@ func loadCustomProviders(ctx context.Context, db *store.DB, log *slog.Logger) {
 		byProvider[m.ProviderID] = append(byProvider[m.ProviderID], connectors.ModelSpec{
 			ID: m.ModelID, Name: m.DisplayName, Kind: kind,
 		})
+		if m.Capabilities != "" {
+			if userCapsByProvider[m.ProviderID] == nil {
+				userCapsByProvider[m.ProviderID] = map[string]string{}
+			}
+			userCapsByProvider[m.ProviderID][m.ModelID] = m.Capabilities
+		}
 	}
 	for providerID, specs := range byProvider {
 		connectors.SetDynamicModels(providerID, specs)
+	}
+	if len(userCapsByProvider) > 0 {
+		capability.SetUserOverrides(userCapsByProvider)
 	}
 	if len(providers) > 0 || len(models) > 0 {
 		log.Info("loaded custom providers", "providers", len(providers), "models", len(models))

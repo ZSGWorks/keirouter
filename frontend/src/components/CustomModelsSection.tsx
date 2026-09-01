@@ -2,11 +2,28 @@ import { useState, useMemo, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus, Pencil, Trash2, Sparkles, AlertTriangle, Loader2, CheckCircle, Search, Copy, X } from "lucide-react";
 
-import { api, type CustomModel, type CustomModelInput, type Provider } from "../lib/api";
+import { api, type CustomModel, type CustomModelCapabilities, type CustomModelInput, type Provider } from "../lib/api";
 import { Card, CardHeader, Button, Input, Field, Select, Badge, Modal, EmptyState } from "./ui";
+import { ModelCapabilityIcons } from "./ModelCapabilityIcons";
 import { useToast } from "./Toast";
 
 const MODEL_KINDS = ["llm", "embedding", "image", "stt", "tts", "search", "fetch"] as const;
+
+// CAPABILITY_OPTIONS are the user-declarable capability checkboxes shown on
+// the custom model form. Stated flags replace the built-in heuristic
+// capability resolution for that model; unticked = inherit heuristics.
+const CAPABILITY_OPTIONS: { key: keyof CustomModelCapabilities; label: string; hint: string }[] = [
+  { key: "vision", label: "Vision", hint: "Reads images" },
+  { key: "pdf", label: "PDF", hint: "Reads documents" },
+  { key: "audio_input", label: "Audio input", hint: "Reads audio" },
+  { key: "video_input", label: "Video input", hint: "Reads video" },
+  { key: "image_output", label: "Image output", hint: "Generates images" },
+  { key: "audio_output", label: "Audio output", hint: "Generates audio" },
+  { key: "search", label: "Web search", hint: "Built-in search / grounding" },
+  { key: "tools", label: "Tool calling", hint: "Function / tool calling" },
+  { key: "reasoning", label: "Reasoning", hint: "Extended thinking" },
+  { key: "structured_output", label: "Structured output", hint: "Schema-guided (JSON) output" },
+];
 
 // CustomModelsSection renders a provider's user-registered models with full
 // add / edit / remove controls. It is intentionally separate from the
@@ -313,6 +330,11 @@ function CustomModelCell({
         <code className="mt-1.5 block truncate font-mono text-xs text-[var(--text-muted)]" title={fullModel}>
           {fullModel}
         </code>
+        {m.capabilities && Object.keys(m.capabilities).length > 0 && (
+          <div className="mt-2">
+            <ModelCapabilityIcons size={14} capabilities={m.capabilities} />
+          </div>
+        )}
       </div>
 
       <div className="mt-3 flex items-center gap-2 border-t border-[var(--border)] pt-2.5">
@@ -355,6 +377,10 @@ function CustomModelModal({
   const [contextWindow, setContextWindow] = useState("");
   const [inputPerM, setInputPerM] = useState("");
   const [outputPerM, setOutputPerM] = useState("");
+  // capabilityEdits tracks only explicitly stated ticks for this edit session;
+  // absent keys inherit built-in heuristics. Unticking a box the built-in
+  // heuristics would claim explicitly forces it off.
+  const [capabilityEdits, setCapabilityEdits] = useState<CustomModelCapabilities>({});
 
   // Sync form state whenever the modal opens or the editing target changes.
   const [syncedFor, setSyncedFor] = useState<string | null>(null);
@@ -367,6 +393,7 @@ function CustomModelModal({
     setContextWindow(editing?.context_window ? String(editing.context_window) : "");
     setInputPerM(editing?.input_per_m ? String(editing.input_per_m) : "");
     setOutputPerM(editing?.output_per_m ? String(editing.output_per_m) : "");
+    setCapabilityEdits(editing?.capabilities ?? {});
   } else if (!open && syncedFor !== "closed") {
     setSyncedFor("closed");
   }
@@ -382,6 +409,7 @@ function CustomModelModal({
       context_window: contextWindow ? Number(contextWindow) : undefined,
       input_per_m: inputPerM ? Number(inputPerM) : undefined,
       output_per_m: outputPerM ? Number(outputPerM) : undefined,
+      capabilities: Object.keys(capabilityEdits).length > 0 ? capabilityEdits : undefined,
     });
   };
 
@@ -446,6 +474,41 @@ function CustomModelModal({
             />
           </Field>
         </div>
+        {kind === "llm" && (
+          <Field label="Capabilities (optional override)">
+            <fieldset className="grid grid-cols-2 gap-x-3 gap-y-1.5 rounded-xl border border-[var(--border)] p-3">
+              <legend className="sr-only">Model capability overrides</legend>
+              {CAPABILITY_OPTIONS.map((opt) => (
+                <label key={opt.key} className="flex cursor-pointer items-center gap-2 text-sm" title={opt.hint}>
+                  <input
+                    type="checkbox"
+                    checked={capabilityEdits[opt.key] === true}
+                    onChange={(e) =>
+                      setCapabilityEdits((prev) => {
+                        const next = { ...prev };
+                        if (e.target.checked) {
+                          next[opt.key] = true;
+                        } else if (prev[opt.key] === true) {
+                          // Previously declared on: unchecking now declares off
+                          // so the heuristic claiming it can be corrected.
+                          next[opt.key] = false;
+                        } else {
+                          delete next[opt.key];
+                        }
+                        return next;
+                      })
+                    }
+                    className="h-4 w-4 rounded border-[var(--border)] accent-accent-600"
+                  />
+                  <span>{opt.label}</span>
+                </label>
+              ))}
+            </fieldset>
+            <p className="mt-1.5 text-xs text-[var(--text-muted)]">
+              Leave unticked to use built-in heuristics. Ticks declared here replace automatic detection for this model.
+            </p>
+          </Field>
+        )}
       </div>
       <div className="flex items-center justify-end gap-2 border-t border-[var(--border)] px-6 py-4">
         <Button variant="ghost" onClick={onClose}>

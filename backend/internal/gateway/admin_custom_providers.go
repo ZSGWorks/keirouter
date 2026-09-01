@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"github.com/mydisha/keirouter/backend/internal/capability"
 	"github.com/mydisha/keirouter/backend/internal/connectors"
 	"github.com/mydisha/keirouter/backend/internal/core"
 	"github.com/mydisha/keirouter/backend/internal/httputil"
@@ -105,7 +107,7 @@ func customProviderJSON(p store.CustomProvider) map[string]any {
 }
 
 func customModelJSON(m store.CustomModel) map[string]any {
-	return map[string]any{
+	out := map[string]any{
 		"db_id":          m.ID,
 		"provider_id":    m.ProviderID,
 		"id":             m.ModelID,
@@ -115,6 +117,61 @@ func customModelJSON(m store.CustomModel) map[string]any {
 		"input_per_m":    m.InputPerM,
 		"output_per_m":   m.OutputPerM,
 	}
+	if uc, ok := capability.ParseUserCaps(m.Capabilities); ok {
+		out["capabilities"] = userCapsPayload(uc)
+	}
+	return out
+}
+
+// userCapsPayload projects stated user capability flags to the dashboard's
+// capability field names. Only stated flags appear.
+func userCapsPayload(uc capability.UserCaps) map[string]bool {
+	out := map[string]bool{}
+	flag := func(src *bool, name string) {
+		if src != nil {
+			out[name] = *src
+		}
+	}
+	flag(uc.Vision, "vision")
+	flag(uc.PDF, "pdf")
+	flag(uc.AudioInput, "audio_input")
+	flag(uc.VideoInput, "video_input")
+	flag(uc.ImageOutput, "image_output")
+	flag(uc.AudioOutput, "audio_output")
+	flag(uc.Search, "search")
+	flag(uc.Tools, "tools")
+	flag(uc.Reasoning, "reasoning")
+	flag(uc.StructuredOutput, "structured_output")
+	return out
+}
+
+// encodeUserCaps validates the dashboard's capabilities input (capability
+// name -> bool, unknown names rejected) and encodes it for storage. Nil means
+// the field was absent; a pointer to nil map clears the override.
+func encodeUserCaps(input map[string]bool) (*string, error) {
+	if input == nil {
+		return nil, nil
+	}
+	if len(input) == 0 {
+		empty := ""
+		return &empty, nil
+	}
+	known := map[string]bool{
+		"vision": true, "pdf": true, "audio_input": true, "video_input": true,
+		"image_output": true, "audio_output": true, "search": true,
+		"tools": true, "reasoning": true, "structured_output": true,
+	}
+	for k := range input {
+		if !known[k] {
+			return nil, fmt.Errorf("unknown capability: %s", k)
+		}
+	}
+	enc, err := json.Marshal(input)
+	if err != nil {
+		return nil, err
+	}
+	s := string(enc)
+	return &s, nil
 }
 
 func (s *Server) adminListCustomProviders(w http.ResponseWriter, r *http.Request) {
@@ -331,14 +388,20 @@ func (s *Server) adminCreateCustomModel(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var body struct {
-		ModelID       string  `json:"id"`
-		DisplayName   string  `json:"name"`
-		Kind          string  `json:"kind"`
-		ContextWindow int     `json:"context_window"`
-		InputPerM     float64 `json:"input_per_m"`
-		OutputPerM    float64 `json:"output_per_m"`
+		ModelID       string          `json:"id"`
+		DisplayName   string          `json:"name"`
+		Kind          string          `json:"kind"`
+		ContextWindow int             `json:"context_window"`
+		InputPerM     float64         `json:"input_per_m"`
+		OutputPerM    float64         `json:"output_per_m"`
+		Capabilities  map[string]bool `json:"capabilities"`
 	}
 	if !decodeJSON(w, r, &body) {
+		return
+	}
+	capsJSON, err := encodeUserCaps(body.Capabilities)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	modelID := strings.TrimSpace(body.ModelID)
@@ -366,6 +429,9 @@ func (s *Server) adminCreateCustomModel(w http.ResponseWriter, r *http.Request) 
 		InputPerM:     body.InputPerM,
 		OutputPerM:    body.OutputPerM,
 	}
+	if capsJSON != nil {
+		m.Capabilities = *capsJSON
+	}
 	if err := s.db.CustomProviders().CreateModel(r.Context(), m); err != nil {
 		writeError(w, http.StatusBadRequest, sanitizeError(s.log, err, "create custom model failed (model id may already exist)"))
 		return
@@ -383,15 +449,26 @@ func (s *Server) adminUpdateCustomModel(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var body struct {
-		ModelID       *string  `json:"id"`
-		DisplayName   *string  `json:"name"`
-		Kind          *string  `json:"kind"`
-		ContextWindow *int     `json:"context_window"`
-		InputPerM     *float64 `json:"input_per_m"`
-		OutputPerM    *float64 `json:"output_per_m"`
+		ModelID       *string          `json:"id"`
+		DisplayName   *string          `json:"name"`
+		Kind          *string          `json:"kind"`
+		ContextWindow *int             `json:"context_window"`
+		InputPerM     *float64         `json:"input_per_m"`
+		OutputPerM    *float64         `json:"output_per_m"`
+		Capabilities  *map[string]bool `json:"capabilities"`
 	}
 	if !decodeJSON(w, r, &body) {
 		return
+	}
+	if body.Capabilities != nil {
+		capsJSON, cerr := encodeUserCaps(*body.Capabilities)
+		if cerr != nil {
+			writeError(w, http.StatusBadRequest, cerr.Error())
+			return
+		}
+		if capsJSON != nil {
+			existing.Capabilities = *capsJSON
+		}
 	}
 	if body.ModelID != nil {
 		if v := strings.TrimSpace(*body.ModelID); v != "" {
@@ -441,6 +518,7 @@ func (s *Server) adminDeleteCustomModel(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "delete custom model failed"))
 		return
 	}
+	capability.RemoveUserOverride(existing.ProviderID, existing.ModelID)
 	s.reloadCustomModels(r.Context(), providerID)
 	writeJSON(w, http.StatusOK, map[string]any{"db_id": dbID, "deleted": true})
 }
@@ -454,6 +532,15 @@ func (s *Server) reloadCustomModels(ctx context.Context, providerID string) {
 		return
 	}
 	connectors.SetDynamicModels(providerID, customModelsToSpecs(models))
+	// Refresh user capability overrides so routing/stripping reflect the
+	// declared ticks immediately.
+	for _, m := range models {
+		if uc, ok := capability.ParseUserCaps(m.Capabilities); ok {
+			capability.AddUserOverride(m.ProviderID, m.ModelID, uc)
+		} else {
+			capability.RemoveUserOverride(m.ProviderID, m.ModelID)
+		}
+	}
 	s.reloadUsagePricing(ctx)
 }
 

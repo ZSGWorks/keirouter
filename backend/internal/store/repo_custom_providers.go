@@ -41,8 +41,11 @@ type CustomModel struct {
 	InputPerM     float64
 	OutputPerM    float64
 	Source        string // "manual" (user-entered) | "imported" (from /models)
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	// Capabilities is a JSON object of capability name -> bool declaring what
+	// the model supports. Empty means no override: heuristic resolution applies.
+	Capabilities string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 const customProviderColumns = `id, tenant_id, display_name, alias, dialect, base_url, created_at, updated_at`
@@ -132,7 +135,7 @@ func (r *CustomProviderRepo) DeleteProvider(ctx context.Context, id string) erro
 	return tx.Commit()
 }
 
-const customModelColumns = `id, tenant_id, provider_id, model_id, display_name, kind, context_window, input_per_m, output_per_m, source, created_at, updated_at`
+const customModelColumns = `id, tenant_id, provider_id, model_id, display_name, kind, context_window, input_per_m, output_per_m, source, capabilities, created_at, updated_at`
 
 // ListModels returns all custom models for a tenant.
 func (r *CustomProviderRepo) ListModels(ctx context.Context, tenantID string) ([]CustomModel, error) {
@@ -206,10 +209,10 @@ func (r *CustomProviderRepo) CreateModel(ctx context.Context, m CustomModel) err
 		source = "manual"
 	}
 	q := r.db.rebind(`INSERT INTO custom_models (` + customModelColumns + `)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	_, err := r.db.sql.ExecContext(ctx, q,
 		m.ID, m.TenantID, m.ProviderID, m.ModelID, m.DisplayName, m.Kind,
-		m.ContextWindow, m.InputPerM, m.OutputPerM, source, now, now)
+		m.ContextWindow, m.InputPerM, m.OutputPerM, source, m.Capabilities, now, now)
 	if err != nil {
 		return fmt.Errorf("store: create custom model: %w", err)
 	}
@@ -219,10 +222,10 @@ func (r *CustomProviderRepo) CreateModel(ctx context.Context, m CustomModel) err
 // UpdateModel updates a custom model's mutable fields.
 func (r *CustomProviderRepo) UpdateModel(ctx context.Context, m CustomModel) error {
 	q := r.db.rebind(`UPDATE custom_models
-		SET model_id = ?, display_name = ?, kind = ?, context_window = ?, input_per_m = ?, output_per_m = ?, updated_at = ?
+		SET model_id = ?, display_name = ?, kind = ?, context_window = ?, input_per_m = ?, output_per_m = ?, capabilities = ?, updated_at = ?
 		WHERE id = ?`)
 	res, err := r.db.sql.ExecContext(ctx, q,
-		m.ModelID, m.DisplayName, m.Kind, m.ContextWindow, m.InputPerM, m.OutputPerM,
+		m.ModelID, m.DisplayName, m.Kind, m.ContextWindow, m.InputPerM, m.OutputPerM, m.Capabilities,
 		formatTime(time.Now()), m.ID)
 	if err != nil {
 		return fmt.Errorf("store: update custom model: %w", err)
@@ -279,7 +282,7 @@ func scanCustomModel(s scanner) (CustomModel, error) {
 	var m CustomModel
 	var created, updated string
 	if err := s.Scan(&m.ID, &m.TenantID, &m.ProviderID, &m.ModelID, &m.DisplayName, &m.Kind,
-		&m.ContextWindow, &m.InputPerM, &m.OutputPerM, &m.Source, &created, &updated); err != nil {
+		&m.ContextWindow, &m.InputPerM, &m.OutputPerM, &m.Source, &m.Capabilities, &created, &updated); err != nil {
 		return CustomModel{}, err
 	}
 	m.CreatedAt = parseTime(created)

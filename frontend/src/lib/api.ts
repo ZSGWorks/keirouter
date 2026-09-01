@@ -48,7 +48,7 @@ export interface ProviderModel {
 	capability_source?: CapabilitySource;
 }
 
-export type CapabilitySource = "provider" | "exact" | "pattern" | "service_kind" | "default";
+export type CapabilitySource = "user" | "provider" | "exact" | "pattern" | "service_kind" | "default";
 
 export interface ModelCapabilities {
 	vision: boolean;
@@ -88,7 +88,25 @@ export interface CustomModel {
   context_window: number;
   input_per_m: number;
   output_per_m: number;
+  // Stated capability declarations. Absent = inherit built-in heuristics.
+  capabilities?: CustomModelCapabilities;
 }
+
+// CustomModelCapabilities is a user-declared capability override: a partial
+// set of stated capability flags (true or false). Unstated caps resolve via
+// the built-in heuristic tables.
+export type CustomModelCapabilities = {
+  vision?: boolean;
+  pdf?: boolean;
+  audio_input?: boolean;
+  video_input?: boolean;
+  image_output?: boolean;
+  audio_output?: boolean;
+  search?: boolean;
+  tools?: boolean;
+  reasoning?: boolean;
+  structured_output?: boolean;
+};
 
 export interface CustomModelInput {
   id: string;
@@ -97,6 +115,7 @@ export interface CustomModelInput {
   context_window?: number;
   input_per_m?: number;
   output_per_m?: number;
+  capabilities?: CustomModelCapabilities;
 }
 
 

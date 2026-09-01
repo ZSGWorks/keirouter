@@ -216,6 +216,15 @@ func Resolve(provider, model string) Resolution {
 		return Resolution{Profile: p, Source: SourceDefault, VisionState: SupportUnknown}
 	}
 
+	// 0. User-declared override (custom model capability ticks). Stated flags
+	// replace heuristic resolution entirely — both true and false.
+	if provider != "" {
+		if uc, ok := lookupUserOverride(provider, model); ok {
+			p = uc.merge(p)
+			return Resolution{Profile: p, Source: SourceUser, VisionState: visionState(p)}
+		}
+	}
+
 	// 1. Provider-specific override, keyed by the full model id.
 	if provider != "" {
 		if byModel, ok := providerCapabilities[provider]; ok {
