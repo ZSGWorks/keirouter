@@ -187,7 +187,10 @@ func (s *Server) loadEndpointSettings(ctx context.Context) EndpointSettings {
 
 // slimmerConfig resolves the slimmer (RTK) settings from endpoint settings.
 func (s *Server) slimmerConfig() slimmer.Config {
-	es := s.loadEndpointSettings(context.Background())
+	return s.slimmerConfigFrom(s.loadEndpointSettings(context.Background()))
+}
+
+func (s *Server) slimmerConfigFrom(es EndpointSettings) slimmer.Config {
 	return slimmer.Config{
 		Enabled:     es.RTKEnabled,
 		FilterLevel: slimmer.ParseFilterLevel(es.RTKFilterLevel),
@@ -196,19 +199,28 @@ func (s *Server) slimmerConfig() slimmer.Config {
 
 // terseConfig resolves terse-mode settings from endpoint settings.
 func (s *Server) terseConfig() terse.Config {
-	es := s.loadEndpointSettings(context.Background())
+	return s.terseConfigFrom(s.loadEndpointSettings(context.Background()))
+}
+
+func (s *Server) terseConfigFrom(es EndpointSettings) terse.Config {
 	return terse.Config{Enabled: es.TerseEnabled, Level: terse.Level(es.TerseLevel)}
 }
 
 // cavemanConfig resolves caveman settings from endpoint settings.
 func (s *Server) cavemanConfig() caveman.Config {
-	es := s.loadEndpointSettings(context.Background())
+	return s.cavemanConfigFrom(s.loadEndpointSettings(context.Background()))
+}
+
+func (s *Server) cavemanConfigFrom(es EndpointSettings) caveman.Config {
 	return caveman.Config{Enabled: es.CavemanEnabled, Level: caveman.Level(es.CavemanLevel)}
 }
 
 // headroomConfig resolves Headroom (input-side proxy compression) settings.
 func (s *Server) headroomConfig() headroom.Config {
-	es := s.loadEndpointSettings(context.Background())
+	return s.headroomConfigFrom(s.loadEndpointSettings(context.Background()))
+}
+
+func (s *Server) headroomConfigFrom(es EndpointSettings) headroom.Config {
 	return headroom.Config{
 		Enabled:              es.HeadroomEnabled,
 		URL:                  es.HeadroomURL,
@@ -219,8 +231,97 @@ func (s *Server) headroomConfig() headroom.Config {
 
 // ponytailConfig resolves Ponytail (output-side system-prompt injection) settings.
 func (s *Server) ponytailConfig() ponytail.Config {
-	es := s.loadEndpointSettings(context.Background())
+	return s.ponytailConfigFrom(s.loadEndpointSettings(context.Background()))
+}
+
+func (s *Server) ponytailConfigFrom(es EndpointSettings) ponytail.Config {
 	return ponytail.Config{Enabled: es.PonytailEnabled, Level: ponytail.Level(es.PonytailLevel)}
+}
+
+// ---- chain token-saving overrides -------------------------------------------
+
+// ChainTokenSaving holds per-chain overrides of the global token-saving
+// endpoint settings. Nil pointers inherit the global value; set pointers force
+// the value for requests routed through the owning chain. Headroom has no
+// level: URL/timeout always come from global settings.
+type ChainTokenSaving struct {
+	RTKEnabled      *bool   `json:"rtk_enabled,omitempty"`
+	RTKFilterLevel  *string `json:"rtk_filter_level,omitempty"`
+	CavemanEnabled  *bool   `json:"caveman_enabled,omitempty"`
+	CavemanLevel    *string `json:"caveman_level,omitempty"`
+	TerseEnabled    *bool   `json:"terse_enabled,omitempty"`
+	TerseLevel      *string `json:"terse_level,omitempty"`
+	HeadroomEnabled *bool   `json:"headroom_enabled,omitempty"`
+	PonytailEnabled *bool   `json:"ponytail_enabled,omitempty"`
+	PonytailLevel   *string `json:"ponytail_level,omitempty"`
+}
+
+// parseChainTokenSaving decodes a chain's token_saving JSON blob. An empty or
+// malformed blob yields nil (full inheritance), never an error — misconfigured
+// overrides degrade to global behavior rather than breaking routing.
+func parseChainTokenSaving(raw string) *ChainTokenSaving {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var ov ChainTokenSaving
+	if err := json.Unmarshal([]byte(raw), &ov); err != nil {
+		return nil
+	}
+	return &ov
+}
+
+// applyChainOverrides overlays a chain's token-saving overrides onto the
+// global endpoint settings. Only non-nil fields are applied, so the global
+// settings and other chains are untouched.
+func applyChainOverrides(es EndpointSettings, ov *ChainTokenSaving) EndpointSettings {
+	if ov == nil {
+		return es
+	}
+	overrideBool(&es.RTKEnabled, ov.RTKEnabled)
+	overrideString(&es.RTKFilterLevel, ov.RTKFilterLevel)
+	overrideBool(&es.CavemanEnabled, ov.CavemanEnabled)
+	overrideString(&es.CavemanLevel, ov.CavemanLevel)
+	overrideBool(&es.TerseEnabled, ov.TerseEnabled)
+	overrideString(&es.TerseLevel, ov.TerseLevel)
+	overrideBool(&es.HeadroomEnabled, ov.HeadroomEnabled)
+	overrideBool(&es.PonytailEnabled, ov.PonytailEnabled)
+	overrideString(&es.PonytailLevel, ov.PonytailLevel)
+	// Safety net: the save-time validation already forbids both output savers,
+	// but direct DB edits can bypass it. The explicitly overridden feature wins;
+	// when both (or neither) were overridden, terse is dropped like the global
+	// settings default.
+	if es.CavemanEnabled && es.TerseEnabled {
+		switch {
+		case ov.TerseEnabled != nil:
+			es.CavemanEnabled = false
+		case ov.CavemanEnabled != nil:
+			es.TerseEnabled = false
+		default:
+			es.TerseEnabled = false
+		}
+	}
+	return es
+}
+
+// overrideBool applies an optional boolean override to dst.
+func overrideBool(dst *bool, v *bool) {
+	if v != nil {
+		*dst = *v
+	}
+}
+
+// overrideString applies an optional, non-empty string override to dst.
+func overrideString(dst *string, v *string) {
+	if v != nil && *v != "" {
+		*dst = *v
+	}
+}
+
+// effectiveTokenSaving resolves the global endpoint settings and overlays the
+// given chain's overrides (when the request routed through a chain).
+func (s *Server) effectiveTokenSaving(ctx context.Context, chainTokenSaving string) EndpointSettings {
+	es := s.loadEndpointSettings(ctx)
+	return applyChainOverrides(es, parseChainTokenSaving(chainTokenSaving))
 }
 
 // ---- admin endpoints --------------------------------------------------------

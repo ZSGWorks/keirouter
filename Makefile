@@ -21,7 +21,7 @@ C_GREEN  := \033[32m
 C_YELLOW := \033[33m
 C_CYAN   := \033[36m
 
-.PHONY: dev backend frontend build build-backend build-frontend test vet hooks bootstrap install setup quickstart clean docker
+.PHONY: dev backend frontend build build-backend build-frontend test vet hooks bootstrap install setup quickstart clean docker dev-deploy
 
 ## dev: run backend and frontend concurrently; Ctrl-C stops both.
 ##      The backend starts first; frontend waits until the backend is healthy
@@ -93,6 +93,10 @@ bootstrap:
 ## docker: build the production image.
 docker:
 	docker build -f deploy/Dockerfile -t keirouter:latest .
+
+## dev-deploy: build image and deploy to localhost:20181 with host Postgres.
+dev-deploy:
+	./scripts/dev-deploy.sh
 
 ## clean: remove build artifacts.
 clean:

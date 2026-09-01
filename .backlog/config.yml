@@ -2,7 +2,7 @@ project_name: "Keirouter"
 default_status: "To Do"
 statuses: ["To Do", "In Progress", "Done"]
 labels: []
-definition_of_done: []
+definition_of_done: ["Codehealth is green", "Changes are fork maintenance compatible", "Changes are validated by tests"]
 date_format: yyyy-mm-dd
 max_column_width: 20
 default_editor: "nano"

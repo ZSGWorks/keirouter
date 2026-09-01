@@ -109,9 +109,12 @@ type Chain struct {
 	Strategy         string
 	FallbackProvider string
 	FallbackModel    string
-	Steps            []ChainStep
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	// TokenSaving is a JSON blob of per-chain token-saving overrides
+	// (tri-state toggles/levels); empty string means "no overrides".
+	TokenSaving string
+	Steps       []ChainStep
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 
 // ChainStep is one candidate target within a chain.

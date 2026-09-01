@@ -19,11 +19,14 @@ import (
 
 	"github.com/mydisha/keirouter/backend/internal/budget"
 	"github.com/mydisha/keirouter/backend/internal/capability"
+	"github.com/mydisha/keirouter/backend/internal/caveman"
 	"github.com/mydisha/keirouter/backend/internal/connectors"
 	"github.com/mydisha/keirouter/backend/internal/consolelog"
 	"github.com/mydisha/keirouter/backend/internal/core"
 	"github.com/mydisha/keirouter/backend/internal/httputil"
+	"github.com/mydisha/keirouter/backend/internal/ponytail"
 	"github.com/mydisha/keirouter/backend/internal/store"
+	"github.com/mydisha/keirouter/backend/internal/terse"
 	"github.com/mydisha/keirouter/backend/internal/vault"
 )
 
@@ -1797,17 +1800,137 @@ func (s *Server) adminListChains(w http.ResponseWriter, r *http.Request) {
 			entry["fallback_provider"] = c.FallbackProvider
 			entry["fallback_model"] = c.FallbackModel
 		}
+		if ov := parseChainTokenSaving(c.TokenSaving); ov != nil {
+			entry["token_saving"] = ov
+		}
 		out = append(out, entry)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"chains": out})
 }
 
+// validateChainTokenSaving checks a client-supplied per-chain token-saving
+// override against the same rules the global endpoint settings enforce, then
+// returns it marshalled for persistence. An empty/absent override yields "".
+func validateChainTokenSaving(ov *ChainTokenSaving) (string, error) {
+	if ov == nil {
+		return "", nil
+	}
+	if err := validateChainTokenSavingLevels(ov); err != nil {
+		return "", err
+	}
+	// Caveman and terse inject conflicting system-prompt directives; mirroring
+	// the global settings rule, a chain may not enable both.
+	cavOn := ov.CavemanEnabled != nil && *ov.CavemanEnabled
+	terseOn := ov.TerseEnabled != nil && *ov.TerseEnabled
+	if cavOn && terseOn {
+		return "", errors.New("caveman_enabled and terse_enabled cannot both be enabled")
+	}
+	raw, err := json.Marshal(ov)
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
+}
+
+// validateChainTokenSavingLevels checks the optional level overrides against
+// the same enums the global endpoint settings enforce. Table-driven so each
+// level field contributes one row, not one conditional block.
+func validateChainTokenSavingLevels(ov *ChainTokenSaving) error {
+	checks := []struct {
+		value *string
+		valid func(string) bool
+		msg   string
+	}{
+		{ov.RTKFilterLevel, func(s string) bool {
+			switch s {
+			case "none", "minimal", "aggressive":
+				return true
+			}
+			return false
+		}, "rtk_filter_level must be none, minimal, or aggressive"},
+		{ov.CavemanLevel, func(s string) bool { return caveman.ValidLevel(caveman.Level(s)) }, "caveman_level must be lite, full, ultra, wenyan-lite, wenyan-full, or wenyan-ultra"},
+		{ov.TerseLevel, func(s string) bool { return terse.ValidLevel(terse.Level(s)) }, "terse_level must be light, medium, or aggressive"},
+		{ov.PonytailLevel, func(s string) bool { return ponytail.ValidLevel(ponytail.Level(s)) }, "ponytail_level must be lite, full, or ultra"},
+	}
+	for _, c := range checks {
+		if c.value != nil && *c.value != "" && !c.valid(*c.value) {
+			return errors.New(c.msg)
+		}
+	}
+	return nil
+}
+
+// chainExportEntry builds the export/import JSON shape for one chain.
+func chainExportEntry(c store.Chain) map[string]any {
+	steps := make([]map[string]any, 0, len(c.Steps))
+	for _, st := range c.Steps {
+		steps = append(steps, map[string]any{
+			"provider": st.Provider, "model": st.Model, "position": st.Position,
+		})
+	}
+	entry := map[string]any{
+		"name": c.Name, "strategy": c.Strategy, "steps": steps,
+	}
+	if c.FallbackProvider != "" && c.FallbackModel != "" {
+		entry["fallback_provider"] = c.FallbackProvider
+		entry["fallback_model"] = c.FallbackModel
+	}
+	if ov := parseChainTokenSaving(c.TokenSaving); ov != nil {
+		entry["token_saving"] = ov
+	}
+	return entry
+}
+
+// importedChain mirrors the exported chain JSON shape for import.
+type importedChain struct {
+	Name             string            `json:"name"`
+	Strategy         string            `json:"strategy"`
+	FallbackProvider string            `json:"fallback_provider"`
+	FallbackModel    string            `json:"fallback_model"`
+	TokenSaving      *ChainTokenSaving `json:"token_saving"`
+	Steps            []struct {
+		Provider string `json:"provider"`
+		Model    string `json:"model"`
+		Position int    `json:"position"`
+	} `json:"steps"`
+}
+
+// chainFromImport builds a store.Chain from an imported chain payload. An
+// invalid token-saving override yields an error; the import loop skips
+// such rows.
+func chainFromImport(c importedChain) (store.Chain, error) {
+	ts, err := validateChainTokenSaving(c.TokenSaving)
+	if err != nil {
+		return store.Chain{}, err
+	}
+	now := time.Now()
+	chain := store.Chain{
+		ID:               uuid.NewString(),
+		TenantID:         adminTenant,
+		Name:             c.Name,
+		Strategy:         defaultStr(c.Strategy, "priority"),
+		FallbackProvider: c.FallbackProvider,
+		FallbackModel:    c.FallbackModel,
+		TokenSaving:      ts,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	for _, st := range c.Steps {
+		chain.Steps = append(chain.Steps, store.ChainStep{
+			ID: uuid.NewString(), ChainID: chain.ID, Position: st.Position,
+			Provider: st.Provider, Model: st.Model, CreatedAt: now,
+		})
+	}
+	return chain, nil
+}
+
 func (s *Server) adminCreateChain(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Name             string `json:"name"`
-		Strategy         string `json:"strategy"`
-		FallbackProvider string `json:"fallback_provider"`
-		FallbackModel    string `json:"fallback_model"`
+		Name             string            `json:"name"`
+		Strategy         string            `json:"strategy"`
+		FallbackProvider string            `json:"fallback_provider"`
+		FallbackModel    string            `json:"fallback_model"`
+		TokenSaving      *ChainTokenSaving `json:"token_saving"`
 		Steps            []struct {
 			Provider string `json:"provider"`
 			Model    string `json:"model"`
@@ -1824,7 +1947,6 @@ func (s *Server) adminCreateChain(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-
 	// Validate fallback provider if set.
 	if body.FallbackProvider != "" {
 		if _, ok := connectors.SpecByID(body.FallbackProvider); !ok {
@@ -1847,6 +1969,9 @@ func (s *Server) adminCreateChain(w http.ResponseWriter, r *http.Request) {
 		FallbackModel:    body.FallbackModel,
 		CreatedAt:        now,
 		UpdatedAt:        now,
+	}
+	if !applyTokenSavingToChain(w, &chain, body.TokenSaving) {
+		return
 	}
 	for i, st := range body.Steps {
 		if _, ok := connectors.SpecByID(st.Provider); !ok {
@@ -1873,6 +1998,22 @@ func (s *Server) adminDeleteChain(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// applyTokenSavingToChain validates an optional per-chain token-saving
+// override and stores it on the chain. Returns false when the override was
+// supplied but invalid (response already written).
+func applyTokenSavingToChain(w http.ResponseWriter, c *store.Chain, ov *ChainTokenSaving) bool {
+	if ov == nil {
+		return true
+	}
+	tokenSaving, err := validateChainTokenSaving(ov)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return false
+	}
+	c.TokenSaving = tokenSaving
+	return true
+}
+
 func (s *Server) adminUpdateChain(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	existing, err := s.chains.Get(r.Context(), id)
@@ -1882,10 +2023,11 @@ func (s *Server) adminUpdateChain(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body struct {
-		Name             *string `json:"name"`
-		Strategy         *string `json:"strategy"`
-		FallbackProvider *string `json:"fallback_provider"`
-		FallbackModel    *string `json:"fallback_model"`
+		Name             *string           `json:"name"`
+		Strategy         *string           `json:"strategy"`
+		FallbackProvider *string           `json:"fallback_provider"`
+		FallbackModel    *string           `json:"fallback_model"`
+		TokenSaving      *ChainTokenSaving `json:"token_saving"`
 		Steps            *[]struct {
 			Provider string `json:"provider"`
 			Model    string `json:"model"`
@@ -1895,6 +2037,9 @@ func (s *Server) adminUpdateChain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !applyTokenSavingToChain(w, &existing, body.TokenSaving) {
+		return
+	}
 	if body.Name != nil {
 		if err := validateChainName(*body.Name); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -2754,15 +2899,7 @@ func (s *Server) adminExportDatabase(w http.ResponseWriter, r *http.Request) {
 	chains, _ := s.chains.ListByTenant(ctx, adminTenant)
 	chainsOut := make([]map[string]any, 0, len(chains))
 	for _, c := range chains {
-		steps := make([]map[string]any, 0, len(c.Steps))
-		for _, st := range c.Steps {
-			steps = append(steps, map[string]any{
-				"provider": st.Provider, "model": st.Model, "position": st.Position,
-			})
-		}
-		chainsOut = append(chainsOut, map[string]any{
-			"name": c.Name, "strategy": c.Strategy, "steps": steps,
-		})
+		chainsOut = append(chainsOut, chainExportEntry(c))
 	}
 	export["chains"] = chainsOut
 
@@ -2904,31 +3041,12 @@ func (s *Server) adminImportDatabase(w http.ResponseWriter, r *http.Request) {
 
 	// Import chains.
 	if raw, ok := payload["chains"]; ok {
-		var chains []struct {
-			Name     string `json:"name"`
-			Strategy string `json:"strategy"`
-			Steps    []struct {
-				Provider string `json:"provider"`
-				Model    string `json:"model"`
-				Position int    `json:"position"`
-			} `json:"steps"`
-		}
+		var chains []importedChain
 		if err := json.Unmarshal(raw, &chains); err == nil {
 			for _, c := range chains {
-				now := time.Now()
-				chain := store.Chain{
-					ID:        uuid.NewString(),
-					TenantID:  adminTenant,
-					Name:      c.Name,
-					Strategy:  defaultStr(c.Strategy, "priority"),
-					CreatedAt: now,
-					UpdatedAt: now,
-				}
-				for _, st := range c.Steps {
-					chain.Steps = append(chain.Steps, store.ChainStep{
-						ID: uuid.NewString(), ChainID: chain.ID, Position: st.Position,
-						Provider: st.Provider, Model: st.Model, CreatedAt: now,
-					})
+				chain, err := chainFromImport(c)
+				if err != nil {
+					continue
 				}
 				if err := s.chains.Create(ctx, chain); err == nil {
 					imported++

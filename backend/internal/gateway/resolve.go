@@ -20,10 +20,14 @@ const (
 )
 
 // resolveResult carries both the targets and the strategy metadata needed
-// by the pipeline to apply round-robin or other rotation strategies.
+// by the pipeline to apply round-robin or other rotation strategies. When the
+// model resolved to a chain, TokenSaving carries that chain's raw per-chain
+// token-saving overrides (JSON blob; "" = none). Direct provider/model and
+// alias resolutions leave it empty.
 type resolveResult struct {
-	Targets  []dispatch.Target
-	PlanOpts dispatch.PlanOptions
+	Targets     []dispatch.Target
+	PlanOpts    dispatch.PlanOptions
+	TokenSaving string
 }
 
 // ChainSource resolves a named chain for a tenant.
@@ -134,7 +138,7 @@ func chainResult(ctx context.Context, chains ChainSource, latency LatencyReader,
 					Model:    c.FallbackModel,
 				})
 			}
-			return resolveResult{Targets: targets, PlanOpts: opts}, nil
+			return resolveResult{Targets: targets, PlanOpts: opts, TokenSaving: c.TokenSaving}, nil
 		}
 	}
 	return resolveResult{}, errBadModel("no chain named " + name)
