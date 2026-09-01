@@ -47,6 +47,17 @@ func TestOf(t *testing.T) {
 			),
 		},
 		{
+			name:  "glm 5.3 flash is vision capable",
+			model: "glm-5.3-flash",
+			expected: core.NewCapabilitySet(
+				core.CapStreaming,
+				core.CapToolCalling,
+				core.CapVision,
+				core.CapReasoning,
+				core.CapLongContext,
+			),
+		},
+		{
 			name:  "generic glm family is text reasoning, long context",
 			model: "glm-5",
 			expected: core.NewCapabilitySet(
@@ -138,6 +149,14 @@ func TestOfProviderOverride(t *testing.T) {
 	}
 	if !scoped.Has(core.CapReasoning) {
 		t.Errorf("expected codebuddy/glm-5v-turbo to have reasoning, got %v", scoped)
+	}
+}
+
+// TestGLM53FlashVendorPrefix verifies the exact entry still fires after the
+// vendor prefix is stripped from the model id.
+func TestGLM53FlashVendorPrefix(t *testing.T) {
+	if p := ResolveProfile("", "zai-org/glm-5.3-flash"); !p.Vision || !p.Reasoning {
+		t.Errorf("zai-org/glm-5.3-flash = %+v, want vision + reasoning", p)
 	}
 }
 

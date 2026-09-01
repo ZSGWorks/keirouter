@@ -55,6 +55,9 @@ var modelCapabilities = map[string]caps{
 	// GLM vision variant (the text GLM family has no vision).
 	"glm-4.6v": {Vision: true, Reasoning: true, ThinkingFormat: "zai", ContextWindow: 128000},
 
+	// GLM 5.3 Flash is vision-capable; the rest of the text GLM 5 family is not.
+	"glm-5.3-flash": {Vision: true, Reasoning: true, ThinkingFormat: "zai", ContextWindow: 200000, MaxOutput: 128000},
+
 	// Qwen alias models surfaced by the registry.
 	"vision-model": {Vision: true, Reasoning: true, ThinkingFormat: "qwen", ContextWindow: 1000000},
 	"coder-model":  {Reasoning: true, ThinkingFormat: "qwen", ContextWindow: 1000000},
