@@ -53,13 +53,7 @@ func UnregisterDynamicProvider(id string) {
 func SetDynamicModels(providerID string, models []ModelSpec) {
 	dynMu.Lock()
 	defer dynMu.Unlock()
-	if len(models) == 0 {
-		delete(dynModels, providerID)
-		return
-	}
-	cp := make([]ModelSpec, len(models))
-	copy(cp, models)
-	dynModels[providerID] = cp
+	setModelSpecs(dynModels, providerID, models)
 }
 
 // DynamicProviderByID returns the dynamic provider for an id, or false.
@@ -95,7 +89,20 @@ func dynamicSpecs() []ProviderSpec {
 func dynamicModelsFor(providerID string) []ModelSpec {
 	dynMu.RLock()
 	defer dynMu.RUnlock()
-	models := dynModels[providerID]
+	return copiedModelSpecs(dynModels[providerID])
+}
+
+func setModelSpecs(modelsByProvider map[string][]ModelSpec, providerID string, models []ModelSpec) {
+	if len(models) == 0 {
+		delete(modelsByProvider, providerID)
+		return
+	}
+	cp := make([]ModelSpec, len(models))
+	copy(cp, models)
+	modelsByProvider[providerID] = cp
+}
+
+func copiedModelSpecs(models []ModelSpec) []ModelSpec {
 	if len(models) == 0 {
 		return nil
 	}

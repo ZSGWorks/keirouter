@@ -80,6 +80,7 @@ func (s *Server) mountAdmin(r chi.Router) {
 	r.Get("/quota", s.adminQuotaUsage)
 	r.Get("/health/accounts", s.adminListAccountHealth)
 	r.Post("/health/check-now", s.adminRunHealthCheck)
+	r.Post("/pricing/refresh", s.adminRefreshPricing)
 	s.mountProviderHealth(r)
 	r.Get("/console", s.adminConsoleLog)
 	r.Delete("/console", s.adminConsoleClear)
@@ -151,6 +152,24 @@ func (s *Server) mountAdmin(r chi.Router) {
 }
 
 const adminTenant = store.DefaultTenantID
+
+// ---- providers --------------------------------------------------------------
+
+// adminRefreshPricing force-refreshes the models.dev catalog and reloads its
+// projected prices.
+func (s *Server) adminRefreshPricing(w http.ResponseWriter, r *http.Request) {
+	if s.refreshPricingCatalog == nil {
+		writeError(w, http.StatusInternalServerError, "pricing reload not configured")
+		return
+	}
+	ctx, cancel := contextWithTimeout(r, 90*time.Second)
+	defer cancel()
+	if err := s.refreshPricingCatalog(ctx); err != nil {
+		writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "pricing reload failed"))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
+}
 
 // ---- providers --------------------------------------------------------------
 

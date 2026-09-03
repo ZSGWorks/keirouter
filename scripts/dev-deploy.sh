@@ -73,16 +73,46 @@ fi
 export KEIROUTER_DATABASE__DSN="$DSN"
 
 # ---- ensure local database -------------------------------------------------
-if [ -z "$DSN_FROM_ENV" ]; then
-  if command -v psql >/dev/null 2>&1; then
-    if ! psql -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='${DB_NAME}'" 2>/dev/null | grep -q 1; then
-      log "Creating database ${DB_NAME}"
-      createdb "$DB_NAME" 2>/dev/null || warn "could not create ${DB_NAME} (createdb failed); create it manually if startup fails"
-    else
-      log "Database ${DB_NAME} exists"
+# Reachability is probed whenever the DSN targets the host Postgres (the
+# auto-generated default, or a custom DSN that still uses host.docker.internal).
+# Other custom DSNs opt out — the container healthcheck surfaces their
+# connection failures, matching the pre-hardening behavior.
+dsn_uses_host_pg() {
+  case "$DSN" in
+    *host.docker.internal*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+if dsn_uses_host_pg; then
+  if ! command -v psql >/dev/null 2>&1; then
+    die "psql not found but KEIROUTER_DATABASE__DSN points at host Postgres; install postgresql client tools (e.g. brew install libpq) or set KEIROUTER_DATABASE__DSN in .env to a reachable database"
+  fi
+
+  # Fail fast instead of warning + 60s healthcheck timeout. Capture stderr so
+  # we can recognize the stale postmaster.pid symptom and hint at the fix.
+  if ! PG_PROBE_ERR="$(psql -d postgres -tAc "SELECT 1" 2>&1)"; then
+    if printf '%s' "$PG_PROBE_ERR" | grep -q 'lock file "postmaster.pid" already exists'; then
+      PGDATA_DIR="$(brew --prefix 2>/dev/null || echo /opt/homebrew)/var/postgresql@18"
+      die "host Postgres has a stale postmaster.pid lock:
+$PG_PROBE_ERR
+
+A previous postgres shutdown did not clean up its lock. Remove it and restart:
+    rm \"$PGDATA_DIR/postmaster.pid\"
+    brew services restart postgresql@18"
     fi
+    die "host Postgres not reachable: $PG_PROBE_ERR
+
+Hint: start it with 'brew services start postgresql@18' (or set KEIROUTER_DATABASE__DSN in .env to point elsewhere)"
+  fi
+fi
+
+if [ -z "$DSN_FROM_ENV" ]; then
+  if ! psql -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='${DB_NAME}'" 2>/dev/null | grep -q 1; then
+    log "Creating database ${DB_NAME}"
+    createdb "$DB_NAME" || die "could not create ${DB_NAME} (createdb failed)"
   else
-    warn "psql not found; assuming database ${DB_NAME} exists on host Postgres"
+    log "Database ${DB_NAME} exists"
   fi
 fi
 

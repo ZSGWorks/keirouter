@@ -427,26 +427,50 @@ var providerModels = map[string][]ModelSpec{
 // the static catalog with any user-registered custom models. Custom models
 // override static entries with the same id.
 func ModelsForProvider(providerID string) []ModelSpec {
-	static := providerModels[providerID]
-	custom := dynamicModelsFor(providerID)
+	base := mergeFetchedModelSpecs(providerModels[providerID], fetchedModelsFor(providerID))
+	return mergeCustomModelSpecs(base, dynamicModelsFor(providerID))
+}
+
+func mergeFetchedModelSpecs(static, fetched []ModelSpec) []ModelSpec {
+	return appendMissingModelSpecs(static, fetched)
+}
+
+func mergeCustomModelSpecs(base, custom []ModelSpec) []ModelSpec {
 	if len(custom) == 0 {
-		return static
+		return base
 	}
-	if len(static) == 0 {
-		return custom
-	}
-	merged := make([]ModelSpec, 0, len(static)+len(custom))
-	customByID := make(map[string]bool, len(custom))
-	for _, m := range custom {
-		customByID[m.ID] = true
-	}
-	for _, m := range static {
-		if customByID[m.ID] {
-			continue // custom entry takes precedence
+	keys := modelSpecKeys(custom)
+	merged := make([]ModelSpec, 0, len(base)+len(custom))
+	for _, model := range base {
+		if !keys[modelSpecKey(model)] {
+			merged = append(merged, model)
 		}
-		merged = append(merged, m)
 	}
 	return append(merged, custom...)
+}
+
+func appendMissingModelSpecs(primary, additions []ModelSpec) []ModelSpec {
+	keys := modelSpecKeys(primary)
+	merged := append([]ModelSpec{}, primary...)
+	for _, model := range additions {
+		if !keys[modelSpecKey(model)] {
+			keys[modelSpecKey(model)] = true
+			merged = append(merged, model)
+		}
+	}
+	return merged
+}
+
+func modelSpecKeys(models []ModelSpec) map[string]bool {
+	keys := make(map[string]bool, len(models))
+	for _, model := range models {
+		keys[modelSpecKey(model)] = true
+	}
+	return keys
+}
+
+func modelSpecKey(m ModelSpec) string {
+	return m.ID + "/" + string(m.Kind)
 }
 
 // ModelsByKind returns all (providerID, model) pairs across the catalog that
@@ -478,10 +502,20 @@ func ModelsByKind(kind core.ServiceKind) []ProviderModel {
 
 // FindModel locates a model by provider id and model id.
 func FindModel(providerID, modelID string) (ModelSpec, bool) {
+	var fallback ModelSpec
+	found := false
 	for _, mdl := range ModelsForProvider(providerID) {
 		if mdl.ID == modelID {
-			return mdl, true
+			if mdl.Kind == core.ServiceLLM {
+				return mdl, true
+			}
+			if !found {
+				fallback, found = mdl, true
+			}
 		}
+	}
+	if found {
+		return fallback, true
 	}
 	return ModelSpec{}, false
 }
