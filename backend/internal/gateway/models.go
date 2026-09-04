@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -28,6 +29,26 @@ type modelEntry struct {
 	CapabilitySource capability.CapabilitySource `json:"capability_source,omitempty"`
 }
 
+type liveModelResults struct {
+	mu     sync.Mutex
+	models map[string][]connectors.ModelSpec
+	closed bool
+}
+
+func (r *liveModelResults) add(provider string, models []connectors.ModelSpec) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.closed {
+		r.models[provider] = models
+	}
+}
+
+func (r *liveModelResults) close() {
+	r.mu.Lock()
+	r.closed = true
+	r.mu.Unlock()
+}
+
 // handleListModels reports targetable models: the tenant's chains (as virtual
 // models) plus every catalogued LLM model in provider/model form. This lets a
 // client discover what it can pass in the `model` field.
@@ -38,62 +59,70 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 	data := make([]modelEntry, 0, 64)
 	seen := make(map[string]struct{}, 64)
 	usableProviders := s.usableModelProviders(r.Context(), tenantID)
+	data = s.appendChainModels(r.Context(), tenantID, data, seen)
+	data = appendCatalogModels(data, seen, usableProviders, core.ServiceLLM)
+	data = appendLiveModels(data, seen, s.fetchLiveModels(r.Context(), tenantID), "")
 
-	// Chains are exposed as "combo" models, matching the upstream convention:
-	// a combo chains multiple providers with auto-fallback and is callable by
-	// its bare name (and via the chain: prefix). owned_by:"combo" lets client
-	// tools surface them distinctly from single-provider models.
-	chains, err := s.chains.ListByTenant(r.Context(), tenantID)
-	if err == nil {
-		for _, c := range chains {
-			data = appendModelEntry(data, seen, modelEntry{
-				ID: c.Name, Object: "model", OwnedBy: "combo", Kind: string(core.ServiceLLM), Name: c.Name,
-			})
-		}
+	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": data})
+}
+
+// appendChainModels exposes chains as combo models callable by their bare name.
+func (s *Server) appendChainModels(ctx context.Context, tenantID string, data []modelEntry, seen map[string]struct{}) []modelEntry {
+	chains, err := s.chains.ListByTenant(ctx, tenantID)
+	if err != nil {
+		return data
 	}
+	for _, chain := range chains {
+		data = appendModelEntry(data, seen, modelEntry{
+			ID: chain.Name, Object: "model", OwnedBy: "combo", Kind: string(core.ServiceLLM), Name: chain.Name,
+		})
+	}
+	return data
+}
 
-	// Static catalog models for providers the tenant has connected. Without this
-	// gate, discovery advertises provider/model ids that the dispatcher will later
-	// reject with "no accounts configured".
-	for _, pm := range connectors.ModelsByKind(core.ServiceLLM) {
-		if !usableProviders[pm.Provider] {
+// appendCatalogModels includes only models dispatchable with tenant accounts.
+func appendCatalogModels(data []modelEntry, seen map[string]struct{}, usableProviders map[string]bool, kind core.ServiceKind) []modelEntry {
+	for _, providerModel := range connectors.ModelsByKind(kind) {
+		if !usableProviders[providerModel.Provider] {
 			continue
 		}
-		caps, source := capabilityPayload(pm.Provider, pm.Model.ID, core.ServiceLLM)
+		model := providerModel.Model
+		caps, source := capabilityPayload(providerModel.Provider, model.ID, model.Kind)
 		data = appendModelEntry(data, seen, modelEntry{
-			ID:           pm.Provider + "/" + pm.Model.ID,
+			ID:           providerModel.Provider + "/" + model.ID,
 			Object:       "model",
-			OwnedBy:      pm.Provider,
-			Provider:     pm.Provider,
-			Kind:         string(core.ServiceLLM),
-			Name:         pm.Model.Name,
+			OwnedBy:      providerModel.Provider,
+			Provider:     providerModel.Provider,
+			Kind:         string(model.Kind),
+			Name:         model.Name,
+			Dimensions:   model.Dimensions,
 			Capabilities: &caps, CapabilitySource: source,
 		})
 	}
+	return data
+}
 
-	// Live model discovery: for providers with a LiveModelSource and connected
-	// accounts, fetch the live catalog and merge (live models supplement, not
-	// replace, the static catalog).
-	liveModels := s.fetchLiveModels(r.Context(), tenantID)
+// appendLiveModels supplements static entries with successful live discovery.
+func appendLiveModels(data []modelEntry, seen map[string]struct{}, liveModels map[string][]connectors.ModelSpec, kind core.ServiceKind) []modelEntry {
 	for provider, models := range liveModels {
-		if !usableProviders[provider] {
-			continue
-		}
-		for _, lm := range models {
-			caps, source := capabilityPayload(provider, lm.ID, lm.Kind)
+		for _, model := range models {
+			if kind != "" && model.Kind != kind {
+				continue
+			}
+			caps, source := capabilityPayload(provider, model.ID, model.Kind)
 			data = appendModelEntry(data, seen, modelEntry{
-				ID:           provider + "/" + lm.ID,
+				ID:           provider + "/" + model.ID,
 				Object:       "model",
 				OwnedBy:      provider,
 				Provider:     provider,
-				Kind:         string(lm.Kind),
-				Name:         lm.Name,
+				Kind:         string(model.Kind),
+				Name:         model.Name,
+				Dimensions:   model.Dimensions,
 				Capabilities: &caps, CapabilitySource: source,
 			})
 		}
 	}
-
-	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": data})
+	return data
 }
 
 // handleListModelsByKind serves GET /v1/models/{kind}: it lists every model of
@@ -114,27 +143,12 @@ func (s *Server) handleListModelsByKind(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	pairs := connectors.ModelsByKind(kind)
-	data := make([]modelEntry, 0, len(pairs))
-	seen := make(map[string]struct{}, len(pairs))
+	data := make([]modelEntry, 0, 64)
+	seen := make(map[string]struct{}, 64)
 	key, _ := authedKey(r.Context())
 	usableProviders := s.usableModelProviders(r.Context(), tenantOf(key))
-	for _, pm := range pairs {
-		if !usableProviders[pm.Provider] {
-			continue
-		}
-		caps, source := capabilityPayload(pm.Provider, pm.Model.ID, pm.Model.Kind)
-		data = appendModelEntry(data, seen, modelEntry{
-			ID:           pm.Provider + "/" + pm.Model.ID,
-			Object:       "model",
-			OwnedBy:      pm.Provider,
-			Provider:     pm.Provider,
-			Kind:         string(pm.Model.Kind),
-			Name:         pm.Model.Name,
-			Dimensions:   pm.Model.Dimensions,
-			Capabilities: &caps, CapabilitySource: source,
-		})
-	}
+	data = appendCatalogModels(data, seen, usableProviders, kind)
+	data = appendLiveModels(data, seen, s.fetchLiveModels(r.Context(), tenantOf(key)), kind)
 	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "kind": kindParam, "data": data})
 }
 
@@ -145,43 +159,82 @@ func (s *Server) fetchLiveModels(ctx context.Context, tenantID string) map[strin
 	if s.accounts == nil || s.vault == nil {
 		return nil
 	}
-	result := map[string][]connectors.ModelSpec{}
-
-	// Check each provider that has a live model source.
-	for provider, src := range map[string]connectors.LiveModelSource{
-		"kiro": connectors.GetLiveModelSource("kiro"),
-	} {
+	// Bound total discovery latency even when queued providers are unavailable.
+	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	results := liveModelResults{models: map[string][]connectors.ModelSpec{}}
+	var wg sync.WaitGroup
+	probes := make(chan struct{}, 4)
+	for _, spec := range connectors.Catalog() {
+		provider := spec.ID
+		src := connectors.GetLiveModelSource(provider)
 		if src == nil {
 			continue
 		}
-		accs, err := s.accounts.ListByProvider(ctx, tenantID, provider)
-		if err != nil || len(accs) == 0 {
-			continue
+		select {
+		case probes <- struct{}{}:
+		case <-probeCtx.Done():
+			results.close()
+			return results.models
 		}
-		// Use the first non-disabled account.
-		var acc store.Account
-		for _, a := range accs {
-			if !a.Disabled && !a.NeedsReconnect {
-				acc = a
-				break
+		wg.Add(1)
+		go func(provider string, src connectors.LiveModelSource) {
+			defer wg.Done()
+			defer func() { <-probes }()
+			models := s.fetchLiveModelsForProvider(probeCtx, tenantID, provider, src)
+			if len(models) == 0 {
+				return
 			}
-		}
-		if acc.ID == "" {
-			continue
-		}
-		creds, err := s.vault.Open(acc)
-		if err != nil {
-			continue
-		}
-		probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		models, err := src.ListModels(probeCtx, creds)
-		cancel()
-		if err != nil || len(models) == 0 {
-			continue
-		}
-		result[provider] = models
+			results.add(provider, models)
+		}(provider, src)
 	}
-	return result
+	return waitForLiveModelProbes(probeCtx, &wg, &results)
+}
+
+func waitForLiveModelProbes(ctx context.Context, wg *sync.WaitGroup, results *liveModelResults) map[string][]connectors.ModelSpec {
+	completed := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(completed)
+	}()
+	select {
+	case <-completed:
+		return results.models
+	case <-ctx.Done():
+		results.close()
+		return results.models
+	}
+}
+
+func (s *Server) fetchLiveModelsForProvider(ctx context.Context, tenantID, provider string, src connectors.LiveModelSource) []connectors.ModelSpec {
+	accounts, err := s.accounts.ListByProvider(ctx, tenantID, provider)
+	if err != nil {
+		return nil
+	}
+	account, ok := firstUsableAccount(accounts)
+	if !ok {
+		return nil
+	}
+	creds, err := s.vault.Open(account)
+	if err != nil {
+		return nil
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	models, err := src.ListModels(probeCtx, creds)
+	if err != nil {
+		return nil
+	}
+	return models
+}
+
+func firstUsableAccount(accounts []store.Account) (store.Account, bool) {
+	for _, account := range accounts {
+		if !account.Disabled && !account.NeedsReconnect {
+			return account, true
+		}
+	}
+	return store.Account{}, false
 }
 
 func (s *Server) usableModelProviders(ctx context.Context, tenantID string) map[string]bool {

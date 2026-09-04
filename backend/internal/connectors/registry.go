@@ -44,7 +44,6 @@ func (r *Registry) Has(provider string) bool {
 	return ok
 }
 
-
 // Providers returns the registered provider ids.
 func (r *Registry) Providers() []string {
 	out := make([]string, 0, len(r.byID))
@@ -103,6 +102,7 @@ func DefaultRegistry() *Registry {
 			conns = append(conns, NewGemini(p.ID, p.BaseURL))
 		case p.Dialect == core.DialectOllama:
 			conns = append(conns, NewOllama(p.ID, p.BaseURL))
+			RegisterLiveModelSource(p.ID, NewOllamaModelSource(p.BaseURL))
 		case p.Dialect == core.DialectVertex:
 			conns = append(conns, NewVertex(p.ID, p.BaseURL))
 		case p.Dialect == core.DialectOpenAIResponses:
