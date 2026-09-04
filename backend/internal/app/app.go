@@ -793,12 +793,14 @@ func buildPricingCallbacks(db *store.DB, mtr *meter.Meter, log *slog.Logger) (*p
 		return replacePrices(ctx, appliedFetchedPrices)
 	}
 	refresh := pricingCatalogRefresher{
-		fetch:         fetcher.Refresh,
-		accounts:      db.Accounts(),
-		replacePrices: replacePrices,
-		replaceModels: connectors.ReplaceFetchedModels,
-		log:           log,
-		lock:          lock,
+		fetch:                fetcher.Refresh,
+		accounts:             db.Accounts(),
+		replacePrices:        replacePrices,
+		replaceDisplayPrices: connectors.ReplaceFetchedModelPrices,
+		replaceCatalog:       connectors.ReplaceFetchedCatalog,
+		replaceModels:        connectors.ReplaceFetchedModels,
+		log:                  log,
+		lock:                 lock,
 		setAppliedPrices: func(prices map[string][]connectors.ModelPrice) {
 			appliedFetchedPrices = prices
 		},
@@ -823,13 +825,15 @@ type providerAccountLister interface {
 // pricingCatalogRefresher serializes fetches so only complete, connected-provider
 // snapshots reach pricing and model discovery.
 type pricingCatalogRefresher struct {
-	fetch            func(context.Context) (pricing.Result, error)
-	accounts         providerAccountLister
-	replacePrices    func(context.Context, map[string][]connectors.ModelPrice) error
-	replaceModels    func(map[string][]connectors.ModelSpec)
-	setAppliedPrices func(map[string][]connectors.ModelPrice)
-	log              *slog.Logger
-	lock             chan struct{}
+	fetch                func(context.Context) (pricing.Result, error)
+	accounts             providerAccountLister
+	replacePrices        func(context.Context, map[string][]connectors.ModelPrice) error
+	replaceModels        func(map[string][]connectors.ModelSpec)
+	replaceDisplayPrices func(map[string][]connectors.ModelPrice)
+	replaceCatalog       func(map[string][]connectors.ModelSpec, map[string][]connectors.ModelPrice)
+	setAppliedPrices     func(map[string][]connectors.ModelPrice)
+	log                  *slog.Logger
+	lock                 chan struct{}
 }
 
 func (r pricingCatalogRefresher) Refresh(ctx context.Context) error {
@@ -853,7 +857,14 @@ func (r pricingCatalogRefresher) Refresh(ctx context.Context) error {
 	if err := r.replacePrices(ctx, prices); err != nil {
 		return err
 	}
-	r.replaceModels(models)
+	if r.replaceCatalog != nil {
+		r.replaceCatalog(models, prices)
+	} else {
+		r.replaceModels(models)
+		if r.replaceDisplayPrices != nil {
+			r.replaceDisplayPrices(prices)
+		}
+	}
 	r.setAppliedPrices(prices)
 	r.log.Info("models.dev catalog loaded",
 		"providers", res.Providers,

@@ -46,6 +46,24 @@ export interface ProviderModel {
   discovered?: boolean;
 	capabilities?: ModelCapabilities;
 	capability_source?: CapabilitySource;
+	pricing?: ModelPricing;
+}
+
+export interface ModelPricing {
+	input_per_m: number;
+	output_per_m: number;
+	cached_input_per_m: number;
+	cache_write_per_m: number;
+	reasoning_per_m: number;
+	long_context_threshold: number;
+	long_input_per_m: number;
+	long_output_per_m: number;
+	long_cached_input_per_m: number;
+	long_cache_write_per_m: number;
+	source: string;
+	source_url: string;
+	estimated: boolean;
+	explicit_free: boolean;
 }
 
 export type CapabilitySource = "provider" | "exact" | "pattern" | "service_kind" | "default";

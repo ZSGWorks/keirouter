@@ -97,6 +97,32 @@ func TestPricingCatalogRefresherPublishesConnectedSnapshotAfterPrices(t *testing
 	assertPublishedCatalog(t, publishedPrices, publishedModels, events)
 }
 
+func TestPricingCatalogRefresherPublishesConnectedCatalogAtomically(t *testing.T) {
+	var events []string
+	var publishedPrices map[string][]connectors.ModelPrice
+	var publishedModels map[string][]connectors.ModelSpec
+	r := connectedCatalogRefresher(t, &events, &publishedPrices, &publishedModels)
+	legacyModelPublishCalled := false
+	r.replaceModels = func(map[string][]connectors.ModelSpec) { legacyModelPublishCalled = true }
+	r.replaceCatalog = func(models map[string][]connectors.ModelSpec, prices map[string][]connectors.ModelPrice) {
+		events = append(events, "catalog")
+		publishedModels = models
+		publishedPrices = prices
+	}
+
+	if err := r.Refresh(context.Background()); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if legacyModelPublishCalled {
+		t.Fatal("published models through separate legacy callback")
+	}
+	assertPublished(t, publishedPrices, "openrouter", func(price connectors.ModelPrice) bool { return price.Model == "price-only" })
+	assertPublished(t, publishedModels, "venice", func(model connectors.ModelSpec) bool { return model.ID == "model-only" })
+	if !slices.Equal(events, []string{"prices", "catalog"}) {
+		t.Fatalf("publication order = %v, want prices then catalog", events)
+	}
+}
+
 func connectedCatalogRefresher(t *testing.T, events *[]string, publishedPrices *map[string][]connectors.ModelPrice, publishedModels *map[string][]connectors.ModelSpec) pricingCatalogRefresher {
 	t.Helper()
 	return pricingCatalogRefresher{

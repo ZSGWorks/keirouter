@@ -431,6 +431,31 @@ func ModelsForProvider(providerID string) []ModelSpec {
 	return mergeCustomModelSpecs(base, dynamicModelsFor(providerID))
 }
 
+// ModelsAndDisplayPricesForProvider returns a model list and its resolved
+// prices from one fetched catalog snapshot. Built-in provider prices still win.
+func ModelsAndDisplayPricesForProvider(providerID string) ([]ModelSpec, map[string]ModelPrice) {
+	dynMu.RLock()
+	fetched := copiedModelSpecs(fetchedModels[providerID])
+	prices := make(map[string][]ModelPrice, len(fetchedModelPrices))
+	for sourceProvider, entries := range fetchedModelPrices {
+		prices[sourceProvider] = append([]ModelPrice(nil), entries...)
+	}
+	dynMu.RUnlock()
+
+	models := mergeCustomModelSpecs(mergeFetchedModelSpecs(providerModels[providerID], fetched), dynamicModelsFor(providerID))
+	resolved := make(map[string]ModelPrice, len(models))
+	for _, model := range models {
+		if price, ok := ModelPriceByProviderModel(providerID, model.ID); ok {
+			resolved[model.ID] = price
+			continue
+		}
+		if price, ok := fetchedModelDisplayPriceFromSnapshot(prices, providerID, model.ID); ok {
+			resolved[model.ID] = price
+		}
+	}
+	return models, resolved
+}
+
 func mergeFetchedModelSpecs(static, fetched []ModelSpec) []ModelSpec {
 	return appendMissingModelSpecs(static, fetched)
 }

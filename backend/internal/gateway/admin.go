@@ -269,6 +269,38 @@ func (s *Server) adminProviderModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	type modelPricing struct {
+		InputPerM            float64 `json:"input_per_m"`
+		OutputPerM           float64 `json:"output_per_m"`
+		CachedInputPerM      float64 `json:"cached_input_per_m"`
+		CacheWritePerM       float64 `json:"cache_write_per_m"`
+		ReasoningPerM        float64 `json:"reasoning_per_m"`
+		LongContextThreshold int     `json:"long_context_threshold"`
+		LongInputPerM        float64 `json:"long_input_per_m"`
+		LongOutputPerM       float64 `json:"long_output_per_m"`
+		LongCachedInputPerM  float64 `json:"long_cached_input_per_m"`
+		LongCacheWritePerM   float64 `json:"long_cache_write_per_m"`
+		Source               string  `json:"source"`
+		SourceURL            string  `json:"source_url"`
+		Estimated            bool    `json:"estimated"`
+		ExplicitFree         bool    `json:"explicit_free"`
+	}
+	modelPrice := func(price connectors.ModelPrice, ok bool) *modelPricing {
+		if !ok {
+			return nil
+		}
+		if price.Source == "" {
+			price.Source = "provider_catalog"
+		}
+		return &modelPricing{
+			InputPerM: price.InputPerM, OutputPerM: price.OutputPerM,
+			CachedInputPerM: price.CachedInputPerM, CacheWritePerM: price.CacheWritePerM,
+			ReasoningPerM: price.ReasoningPerM, LongContextThreshold: price.LongContextThreshold,
+			LongInputPerM: price.LongInputPerM, LongOutputPerM: price.LongOutputPerM,
+			LongCachedInputPerM: price.LongCachedInputPerM, LongCacheWritePerM: price.LongCacheWritePerM,
+			Source: price.Source, SourceURL: price.SourceURL, Estimated: price.Estimated, ExplicitFree: price.ExplicitFree,
+		}
+	}
 	type modelInfo struct {
 		ID               string                      `json:"id"`
 		Name             string                      `json:"name"`
@@ -278,6 +310,7 @@ func (s *Server) adminProviderModels(w http.ResponseWriter, r *http.Request) {
 		Custom           bool                        `json:"custom,omitempty"`
 		DBID             string                      `json:"db_id,omitempty"`
 		Discovered       bool                        `json:"discovered,omitempty"`
+		Pricing          *modelPricing               `json:"pricing,omitempty"`
 	}
 	modelKind := func(kind core.ServiceKind) core.ServiceKind {
 		if kind == "" {
@@ -295,9 +328,9 @@ func (s *Server) adminProviderModels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Static catalog models (already merged with custom models by
-	// ModelsForProvider). Flag any entry that is a user-defined custom model.
-	static := connectors.ModelsForProvider(providerID)
+	// Read fetched models and prices from one snapshot so a refresh cannot pair
+	// a stale model list with a newer price list.
+	static, staticPrices := connectors.ModelsAndDisplayPricesForProvider(providerID)
 	seen := map[string]bool{}
 	out := make([]modelInfo, 0, len(static))
 	for _, m := range static {
@@ -306,7 +339,8 @@ func (s *Server) adminProviderModels(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		caps, source := capabilityPayload(providerID, m.ID, kind)
-		mi := modelInfo{ID: m.ID, Name: m.Name, Kind: string(kind), Capabilities: caps, CapabilitySource: source}
+		price, ok := staticPrices[m.ID]
+		mi := modelInfo{ID: m.ID, Name: m.Name, Kind: string(kind), Capabilities: caps, CapabilitySource: source, Pricing: modelPrice(price, ok)}
 		if cm, ok := customByID[m.ID]; ok {
 			mi.Custom = true
 			mi.DBID = cm.ID
@@ -338,7 +372,8 @@ func (s *Server) adminProviderModels(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 				caps, source := capabilityPayload(providerID, lm.ID, kind)
-				out = append(out, modelInfo{ID: lm.ID, Name: lm.Name, Kind: string(kind), Capabilities: caps, CapabilitySource: source, Discovered: true})
+				price, ok := connectors.ModelDisplayPriceByProviderModel(providerID, lm.ID)
+				out = append(out, modelInfo{ID: lm.ID, Name: lm.Name, Kind: string(kind), Capabilities: caps, CapabilitySource: source, Discovered: true, Pricing: modelPrice(price, ok)})
 				seen[lm.ID] = true
 				added = true
 			}
