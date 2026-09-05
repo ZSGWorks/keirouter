@@ -644,6 +644,44 @@ func httpStatusError(provider, model string, resp *http.Response, body []byte) e
 	return httpStatusErrorAt(provider, model, resp, body, time.Now())
 }
 
+// authStatusErrorClass refines the initial ErrAuth classification for 401/403
+// responses. Some gateways report conditions other than a bad credential with
+// these statuses and the body text is the only way to tell them apart.
+func authStatusErrorClass(body []byte) (core.ErrorKind, bool) {
+	// Some gateways report a depleted balance as 403 rather than 402.
+	if looksLikeCreditsExhausted(string(body)) {
+		return core.ErrQuotaExhausted, true
+	}
+	// Some gateways (e.g. OpenCode Zen) validate model existence before key
+	// validity and report an unknown model as 401/403 with a model-unsupported
+	// body. That is not a credential failure — reclassify so validation probes
+	// and chains treat it as a model problem instead of rejecting the account.
+	if isModelUnsupportedBody(body) {
+		return core.ErrModelUnavailable, true
+	}
+	return core.ErrAuth, false
+}
+
+// clientErrorStatusClass refines the initial ErrBadRequest classification for
+// other 4xx responses, again relying on body text for the special cases.
+func clientErrorStatusClass(body []byte) (core.ErrorKind, bool) {
+	// Some backends report unknown or inaccessible models as a plain 400
+	// (Codex: "The 'X' model is not supported when using Codex with a
+	// ChatGPT account"). Classify those as model-unavailable so chains
+	// fall back to the next model/provider instead of hard-failing the
+	// request.
+	if isModelUnsupportedBody(body) {
+		return core.ErrModelUnavailable, false
+	}
+	// Anthropic-style APIs return "credit balance is too low" as a plain
+	// 400 invalid_request_error. Treat it as a depleted balance so chains
+	// fall back to the next account instead of surfacing a request error.
+	if looksLikeCreditsExhausted(string(body)) {
+		return core.ErrQuotaExhausted, true
+	}
+	return core.ErrBadRequest, false
+}
+
 func httpStatusErrorAt(provider, model string, resp *http.Response, body []byte, now time.Time) error {
 	kind := core.ErrUpstream
 	var retryAfter time.Duration
@@ -655,12 +693,7 @@ func httpStatusErrorAt(provider, model string, resp *http.Response, body []byte,
 		// than per-minute throttling; a dry balance parks the account.
 		kind, retryAfter, creditsExhausted = classify429(resp, body)
 	case resp.StatusCode == http.StatusUnauthorized, resp.StatusCode == http.StatusForbidden:
-		kind = core.ErrAuth
-		// Some gateways report a depleted balance as 403 rather than 402.
-		if looksLikeCreditsExhausted(string(body)) {
-			kind = core.ErrQuotaExhausted
-			creditsExhausted = true
-		}
+		kind, creditsExhausted = authStatusErrorClass(body)
 	case resp.StatusCode == http.StatusPaymentRequired:
 		kind = core.ErrQuotaExhausted
 		if wait := githubMonthlyUsageRetryAfter(provider, resp.StatusCode, body, now); wait > 0 {
@@ -671,22 +704,7 @@ func httpStatusErrorAt(provider, model string, resp *http.Response, body []byte,
 	case resp.StatusCode == http.StatusNotFound:
 		kind = core.ErrModelUnavailable
 	case resp.StatusCode >= 400 && resp.StatusCode < 500:
-		kind = core.ErrBadRequest
-		// Some backends report unknown or inaccessible models as a plain 400
-		// (Codex: "The 'X' model is not supported when using Codex with a
-		// ChatGPT account"). Classify those as model-unavailable so chains
-		// fall back to the next model/provider instead of hard-failing the
-		// request.
-		if isModelUnsupportedBody(body) {
-			kind = core.ErrModelUnavailable
-		}
-		// Anthropic-style APIs return "credit balance is too low" as a plain
-		// 400 invalid_request_error. Treat it as a depleted balance so chains
-		// fall back to the next account instead of surfacing a request error.
-		if kind == core.ErrBadRequest && looksLikeCreditsExhausted(string(body)) {
-			kind = core.ErrQuotaExhausted
-			creditsExhausted = true
-		}
+		kind, creditsExhausted = clientErrorStatusClass(body)
 	}
 
 	scope := core.FailureScopeProvider
@@ -745,7 +763,7 @@ func githubMonthlyUsageRetryAfter(provider string, status int, body []byte, now 
 // access) rather than a malformed request. Matched case-insensitively and only
 // on bodies that mention "model" to avoid misclassifying generic errors.
 var modelUnsupportedPhrases = []string{
-	"model is not supported", "model not supported",
+	"model is not supported", "model not supported", "not supported\"",
 	"model is not available", "model not available",
 	"model not found", "model_not_found", "deployment_not_found",
 	"invalid model", "unknown model",

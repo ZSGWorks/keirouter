@@ -66,6 +66,7 @@ const (
 	SourcePattern     CapabilitySource = "pattern"
 	SourceServiceKind CapabilitySource = "service_kind"
 	SourceDefault     CapabilitySource = "default"
+	SourceChain       CapabilitySource = "chain"
 )
 
 type Resolution struct {
@@ -256,11 +257,75 @@ func Resolve(provider, model string) Resolution {
 	return Resolution{Profile: p, Source: SourceDefault, VisionState: SupportUnknown}
 }
 
+// visionState reports the support state for a single resolved profile.
 func visionState(p Profile) SupportState {
 	if p.Vision {
 		return SupportSupported
 	}
 	return SupportUnsupported
+}
+
+// MergeChainProfiles merges the resolved profiles of a chain's steps into one
+// profile advertising what the chain as a whole can serve, so virtual chain
+// models expose meaningful metadata to clients.
+//
+// Merge semantics mirror the dispatcher's runtime behavior:
+//   - Strippable input modalities (vision, audio) and adaptable features
+//     (tools, reasoning, search, structured output) use optimistic union:
+//     if any step supports the feature, the chain advertises it. Unsupported
+//     steps are soft-degraded by the pipeline (modality stripping, thinking
+//     normalization), never hard-rejected.
+//   - Context/output limits use the maximum across steps, since the chain may
+//     route any request to its most capable step.
+func MergeChainProfiles(profiles []Profile) Profile {
+	merged := defaultProfile()
+	merged.ThinkingCanDisable = true
+	if len(profiles) == 0 {
+		return merged
+	}
+
+	maxContext, maxOutput := 0, 0
+	for _, p := range profiles {
+		if p.Vision {
+			merged.Vision = true
+		}
+		if p.PDF {
+			merged.PDF = true
+		}
+		if p.AudioInput {
+			merged.AudioInput = true
+		}
+		if p.VideoInput {
+			merged.VideoInput = true
+		}
+		if p.ImageOutput {
+			merged.ImageOutput = true
+		}
+		if p.AudioOutput {
+			merged.AudioOutput = true
+		}
+		if p.Search {
+			merged.Search = true
+		}
+		if p.Tools {
+			merged.Tools = true
+		}
+		if p.Reasoning {
+			merged.Reasoning = true
+		}
+		if p.StructuredOutput {
+			merged.StructuredOutput = true
+		}
+		if p.ContextWindow > maxContext {
+			maxContext = p.ContextWindow
+		}
+		if p.MaxOutput > maxOutput {
+			maxOutput = p.MaxOutput
+		}
+	}
+	merged.ContextWindow = maxContext
+	merged.MaxOutput = maxOutput
+	return merged
 }
 
 // ResolveProfile retains the original resolver API for existing callers.

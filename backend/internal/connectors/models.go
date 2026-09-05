@@ -375,6 +375,16 @@ var providerModels = map[string][]ModelSpec{
 	"vercel-ai-gateway": {
 		k("openai/gpt-4o", "GPT-4o (Vision)", core.ServiceImageToText),
 	},
+	"opencode": {
+		m("glm-5.3-flash", "GLM 5.3 Flash"), m("glm-5.3", "GLM 5.3"), m("glm-5.2", "GLM 5.2"), m("glm-5.1", "GLM 5.1"),
+		m("kimi-k3", "Kimi K3"), m("kimi-k2.7-code", "Kimi K2.7 Code"), m("kimi-k2.6", "Kimi K2.6"),
+		m("minimax-m3", "MiniMax M3"), m("minimax-m2.7", "MiniMax M2.7"),
+		m("deepseek-v4-pro", "DeepSeek V4 Pro"), m("deepseek-v4-flash", "DeepSeek V4 Flash"),
+		m("qwen3.7-max", "Qwen 3.7 Max"), m("qwen3.7-plus", "Qwen 3.7 Plus"),
+		m("gpt-5.5", "GPT 5.5"), m("gpt-5.4", "GPT 5.4"), m("gpt-5.1-codex", "GPT 5.1 Codex"),
+		m("claude-sonnet-5", "Claude Sonnet 5"), m("claude-haiku-4.5", "Claude Haiku 4.5"),
+		m("big-pickle", "Big Pickle"), m("mimo-v2.5-free", "MiMo-V2.5 Free"),
+	},
 	"opencode-go":  {m("kimi-k2.6", "Kimi K2.6"), m("glm-5.1", "GLM 5.1"), m("qwen3.6-plus", "Qwen 3.6 Plus")},
 	"ollama":       {m("gpt-oss:120b", "GPT OSS 120B"), m("kimi-k2.5", "Kimi K2.5"), m("glm-5", "GLM 5"), m("qwen3.5", "Qwen3.5")},
 	"ollama-local": {m("llama3.2", "Llama 3.2"), m("qwen2.5-coder", "Qwen 2.5 Coder")},

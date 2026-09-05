@@ -265,6 +265,19 @@ func TestCommandCodeCatalogVisible(t *testing.T) {
 	}
 }
 
+// The OpenCode Zen gateway validates model existence before key validity, so
+// the validation probe must send a real catalog model. Without a static
+// catalog entry the probe falls back to a synthetic id and a valid key is
+// rejected with a misread auth failure.
+func TestOpenCodeCatalogHasProbeModel(t *testing.T) {
+	if _, ok := SpecByID("opencode"); !ok {
+		t.Fatal("catalog missing opencode")
+	}
+	if got := firstCatalogModel("opencode"); got == "" {
+		t.Fatal("opencode should have static models for the validation probe")
+	}
+}
+
 func TestCatalogHasNewProviders(t *testing.T) {
 	// Providers added for coverage parity. Each must exist, expose static
 	// models, and (since they use drivable dialects) get a live connector.

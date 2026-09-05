@@ -312,3 +312,34 @@ func TestHTTPStatusError_403InsufficientBalance(t *testing.T) {
 	require.Equal(t, core.ErrQuotaExhausted, pe.Kind)
 	require.True(t, pe.CreditsExhausted)
 }
+
+// OpenCode Zen validates model existence before key validity and reports an
+// unknown model as 401 with a model-unsupported body. That must not be
+// classified as a credential failure (it made connecting a valid Zen key
+// impossible when the validation probe used a synthetic model id).
+func TestHTTPStatusError_401ModelUnsupportedIsNotAuth(t *testing.T) {
+	resp := &http.Response{
+		StatusCode: http.StatusUnauthorized,
+		Header:     http.Header{},
+	}
+	body := []byte(`{"type":"error","error":{"type":"ModelError","message":"Model test is not supported"}}`)
+
+	pe := core.AsProviderError(httpStatusError("opencode", "test", resp, body))
+
+	require.Equal(t, core.ErrModelUnavailable, pe.Kind)
+	require.Equal(t, core.FailureScopeModel, pe.EffectiveScope())
+}
+
+// A genuine 401 AuthError body must still classify as an auth failure.
+func TestHTTPStatusError_401GenuineAuthErrorStaysAuth(t *testing.T) {
+	resp := &http.Response{
+		StatusCode: http.StatusUnauthorized,
+		Header:     http.Header{},
+	}
+	body := []byte(`{"type":"error","error":{"type":"AuthError","message":"Invalid API key."}}`)
+
+	pe := core.AsProviderError(httpStatusError("opencode", "glm-5.3-flash", resp, body))
+
+	require.Equal(t, core.ErrAuth, pe.Kind)
+	require.Equal(t, core.FailureScopeAccount, pe.EffectiveScope())
+}
