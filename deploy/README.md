@@ -127,6 +127,27 @@ Deploying KeiRouter on [Coolify](https://coolify.io/) is highly recommended as i
 7. **Network**: The Compose file joins Coolify's external `coolify` network so it can resolve the Postgres resource's internal hostname. Change that network name in the file if your Coolify host uses a different one.
 8. **Deploy**: Click **Deploy**. Coolify builds `deploy/Dockerfile` from this repository before starting KeiRouter. The Coolify-injected `SOURCE_COMMIT` is shown in the dashboard; leave `KEIROUTER_VERSION` unset for normal development deployments.
 
+### Access From Other VPS Containers
+
+Client deployments that join Coolify's shared `coolify` network resolve
+KeiRouter by service name; no extra Compose or network changes are needed
+beyond joining that network:
+
+```env
+KEIROUTER_URL=http://keirouter:20180
+```
+
+The port matches `KEIROUTER_SERVER__PORT`, which defaults to `20180` and is
+fixed by `compose.coolify-postgres.yaml`.
+
+No host port is published. `localhost` inside a container refers to that
+container itself, not KeiRouter. If a deployment is not on the `coolify`
+network, attach it in Coolify or add the network to its Compose file.
+
+Avoid naming another service `keirouter` on the shared network; Docker DNS
+round-robins duplicate service names, so clients could reach the wrong
+container.
+
 ### Using External/Managed Postgres on Coolify
 
 `compose.coolify-postgres.yaml` already sets the Postgres driver. Supply its required DSN in the Coolify environment:
