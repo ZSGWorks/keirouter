@@ -131,7 +131,11 @@ export function createKeiRouterAuthHook(opts?: KeiRouterPluginOptions): AuthHook
       return {
         apiKey,
         baseURL: toOpenAICompatibleBaseURL(resolved.baseURL),
-        fetch: createKeiRouterFetch({ apiKey, baseURL: resolved.baseURL }),
+        fetch: createKeiRouterFetch({
+          apiKey,
+          baseURL: resolved.baseURL,
+          providerId: resolved.providerId,
+        }),
       };
     },
   };
@@ -390,14 +394,43 @@ export function toOpenAICompatibleBaseURL(baseURL: string): string {
   return /\/v\d+$/.test(clean) ? clean : `${clean}/v1`;
 }
 
-export function createKeiRouterFetch(opts: { apiKey: string; baseURL: string }): typeof fetch {
+export function createKeiRouterFetch(opts: {
+  apiKey: string;
+  baseURL: string;
+  providerId?: string;
+}): typeof fetch {
   const root = opts.baseURL.replace(/\/+$/, "");
+  const providerPrefix = `${opts.providerId ?? DEFAULT_PROVIDER_ID}/`;
   return async (input, init) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
     const headers = new Headers(init?.headers ?? (typeof input === "string" || input instanceof URL ? undefined : input.headers));
-    if (isSameBaseURL(url, root)) headers.set("Authorization", `Bearer ${opts.apiKey}`);
-    return fetch(input as RequestInfo | URL, { ...init, headers });
+    const isKeiRouterRequest = isSameBaseURL(url, root);
+    if (isKeiRouterRequest) headers.set("Authorization", `Bearer ${opts.apiKey}`);
+
+    const body = isKeiRouterRequest
+      ? await normalizedRequestBody(input, init?.body, providerPrefix)
+      : init?.body;
+    return fetch(input as RequestInfo | URL, { ...init, headers, ...(body === undefined ? {} : { body }) });
   };
+}
+
+// OpenCode selects bare chain names under this plugin's provider namespace,
+// while KeiRouter resolves chains only by their bare name.
+async function normalizedRequestBody(
+  input: RequestInfo | URL,
+  initBody: BodyInit | null | undefined,
+  providerPrefix: string
+): Promise<BodyInit | null | undefined> {
+  const body = initBody !== undefined ? initBody : input instanceof Request ? await input.clone().text() : undefined;
+  if (typeof body !== "string") return body;
+
+  try {
+    const payload = JSON.parse(body) as { model?: unknown };
+    if (typeof payload.model !== "string" || !payload.model.startsWith(providerPrefix)) return body;
+    return JSON.stringify({ ...payload, model: payload.model.slice(providerPrefix.length) });
+  } catch {
+    return body;
+  }
 }
 
 export const defaultReadAuthJson: KeiRouterReadAuthJson = async () => {

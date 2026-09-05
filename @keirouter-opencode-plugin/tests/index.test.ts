@@ -5,6 +5,7 @@ import {
   buildStaticProviderEntry,
   createKeiRouterAuthHook,
   createKeiRouterConfigHook,
+  createKeiRouterFetch,
   createKeiRouterProviderHook,
   defaultKeiRouterModelsFetcher,
   isSameBaseURL,
@@ -59,6 +60,44 @@ test("fetch auth prefix check is URL-safe", () => {
   assert.equal(isSameBaseURL("http://kei.example/v1/models", "http://kei.example"), true);
   assert.equal(isSameBaseURL("http://kei.example.evil/v1/models", "http://kei.example"), false);
   assert.equal(isSameBaseURL("http://kei.example-other/v1/models", "http://kei.example"), false);
+});
+
+test("fetch strips plugin provider prefix only from chain requests", async () => {
+  const originalFetch = globalThis.fetch;
+  const forwarded: Array<{ model: string }> = [];
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    forwarded.push(JSON.parse(String(init?.body)) as { model: string });
+    return new Response("{}", { status: 200 });
+  }) as typeof fetch;
+  try {
+    const wrapped = createKeiRouterFetch({
+      apiKey: "secret",
+      baseURL: "http://kei",
+      providerId: "keirouter",
+    });
+    await wrapped("http://kei/v1/chat/completions", {
+      method: "POST",
+      body: JSON.stringify({ model: "keirouter/fast-chain" }),
+    });
+    await wrapped("http://kei/v1/chat/completions", {
+      method: "POST",
+      body: JSON.stringify({ model: "glm/glm-5.3-flash" }),
+    });
+    await wrapped(
+      new Request("http://kei/v1/chat/completions", {
+        method: "POST",
+        body: JSON.stringify({ model: "keirouter/request-chain" }),
+      })
+    );
+
+    assert.deepEqual(forwarded, [
+      { model: "fast-chain" },
+      { model: "glm/glm-5.3-flash" },
+      { model: "request-chain" },
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("maps raw /v1/models entries without combo synthesis", () => {
