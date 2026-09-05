@@ -233,6 +233,16 @@ export function mapRawModelToModelV2(
   const caps = raw.capabilities ?? {};
   const inMods = new Set(normalizeModalities(raw.input_modalities));
   const outMods = new Set(normalizeModalities(raw.output_modalities));
+  // Optimistic attachment default: when the gateway provides neither
+  // capability flags nor modality arrays (older KeiRouter versions), assume
+  // the model can accept attachments. The gateway pipeline strips unsupported
+  // modalities server-side, so a false negative here blocks usable requests
+  // while a false positive degrades gracefully.
+  const noMetadata =
+    !raw.capabilities &&
+    !Array.isArray(raw.input_modalities) &&
+    !Array.isArray(raw.output_modalities);
+  const attachment = Boolean(caps.attachment ?? caps.vision ?? inMods.has("image")) || noMetadata;
   return {
     id: raw.id.includes("/") ? raw.id : `${opts.providerId}/${raw.id}`,
     providerID: opts.providerId,
@@ -245,7 +255,7 @@ export function mapRawModelToModelV2(
     capabilities: {
       temperature: caps.temperature ?? true,
       reasoning: Boolean(caps.reasoning || caps.thinking),
-      attachment: Boolean(caps.attachment ?? caps.vision ?? false),
+      attachment,
       toolcall: Boolean(caps.tool_calling ?? false),
       input: {
         text: inMods.has("text"),
@@ -297,7 +307,12 @@ export function mapRawModel(raw: KeiRouterRawModel): KeiRouterStaticModel {
   const caps = raw.capabilities ?? {};
   const model: KeiRouterStaticModel = { name: raw.name || raw.id };
 
-  const attachment = caps.attachment ?? caps.vision;
+  const noMetadata =
+    !raw.capabilities &&
+    !Array.isArray(raw.input_modalities) &&
+    !Array.isArray(raw.output_modalities);
+  const mods = new Set(Array.isArray(raw.input_modalities) ? raw.input_modalities : []);
+  const attachment = caps.attachment ?? caps.vision ?? (mods.has("image") || noMetadata ? true : undefined);
   if (typeof attachment === "boolean") model.attachment = attachment;
   if (typeof caps.reasoning === "boolean" || typeof caps.thinking === "boolean") {
     model.reasoning = Boolean(caps.reasoning || caps.thinking);

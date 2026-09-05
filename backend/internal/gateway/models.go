@@ -27,6 +27,8 @@ type modelEntry struct {
 	Dimensions       int                         `json:"dimensions,omitempty"`
 	Capabilities     *modelCapabilities          `json:"capabilities,omitempty"`
 	CapabilitySource capability.CapabilitySource `json:"capability_source,omitempty"`
+	InputModalities  []string                    `json:"input_modalities,omitempty"`
+	OutputModalities []string                    `json:"output_modalities,omitempty"`
 }
 
 type liveModelResults struct {
@@ -66,18 +68,92 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": data})
 }
 
-// appendChainModels exposes chains as combo models callable by their bare name.
+// appendChainModels exposes chains as combo models callable by their bare
+// name. Each chain entry carries a merged capability payload derived from its
+// steps, so clients (e.g. the OpenCode plugin) see accurate modality metadata
+// instead of assuming a text-only model.
 func (s *Server) appendChainModels(ctx context.Context, tenantID string, data []modelEntry, seen map[string]struct{}) []modelEntry {
 	chains, err := s.chains.ListByTenant(ctx, tenantID)
 	if err != nil {
 		return data
 	}
 	for _, chain := range chains {
+		caps := chainCapabilities(chain)
 		data = appendModelEntry(data, seen, modelEntry{
 			ID: chain.Name, Object: "model", OwnedBy: "combo", Kind: string(core.ServiceLLM), Name: chain.Name,
+			Capabilities:     &caps.caps,
+			CapabilitySource: capability.SourceChain,
+			InputModalities:  caps.input,
+			OutputModalities: caps.output,
 		})
 	}
 	return data
+}
+
+// chainCapabilities merges the resolved profiles of a chain's steps into the
+// wire capability payload plus modality arrays for the /v1/models entry.
+func chainCapabilities(chain store.Chain) struct {
+	caps   modelCapabilities
+	input  []string
+	output []string
+} {
+	profiles := make([]capability.Profile, 0, len(chain.Steps))
+	for _, step := range chain.Steps {
+		profiles = append(profiles, capability.ResolveForServiceKind(step.Provider, step.Model, core.ServiceLLM).Profile)
+	}
+	merged := capability.MergeChainProfiles(profiles)
+	return struct {
+		caps   modelCapabilities
+		input  []string
+		output []string
+	}{
+		caps:   modelCapabilitiesFromProfile(merged),
+		input:  inputModalitiesFromProfile(merged),
+		output: outputModalitiesFromProfile(merged),
+	}
+}
+
+// modelCapabilitiesFromProfile projects a resolved profile onto the wire
+// capability struct shared with per-model catalog entries.
+func modelCapabilitiesFromProfile(p capability.Profile) modelCapabilities {
+	return modelCapabilities{
+		Vision: p.Vision, PDF: p.PDF, AudioInput: p.AudioInput, VideoInput: p.VideoInput,
+		ImageOutput: p.ImageOutput, AudioOutput: p.AudioOutput, Search: p.Search,
+		Tools: p.Tools, Reasoning: p.Reasoning, StructuredOutput: p.StructuredOutput,
+		ContextWindow: p.ContextWindow, MaxOutput: p.MaxOutput,
+	}
+}
+
+// inputModalitiesFromProfile lists the canonical input modality strings a
+// resolved profile accepts.
+func inputModalitiesFromProfile(p capability.Profile) []string {
+	mods := []string{"text"}
+	if p.Vision {
+		mods = append(mods, "image")
+	}
+	if p.AudioInput {
+		mods = append(mods, "audio")
+	}
+	if p.VideoInput {
+		mods = append(mods, "video")
+	}
+	if p.PDF {
+		mods = append(mods, "pdf")
+	}
+	return mods
+}
+
+// outputModalitiesFromProfile lists the canonical output modality strings a
+// resolved profile emits.
+func outputModalitiesFromProfile(p capability.Profile) []string {
+	mods := []string{"text"}
+	if p.ImageOutput {
+		mods = append(mods, "image")
+	}
+	if p.AudioOutput {
+		mods = append(mods, "audio")
+	}
+	return mods
 }
 
 // appendCatalogModels includes only models dispatchable with tenant accounts.
@@ -88,7 +164,7 @@ func appendCatalogModels(data []modelEntry, seen map[string]struct{}, usableProv
 		}
 		model := providerModel.Model
 		caps, source := capabilityPayload(providerModel.Provider, model.ID, model.Kind)
-		data = appendModelEntry(data, seen, modelEntry{
+		entry := modelEntry{
 			ID:           providerModel.Provider + "/" + model.ID,
 			Object:       "model",
 			OwnedBy:      providerModel.Provider,
@@ -97,9 +173,21 @@ func appendCatalogModels(data []modelEntry, seen map[string]struct{}, usableProv
 			Name:         model.Name,
 			Dimensions:   model.Dimensions,
 			Capabilities: &caps, CapabilitySource: source,
-		})
+		}
+		applyModalityArrays(&entry, providerModel.Provider, model.ID, model.Kind)
+		data = appendModelEntry(data, seen, entry)
 	}
 	return data
+}
+
+// applyModalityArrays fills the input/output modality arrays on a model entry
+// from the resolved capability profile. Media-service kinds (imageToText, tts,
+// ...) imply modalities beyond the model profile, so resolution goes through
+// ResolveForServiceKind.
+func applyModalityArrays(entry *modelEntry, provider, model string, kind core.ServiceKind) {
+	p := capability.ResolveForServiceKind(provider, model, kind).Profile
+	entry.InputModalities = inputModalitiesFromProfile(p)
+	entry.OutputModalities = outputModalitiesFromProfile(p)
 }
 
 // appendLiveModels supplements static entries with successful live discovery.
@@ -110,7 +198,7 @@ func appendLiveModels(data []modelEntry, seen map[string]struct{}, liveModels ma
 				continue
 			}
 			caps, source := capabilityPayload(provider, model.ID, model.Kind)
-			data = appendModelEntry(data, seen, modelEntry{
+			entry := modelEntry{
 				ID:           provider + "/" + model.ID,
 				Object:       "model",
 				OwnedBy:      provider,
@@ -119,7 +207,9 @@ func appendLiveModels(data []modelEntry, seen map[string]struct{}, liveModels ma
 				Name:         model.Name,
 				Dimensions:   model.Dimensions,
 				Capabilities: &caps, CapabilitySource: source,
-			})
+			}
+			applyModalityArrays(&entry, provider, model.ID, model.Kind)
+			data = appendModelEntry(data, seen, entry)
 		}
 	}
 	return data

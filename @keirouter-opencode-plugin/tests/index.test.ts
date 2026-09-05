@@ -9,6 +9,7 @@ import {
   defaultKeiRouterModelsFetcher,
   isSameBaseURL,
   mapRawModel,
+  mapRawModelToModelV2,
   modelsURL,
   resolveKeiRouterPluginOptions,
   toOpenAICompatibleBaseURL,
@@ -81,8 +82,41 @@ test("maps raw /v1/models entries without combo synthesis", () => {
       limit: { context: 200_000, output: 8_192 },
       modalities: { input: ["text", "image"], output: ["text"] },
     },
-    "keirouter/fast-chain": { name: "fast-chain" },
+    "keirouter/fast-chain": { name: "fast-chain", attachment: true },
   });
+});
+
+test("no-metadata entries default attachment optimistically", () => {
+  const bare: KeiRouterRawModel = { id: "some-chain", name: "some-chain" };
+  const mapped = mapRawModel(bare);
+  assert.equal(mapped.attachment, true);
+
+  const modelV2 = mapRawModelToModelV2(bare, resolveKeiRouterPluginOptions(), "http://kei");
+  assert.equal(modelV2.capabilities.attachment, true);
+  assert.equal(modelV2.capabilities.input.image, false, "no fabricated modality flags");
+});
+
+test("explicit metadata still gates attachment", () => {
+  const textOnly: KeiRouterRawModel = {
+    id: "text-model",
+    capabilities: { vision: false },
+  };
+  assert.equal(mapRawModel(textOnly).attachment, false);
+
+  const withMods: KeiRouterRawModel = {
+    id: "mods-model",
+    input_modalities: ["text"],
+  };
+  assert.equal(mapRawModel(withMods).attachment, undefined);
+
+  const imageMods: KeiRouterRawModel = {
+    id: "image-model",
+    input_modalities: ["text", "image"],
+  };
+  assert.equal(mapRawModel(imageMods).attachment, true);
+  const v2 = mapRawModelToModelV2(imageMods, resolveKeiRouterPluginOptions(), "http://kei");
+  assert.equal(v2.capabilities.attachment, true);
+  assert.equal(v2.capabilities.input.image, true);
 });
 
 test("provider hook fetches once then serves cache until ttl expires", async () => {
