@@ -2,8 +2,11 @@ package connectors
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/mydisha/keirouter/backend/internal/core"
 	"github.com/mydisha/keirouter/backend/internal/transform"
@@ -37,6 +40,10 @@ func (c *Ollama) baseURL(creds core.Credentials) string {
 }
 
 func (c *Ollama) headers(creds core.Credentials) map[string]string {
+	return ollamaHeaders(creds)
+}
+
+func ollamaHeaders(creds core.Credentials) map[string]string {
 	h := map[string]string{}
 	switch {
 	case creds.AccessToken != "":
@@ -52,6 +59,75 @@ func (c *Ollama) headers(creds core.Credentials) map[string]string {
 func (c *Ollama) Validate(ctx context.Context, creds core.Credentials) error {
 	_, err := doJSONMethod(ctx, http.MethodGet, c.id, "validate", joinURL(c.baseURL(creds), "api/tags"), nil, c.headers(creds))
 	return err
+}
+
+// OllamaModelSource discovers models from Ollama's native model catalog.
+type OllamaModelSource struct {
+	defaultBase string
+}
+
+func NewOllamaModelSource(defaultBaseURL string) *OllamaModelSource {
+	return &OllamaModelSource{defaultBase: defaultBaseURL}
+}
+
+type ollamaModelEntry struct {
+	Name  string `json:"name"`
+	Model string `json:"model"`
+}
+
+type ollamaTagsResponse struct {
+	Models []ollamaModelEntry `json:"models"`
+}
+
+func ollamaModelSpecs(entries []ollamaModelEntry) []ModelSpec {
+	out := make([]ModelSpec, 0, len(entries))
+	seen := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		id := strings.TrimSpace(entry.Name)
+		if id == "" {
+			id = strings.TrimSpace(entry.Model)
+		}
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, ModelSpec{ID: id, Name: id, Kind: core.ServiceLLM})
+	}
+	return out
+}
+
+func (s *OllamaModelSource) ListModels(ctx context.Context, creds core.Credentials) ([]ModelSpec, error) {
+	base := s.defaultBase
+	if creds.BaseURL != "" {
+		base = creds.BaseURL
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, joinURL(base, "api/tags"), nil)
+	if err != nil {
+		return nil, err
+	}
+	for key, value := range ollamaHeaders(creds) {
+		req.Header.Set(key, value)
+	}
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := sharedClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8*1024))
+		return nil, fmt.Errorf("GET /api/tags returned %d: %s", resp.StatusCode, truncateError(body))
+	}
+
+	var envelope ollamaTagsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+		return nil, fmt.Errorf("decode /api/tags response: %w", err)
+	}
+	return ollamaModelSpecs(envelope.Models), nil
 }
 
 // Chat performs a non-streaming /api/chat call.

@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Plus, Trash2, Plug, X, Zap, ArrowUp, ArrowDown, CheckCircle, ToggleLeft, ToggleRight, Search, Route, AlertCircle, AlertTriangle, RefreshCw, Globe, Copy, Check, Upload, Loader2, XCircle, Layers, FileText, Download, ChevronDown, Clock3, Package } from "lucide-react";
 import { api, type DeviceCode, type OAuthProvider, type Provider, type ProviderModel, type Account, type ProxyPool, type UpstreamQuota, type ProviderRoutingSettings, type BulkAccountResult } from "../lib/api";
 import { ModelCapabilityIcons } from "../components/ModelCapabilityIcons";
+import { ModelDetailsModal } from "../components/ModelDetailsModal";
 import { KiroConnectModal } from "../components/KiroConnectModal";
 import { QoderConnectModal } from "../components/QoderConnectModal";
 import { KilocodeConnectModal } from "../components/KilocodeConnectModal";
@@ -60,6 +61,7 @@ export function ProviderDetailPage() {
   const toast = useToast();
   const [activeTab, setActiveTab] = useState<"accounts" | "routing" | "models">("accounts");
   const [modelView, setModelView] = useState<"catalog" | "custom">("catalog");
+  const [detailModel, setDetailModel] = useState<ProviderModel | null>(null);
 
   const providers = useQuery({ queryKey: ["providers"], queryFn: () => api.providers() });
   const accounts = useQuery({ queryKey: ["accounts"], queryFn: () => api.listAccounts() });
@@ -883,6 +885,7 @@ export function ProviderDetailPage() {
                     provider={provider}
                     disabled={disabledModelIds.has(m.id)}
                     selected={selectedModelIds.has(m.id)}
+                    onOpen={() => setDetailModel(m)}
                     onToggleSelect={() => toggleModelSelection(m.id)}
                     onToggleDisable={() => {
                       if (disabledModelIds.has(m.id)) {
@@ -938,6 +941,9 @@ export function ProviderDetailPage() {
       {kimchiOpen && <KimchiConnectModal onClose={() => setKimchiOpen(false)} />}
       {cursorOpen && <CursorConnectModal onClose={() => setCursorOpen(false)} />}
       {commandcodeOpen && <CommandCodeConnectModal onClose={() => setCommandcodeOpen(false)} />}
+      {detailModel && provider && (
+        <ModelDetailsModal open model={detailModel} provider={provider} onClose={() => setDetailModel(null)} />
+      )}
       {addKeyOpen && (
         <AddApiKeyModal
           provider={provider}
@@ -2706,6 +2712,7 @@ function ModelCell({
   provider,
   disabled,
   selected,
+  onOpen,
   onToggleSelect,
   onToggleDisable,
 }: {
@@ -2713,6 +2720,7 @@ function ModelCell({
   provider: Provider;
   disabled?: boolean;
   selected?: boolean;
+  onOpen: () => void;
   onToggleSelect?: () => void;
   onToggleDisable?: () => void;
 }) {
@@ -2727,18 +2735,32 @@ function ModelCell({
 
   return (
     <article
+      onClick={onOpen}
       className={`group relative flex min-h-36 flex-col bg-[var(--bg-elevated)] p-4 transition-[background-color,box-shadow] duration-150 hover:bg-[var(--bg-subtle)] ${
         disabled ? "opacity-65" : ""
       } ${selected ? "bg-accent-50/70 ring-2 ring-inset ring-accent-400/30 dark:bg-accent-900/15" : ""}`}
     >
-      <div className="flex items-start justify-between gap-3">
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          onOpen();
+        }}
+        className="absolute inset-0 z-0 rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/50"
+        aria-label={`View details for ${model.name || model.id}`}
+      />
+      <div className="relative z-10 flex items-start justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2">
           {onToggleSelect && (
             <input
               type="checkbox"
               className="h-4 w-4 shrink-0 rounded border-[var(--border)] accent-[var(--color-accent-500)]"
               checked={!!selected}
-              onChange={onToggleSelect}
+              onClick={(event) => event.stopPropagation()}
+              onChange={(event) => {
+                event.stopPropagation();
+                onToggleSelect();
+              }}
               aria-label={`Select ${model.name || model.id}`}
             />
           )}
@@ -2749,7 +2771,7 @@ function ModelCell({
         <Badge tone="neutral">{model.kind || "Model"}</Badge>
       </div>
 
-      <div className="mt-5 min-w-0 flex-1">
+      <div className="relative z-10 mt-5 min-w-0 flex-1">
         <h3 className="truncate text-sm font-semibold" title={model.name || model.id}>{model.name || model.id}</h3>
         <code
           className="mt-2 block truncate rounded-lg bg-[var(--bg-subtle)] px-2.5 py-2 font-mono text-xs text-[var(--text-muted)]"
@@ -2759,7 +2781,7 @@ function ModelCell({
         </code>
       </div>
 
-      <div className="mt-4 flex items-center justify-between gap-3 border-t border-[var(--border)] pt-3">
+      <div className="relative z-10 mt-4 flex items-center justify-between gap-3 border-t border-[var(--border)] pt-3">
         <div className="flex min-w-0 items-center gap-2">
           <span className="whitespace-nowrap text-xs text-[var(--text-muted)]">{disabled ? "Excluded from routing" : "Enabled in catalog"}</span>
           <ModelCapabilityIcons capabilities={model.capabilities} />
@@ -2768,7 +2790,10 @@ function ModelCell({
           {onToggleDisable && (
             <button
               type="button"
-              onClick={onToggleDisable}
+              onClick={(event) => {
+                event.stopPropagation();
+                onToggleDisable();
+              }}
               className="flex h-9 w-9 items-center justify-center rounded-lg text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-subtle)] hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/50"
               title={disabled ? "Enable model" : "Disable model"}
               aria-label={disabled ? `Enable ${model.name || model.id}` : `Disable ${model.name || model.id}`}
@@ -2778,7 +2803,10 @@ function ModelCell({
           )}
           <button
             type="button"
-            onClick={handleCopy}
+            onClick={(event) => {
+              event.stopPropagation();
+              handleCopy();
+            }}
             className="flex h-9 w-9 items-center justify-center rounded-lg text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-subtle)] hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/50"
             title="Copy model path"
             aria-label={`Copy model path ${fullModel}`}

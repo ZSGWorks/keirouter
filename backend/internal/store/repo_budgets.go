@@ -134,9 +134,9 @@ func (r *ChainRepo) Create(ctx context.Context, c Chain) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	cq := r.db.rebind(`INSERT INTO chains (id, tenant_id, name, strategy, fallback_provider, fallback_model, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-	if _, err := tx.ExecContext(ctx, cq, c.ID, c.TenantID, c.Name, c.Strategy, c.FallbackProvider, c.FallbackModel, formatTime(c.CreatedAt), formatTime(c.UpdatedAt)); err != nil {
+	cq := r.db.rebind(`INSERT INTO chains (id, tenant_id, name, strategy, fallback_provider, fallback_model, token_saving, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	if _, err := tx.ExecContext(ctx, cq, c.ID, c.TenantID, c.Name, c.Strategy, c.FallbackProvider, c.FallbackModel, c.TokenSaving, formatTime(c.CreatedAt), formatTime(c.UpdatedAt)); err != nil {
 		return fmt.Errorf("store: create chain: %w", err)
 	}
 
@@ -152,13 +152,13 @@ func (r *ChainRepo) Create(ctx context.Context, c Chain) error {
 
 // Get returns a chain with its ordered steps.
 func (r *ChainRepo) Get(ctx context.Context, id string) (Chain, error) {
-	cq := r.db.rebind(`SELECT id, tenant_id, name, strategy, fallback_provider, fallback_model, created_at, updated_at FROM chains WHERE id = ?`)
+	cq := r.db.rebind(`SELECT id, tenant_id, name, strategy, fallback_provider, fallback_model, token_saving, created_at, updated_at FROM chains WHERE id = ?`)
 	var (
 		c       Chain
 		created string
 		updated string
 	)
-	err := r.db.sql.QueryRowContext(ctx, cq, id).Scan(&c.ID, &c.TenantID, &c.Name, &c.Strategy, &c.FallbackProvider, &c.FallbackModel, &created, &updated)
+	err := r.db.sql.QueryRowContext(ctx, cq, id).Scan(&c.ID, &c.TenantID, &c.Name, &c.Strategy, &c.FallbackProvider, &c.FallbackModel, &c.TokenSaving, &created, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Chain{}, ErrNotFound
 	}
@@ -178,7 +178,7 @@ func (r *ChainRepo) Get(ctx context.Context, id string) (Chain, error) {
 
 // ListByTenant returns all chains (with steps) for a tenant.
 func (r *ChainRepo) ListByTenant(ctx context.Context, tenantID string) ([]Chain, error) {
-	cq := r.db.rebind(`SELECT id, tenant_id, name, strategy, fallback_provider, fallback_model, created_at, updated_at FROM chains WHERE tenant_id = ? ORDER BY created_at DESC`)
+	cq := r.db.rebind(`SELECT id, tenant_id, name, strategy, fallback_provider, fallback_model, token_saving, created_at, updated_at FROM chains WHERE tenant_id = ? ORDER BY created_at DESC`)
 	rows, err := r.db.sql.QueryContext(ctx, cq, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("store: list chains: %w", err)
@@ -192,7 +192,7 @@ func (r *ChainRepo) ListByTenant(ctx context.Context, tenantID string) ([]Chain,
 			created string
 			updated string
 		)
-		if err := rows.Scan(&c.ID, &c.TenantID, &c.Name, &c.Strategy, &c.FallbackProvider, &c.FallbackModel, &created, &updated); err != nil {
+		if err := rows.Scan(&c.ID, &c.TenantID, &c.Name, &c.Strategy, &c.FallbackProvider, &c.FallbackModel, &c.TokenSaving, &created, &updated); err != nil {
 			return nil, err
 		}
 		c.CreatedAt = parseTime(created)
@@ -230,8 +230,8 @@ func (r *ChainRepo) Update(ctx context.Context, c Chain) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	uq := r.db.rebind(`UPDATE chains SET name = ?, strategy = ?, fallback_provider = ?, fallback_model = ?, updated_at = ? WHERE id = ?`)
-	if _, err := tx.ExecContext(ctx, uq, c.Name, c.Strategy, c.FallbackProvider, c.FallbackModel, formatTime(time.Now()), c.ID); err != nil {
+	uq := r.db.rebind(`UPDATE chains SET name = ?, strategy = ?, fallback_provider = ?, fallback_model = ?, token_saving = ?, updated_at = ? WHERE id = ?`)
+	if _, err := tx.ExecContext(ctx, uq, c.Name, c.Strategy, c.FallbackProvider, c.FallbackModel, c.TokenSaving, formatTime(time.Now()), c.ID); err != nil {
 		return fmt.Errorf("store: update chain: %w", err)
 	}
 

@@ -318,6 +318,68 @@ func TestOllama_ValidateProbesTags(t *testing.T) {
 	require.NoError(t, c.Validate(context.Background(), core.Credentials{APIKey: "ollama-key"}))
 }
 
+func TestOllamaModelSource_ListModels(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/api/tags", r.URL.Path)
+		require.Equal(t, "Bearer ollama-key", r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"models":[{"name":"local-one:latest","model":"local-one:latest"},{"model":"model-only:7b"},{"name":"local-one:latest"},{"name":"  spaced-model  "},{"name":""}]}`)
+	}))
+	defer srv.Close()
+
+	source := NewOllamaModelSource("https://default.invalid")
+	models, err := source.ListModels(context.Background(), core.Credentials{APIKey: "ollama-key", BaseURL: srv.URL})
+	require.NoError(t, err)
+	require.Equal(t, []ModelSpec{
+		{ID: "local-one:latest", Name: "local-one:latest", Kind: core.ServiceLLM},
+		{ID: "model-only:7b", Name: "model-only:7b", Kind: core.ServiceLLM},
+		{ID: "spaced-model", Name: "spaced-model", Kind: core.ServiceLLM},
+	}, models)
+}
+
+func TestOllamaModelSource_ListModelsEmpty(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/api/tags", r.URL.Path)
+		fmt.Fprint(w, `{"models":[]}`)
+	}))
+	defer srv.Close()
+
+	models, err := NewOllamaModelSource(srv.URL).ListModels(context.Background(), core.Credentials{})
+	require.NoError(t, err)
+	require.Empty(t, models)
+}
+
+func TestOllamaModelSource_ListModelsErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		code int
+	}{
+		{name: "malformed", body: "not-json", code: http.StatusOK},
+		{name: "upstream error", body: `{"error":"unauthorized"}`, code: http.StatusUnauthorized},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				require.Equal(t, "/api/tags", r.URL.Path)
+				w.WriteHeader(tt.code)
+				fmt.Fprint(w, tt.body)
+			}))
+			defer srv.Close()
+
+			_, err := NewOllamaModelSource(srv.URL).ListModels(context.Background(), core.Credentials{})
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestRegistry_RegistersOllamaModelSources(t *testing.T) {
+	DefaultRegistry()
+	for _, provider := range []string{"ollama", "ollama-local"} {
+		require.NotNil(t, GetLiveModelSource(provider), "provider=%s", provider)
+	}
+}
+
 func TestRegistry_DefaultProviders(t *testing.T) {
 	reg := DefaultRegistry()
 	require.True(t, reg.Has("openai"))

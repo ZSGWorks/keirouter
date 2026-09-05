@@ -46,6 +46,24 @@ export interface ProviderModel {
   discovered?: boolean;
 	capabilities?: ModelCapabilities;
 	capability_source?: CapabilitySource;
+	pricing?: ModelPricing;
+}
+
+export interface ModelPricing {
+	input_per_m: number;
+	output_per_m: number;
+	cached_input_per_m: number;
+	cache_write_per_m: number;
+	reasoning_per_m: number;
+	long_context_threshold: number;
+	long_input_per_m: number;
+	long_output_per_m: number;
+	long_cached_input_per_m: number;
+	long_cache_write_per_m: number;
+	source: string;
+	source_url: string;
+	estimated: boolean;
+	explicit_free: boolean;
 }
 
 export type CapabilitySource = "provider" | "exact" | "pattern" | "service_kind" | "default";
@@ -317,12 +335,25 @@ export interface ChainStep {
   position: number;
 }
 
+export interface ChainTokenSaving {
+  rtk_enabled?: boolean | null;
+  rtk_filter_level?: string | null;
+  caveman_enabled?: boolean | null;
+  caveman_level?: string | null;
+  terse_enabled?: boolean | null;
+  terse_level?: string | null;
+  headroom_enabled?: boolean | null;
+  ponytail_enabled?: boolean | null;
+  ponytail_level?: string | null;
+}
+
 export interface Chain {
   id: string;
   name: string;
   strategy: string;
   fallback_provider?: string;
   fallback_model?: string;
+  token_saving?: ChainTokenSaving;
   steps: ChainStep[];
 }
 
@@ -1323,9 +1354,9 @@ export const api = {
     request<CodexUsageDetails>("GET", `/accounts/${id}/codex-usage-details`),
 
   listChains: () => request<{ chains: Chain[] }>("GET", "/chains"),
-  createChain: (input: { name: string; strategy?: string; fallback_provider?: string; fallback_model?: string; steps: { provider: string; model: string }[] }) =>
+  createChain: (input: { name: string; strategy?: string; fallback_provider?: string; fallback_model?: string; token_saving?: ChainTokenSaving; steps: { provider: string; model: string }[] }) =>
     request<{ id: string }>("POST", "/chains", input),
-  updateChain: (id: string, patch: { name?: string; strategy?: string; fallback_provider?: string; fallback_model?: string; steps?: { provider: string; model: string }[] }) =>
+  updateChain: (id: string, patch: { name?: string; strategy?: string; fallback_provider?: string; fallback_model?: string; token_saving?: ChainTokenSaving; steps?: { provider: string; model: string }[] }) =>
     request<{ id: string }>("PATCH", `/chains/${id}`, patch),
   deleteChain: (id: string) => request<void>("DELETE", `/chains/${id}`),
 

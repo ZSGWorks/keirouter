@@ -82,14 +82,15 @@ func (s *Server) handleGeminiGenerate(w http.ResponseWriter, r *http.Request) {
 	affinityKey := requestAffinityKey(r, req)
 	req.Metadata.ContextAffinityKey = affinityKey
 
+	es := s.effectiveTokenSaving(r.Context(), resolved.TokenSaving)
 	opts := pipeline.Options{
 		Targets:  resolved.Targets,
 		PlanOpts: s.endpointPlanOptions(r.Context(), resolved.PlanOpts, resolved.Targets, affinityKey),
-		Slimmer:  s.slimmerConfig(),
-		Terse:    s.terseConfig(),
-		Caveman:  s.cavemanConfig(),
-		Headroom: s.headroomConfig(),
-		Ponytail: s.ponytailConfig(),
+		Slimmer:  s.slimmerConfigFrom(es),
+		Terse:    s.terseConfigFrom(es),
+		Caveman:  s.cavemanConfigFrom(es),
+		Headroom: s.headroomConfigFrom(es),
+		Ponytail: s.ponytailConfigFrom(es),
 	}
 
 	if req.Stream {

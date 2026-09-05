@@ -147,6 +147,108 @@ func TestDeepSeekPricing(t *testing.T) {
 	}
 }
 
+func setFetchedDisplayPrices(t *testing.T) {
+	t.Helper()
+	ReplaceFetchedModelPrices(map[string][]ModelPrice{
+		"openai": {
+			{Provider: "openai", Model: "gpt-4o", InputPerM: 999, Source: "models_dev"},
+			{Provider: "openai", Model: "models-dev-only", InputPerM: 2.5, OutputPerM: 10, Source: "models_dev"},
+		},
+	})
+	t.Cleanup(func() { ReplaceFetchedModelPrices(nil) })
+}
+
+func TestModelDisplayPricePrefersProviderCatalog(t *testing.T) {
+	setFetchedDisplayPrices(t)
+	catalogPrice, ok := ModelPriceByProviderModel("openai", "gpt-4o")
+	if !ok {
+		t.Fatal("missing built-in openai/gpt-4o price")
+	}
+	price, ok := ModelDisplayPriceByProviderModel("openai", "gpt-4o")
+	if !ok {
+		t.Fatal("missing display price")
+	}
+	if price.InputPerM != catalogPrice.InputPerM {
+		t.Fatalf("display price = %+v, want provider catalog price %+v", price, catalogPrice)
+	}
+	if price.Source == "models_dev" {
+		t.Fatal("models.dev price overrode provider catalog")
+	}
+}
+
+func TestModelDisplayPriceFallsBackToModelsDev(t *testing.T) {
+	setFetchedDisplayPrices(t)
+	price, ok := ModelDisplayPriceByProviderModel("openai", "models-dev-only")
+	if !ok {
+		t.Fatal("missing models.dev fallback")
+	}
+	if price.InputPerM != 2.5 || price.Source != "models_dev" {
+		t.Fatalf("display fallback = %+v, want models.dev price", price)
+	}
+}
+
+func TestReplaceFetchedCatalogReplacesModelsAndPrices(t *testing.T) {
+	ReplaceFetchedCatalog(map[string][]ModelSpec{
+		"openai": {{ID: "old-model"}},
+	}, map[string][]ModelPrice{
+		"openai": {{Provider: "openai", Model: "old-model", InputPerM: 1}},
+	})
+	t.Cleanup(func() { ReplaceFetchedCatalog(nil, nil) })
+
+	ReplaceFetchedCatalog(map[string][]ModelSpec{
+		"openai": {{ID: "new-model"}},
+	}, map[string][]ModelPrice{
+		"openai": {{Provider: "openai", Model: "new-model", InputPerM: 2}},
+	})
+
+	models := fetchedModelsFor("openai")
+	if len(models) != 1 || models[0].ID != "new-model" {
+		t.Fatalf("fetched models = %+v, want only new-model", models)
+	}
+	if _, ok := ModelDisplayPriceByProviderModel("openai", "old-model"); ok {
+		t.Fatal("stale fetched price remained after catalog replacement")
+	}
+	price, ok := ModelDisplayPriceByProviderModel("openai", "new-model")
+	if !ok || price.InputPerM != 2 {
+		t.Fatalf("new fetched price = %+v, %v; want input price 2", price, ok)
+	}
+}
+
+func TestModelsAndDisplayPricesForProviderReadsOneFetchedSnapshot(t *testing.T) {
+	ReplaceFetchedCatalog(map[string][]ModelSpec{
+		"openai": {{ID: "old-model"}},
+	}, map[string][]ModelPrice{
+		"openai": {{Provider: "openai", Model: "old-model", InputPerM: 1}},
+	})
+	t.Cleanup(func() { ReplaceFetchedCatalog(nil, nil) })
+
+	ReplaceFetchedCatalog(map[string][]ModelSpec{
+		"openai": {{ID: "new-model"}},
+	}, map[string][]ModelPrice{
+		"openai": {{Provider: "openai", Model: "new-model", InputPerM: 2}},
+	})
+
+	models, prices := ModelsAndDisplayPricesForProvider("openai")
+	if _, ok := prices["old-model"]; ok {
+		t.Fatal("stale price returned from fetched catalog snapshot")
+	}
+	if price, ok := prices["new-model"]; !ok || price.InputPerM != 2 {
+		t.Fatalf("new model price = %+v, %v; want input price 2", price, ok)
+	}
+	for _, model := range models {
+		if model.ID == "old-model" {
+			t.Fatal("stale model returned from fetched catalog snapshot")
+		}
+	}
+}
+
+func TestModelDisplayPriceOmitsUnpricedModel(t *testing.T) {
+	setFetchedDisplayPrices(t)
+	if _, ok := ModelDisplayPriceByProviderModel("openai", "unpriced-model"); ok {
+		t.Fatal("unexpected price for unpriced model")
+	}
+}
+
 func TestCommandCodeCatalogVisible(t *testing.T) {
 	spec, ok := SpecByID("commandcode")
 	if !ok {

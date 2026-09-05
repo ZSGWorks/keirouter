@@ -427,26 +427,75 @@ var providerModels = map[string][]ModelSpec{
 // the static catalog with any user-registered custom models. Custom models
 // override static entries with the same id.
 func ModelsForProvider(providerID string) []ModelSpec {
-	static := providerModels[providerID]
-	custom := dynamicModelsFor(providerID)
-	if len(custom) == 0 {
-		return static
+	base := mergeFetchedModelSpecs(providerModels[providerID], fetchedModelsFor(providerID))
+	return mergeCustomModelSpecs(base, dynamicModelsFor(providerID))
+}
+
+// ModelsAndDisplayPricesForProvider returns a model list and its resolved
+// prices from one fetched catalog snapshot. Built-in provider prices still win.
+func ModelsAndDisplayPricesForProvider(providerID string) ([]ModelSpec, map[string]ModelPrice) {
+	dynMu.RLock()
+	fetched := copiedModelSpecs(fetchedModels[providerID])
+	prices := make(map[string][]ModelPrice, len(fetchedModelPrices))
+	for sourceProvider, entries := range fetchedModelPrices {
+		prices[sourceProvider] = append([]ModelPrice(nil), entries...)
 	}
-	if len(static) == 0 {
-		return custom
-	}
-	merged := make([]ModelSpec, 0, len(static)+len(custom))
-	customByID := make(map[string]bool, len(custom))
-	for _, m := range custom {
-		customByID[m.ID] = true
-	}
-	for _, m := range static {
-		if customByID[m.ID] {
-			continue // custom entry takes precedence
+	dynMu.RUnlock()
+
+	models := mergeCustomModelSpecs(mergeFetchedModelSpecs(providerModels[providerID], fetched), dynamicModelsFor(providerID))
+	resolved := make(map[string]ModelPrice, len(models))
+	for _, model := range models {
+		if price, ok := ModelPriceByProviderModel(providerID, model.ID); ok {
+			resolved[model.ID] = price
+			continue
 		}
-		merged = append(merged, m)
+		if price, ok := fetchedModelDisplayPriceFromSnapshot(prices, providerID, model.ID); ok {
+			resolved[model.ID] = price
+		}
+	}
+	return models, resolved
+}
+
+func mergeFetchedModelSpecs(static, fetched []ModelSpec) []ModelSpec {
+	return appendMissingModelSpecs(static, fetched)
+}
+
+func mergeCustomModelSpecs(base, custom []ModelSpec) []ModelSpec {
+	if len(custom) == 0 {
+		return base
+	}
+	keys := modelSpecKeys(custom)
+	merged := make([]ModelSpec, 0, len(base)+len(custom))
+	for _, model := range base {
+		if !keys[modelSpecKey(model)] {
+			merged = append(merged, model)
+		}
 	}
 	return append(merged, custom...)
+}
+
+func appendMissingModelSpecs(primary, additions []ModelSpec) []ModelSpec {
+	keys := modelSpecKeys(primary)
+	merged := append([]ModelSpec{}, primary...)
+	for _, model := range additions {
+		if !keys[modelSpecKey(model)] {
+			keys[modelSpecKey(model)] = true
+			merged = append(merged, model)
+		}
+	}
+	return merged
+}
+
+func modelSpecKeys(models []ModelSpec) map[string]bool {
+	keys := make(map[string]bool, len(models))
+	for _, model := range models {
+		keys[modelSpecKey(model)] = true
+	}
+	return keys
+}
+
+func modelSpecKey(m ModelSpec) string {
+	return m.ID + "/" + string(m.Kind)
 }
 
 // ModelsByKind returns all (providerID, model) pairs across the catalog that
@@ -478,10 +527,20 @@ func ModelsByKind(kind core.ServiceKind) []ProviderModel {
 
 // FindModel locates a model by provider id and model id.
 func FindModel(providerID, modelID string) (ModelSpec, bool) {
+	var fallback ModelSpec
+	found := false
 	for _, mdl := range ModelsForProvider(providerID) {
 		if mdl.ID == modelID {
-			return mdl, true
+			if mdl.Kind == core.ServiceLLM {
+				return mdl, true
+			}
+			if !found {
+				fallback, found = mdl, true
+			}
 		}
+	}
+	if found {
+		return fallback, true
 	}
 	return ModelSpec{}, false
 }

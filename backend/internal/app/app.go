@@ -41,6 +41,7 @@ import (
 	"github.com/mydisha/keirouter/backend/internal/oauth"
 	"github.com/mydisha/keirouter/backend/internal/observ"
 	"github.com/mydisha/keirouter/backend/internal/pipeline"
+	"github.com/mydisha/keirouter/backend/internal/pricing"
 	"github.com/mydisha/keirouter/backend/internal/slimmer"
 	"github.com/mydisha/keirouter/backend/internal/store"
 	"github.com/mydisha/keirouter/backend/internal/transform"
@@ -65,6 +66,10 @@ type App struct {
 	healthChecker      *healthcheck.Checker
 	providerHealth     *health.Service
 	probeRunner        *health.ProbeRunner
+
+	pricingFetcher        *pricing.Fetcher
+	reloadPricing         func(context.Context) error
+	refreshPricingCatalog func(context.Context) error
 
 	// bg tracks long-lived background workers that touch the DB (oauth
 	// keepalive, health checker, cooldown sweeper) so shutdown can wait for
@@ -131,9 +136,11 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 			"note", "change it on first login via the onboarding flow")
 	}
 
-	pricing := buildPricing()
-	modelPrices := buildModelPrices(ctx, db, log)
-	mtr := meter.New(db.Usage(), pricing, modelPrices)
+	modelPrices, err := buildModelPrices(ctx, db, nil)
+	if err != nil {
+		return nil, err
+	}
+	mtr := meter.New(db.Usage(), buildPricing(), modelPrices)
 	// Reprice deterministic legacy rows before serving analytics. Unknown or
 	// subscription-only models remain visibly unpriced instead of silently free.
 	if updated, backfillErr := mtr.BackfillUnpriced(ctx); backfillErr != nil {
@@ -369,59 +376,50 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 		MaxModelsPerProvider: cfg.Health.MaxModelsPerProvider,
 	}, log, db.Accounts(), db.Health(), connRegistry, v)
 
-	reloadPricing := func(reloadCtx context.Context) error {
-		mtr.ReplacePrices(buildPricing(), buildModelPrices(reloadCtx, db, log))
-		updated, reloadErr := mtr.BackfillUnpriced(reloadCtx)
-		if updated > 0 {
-			log.Info("usage pricing reloaded and historical rows backfilled", "updated", updated)
-		}
-		if reloadErr != nil {
-			return fmt.Errorf("reload usage pricing: %w", reloadErr)
-		}
-		return nil
-	}
+	pricingFetcher, reloadPricing, refreshPricingCatalog := buildPricingCallbacks(db, mtr, log)
 
 	gw := gateway.New(gateway.Deps{
-		Config:               cfg,
-		Logger:               log,
-		Version:              version,
-		Updates:              update.NewChecker(version, ""),
-		DB:                   db,
-		Identity:             idSvc,
-		Auth:                 authSvc,
-		Pipeline:             pipe,
-		Conns:                connRegistry,
-		Chains:               db.Chains(),
-		Aliases:              db.Aliases(),
-		Accounts:             db.Accounts(),
-		Pools:                db.ProxyPools(),
-		Budgets:              db.Budgets(),
-		BudgetEngine:         bud,
-		Usage:                db.Usage(),
-		Resources:            db.Resources(),
-		Settings:             db.Settings(),
-		Vault:                v,
-		Codecs:               codecs,
-		Metrics:              metrics,
-		FrontendDir:          frontendDir,
-		DataDir:              dataDir,
-		CfManager:            cfManager,
-		TsManager:            tsManager,
-		UsageHub:             uh,
-		TimeoutNotifier:      timeoutNotifier,
-		ProxyNotifier:        proxyNotifier,
-		RateLimiter:          limiter,
-		Refresher:            tokenRefresher,
-		ReloadPricing:        reloadPricing,
-		Guardrails:           guardrailEngine,
-		GuardrailRepo:        db.Guardrails(),
-		GuardrailLogs:        db.GuardrailLogs(),
-		GuardrailHub:         guardrailLogHub,
-		GuardrailTenantFlags: guardrailTenantPolicy,
-		Health:               db.Health(),
-		HealthChecker:        healthChecker,
-		ProviderHealth:       healthSvc,
-		ProbeRunner:          probeRunner,
+		Config:                cfg,
+		Logger:                log,
+		Version:               version,
+		Updates:               update.NewChecker(version, ""),
+		DB:                    db,
+		Identity:              idSvc,
+		Auth:                  authSvc,
+		Pipeline:              pipe,
+		Conns:                 connRegistry,
+		Chains:                db.Chains(),
+		Aliases:               db.Aliases(),
+		Accounts:              db.Accounts(),
+		Pools:                 db.ProxyPools(),
+		Budgets:               db.Budgets(),
+		BudgetEngine:          bud,
+		Usage:                 db.Usage(),
+		Resources:             db.Resources(),
+		Settings:              db.Settings(),
+		Vault:                 v,
+		Codecs:                codecs,
+		Metrics:               metrics,
+		FrontendDir:           frontendDir,
+		DataDir:               dataDir,
+		CfManager:             cfManager,
+		TsManager:             tsManager,
+		UsageHub:              uh,
+		TimeoutNotifier:       timeoutNotifier,
+		ProxyNotifier:         proxyNotifier,
+		RateLimiter:           limiter,
+		Refresher:             tokenRefresher,
+		ReloadPricing:         reloadPricing,
+		RefreshPricingCatalog: refreshPricingCatalog,
+		Guardrails:            guardrailEngine,
+		GuardrailRepo:         db.Guardrails(),
+		GuardrailLogs:         db.GuardrailLogs(),
+		GuardrailHub:          guardrailLogHub,
+		GuardrailTenantFlags:  guardrailTenantPolicy,
+		Health:                db.Health(),
+		HealthChecker:         healthChecker,
+		ProviderHealth:        healthSvc,
+		ProbeRunner:           probeRunner,
 	})
 
 	srv := &http.Server{
@@ -436,7 +434,7 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 	// usable without a manual "connect" step in the dashboard.
 	seedFreeAccounts(ctx, db.Accounts(), log)
 
-	return &App{cfg: cfg, log: log, db: db, accounts: db.Accounts(), server: srv, keepAlive: keepAlive, guardrailAudit: guardrailAudit, guardrailRetention: guardrailRetention, meter: mtr, healthChecker: healthChecker, providerHealth: healthSvc, probeRunner: probeRunner}, nil
+	return &App{cfg: cfg, log: log, db: db, accounts: db.Accounts(), server: srv, keepAlive: keepAlive, guardrailAudit: guardrailAudit, guardrailRetention: guardrailRetention, meter: mtr, healthChecker: healthChecker, providerHealth: healthSvc, probeRunner: probeRunner, pricingFetcher: pricingFetcher, reloadPricing: reloadPricing, refreshPricingCatalog: refreshPricingCatalog}, nil
 }
 
 // seedFreeAccounts auto-creates a default account for providers that are free
@@ -529,6 +527,16 @@ func (a *App) Run(ctx context.Context) error {
 		go func() {
 			defer a.bg.Done()
 			a.runCooldownSweeper(ctx)
+		}()
+	}
+
+	// models.dev catalog: fetch on startup, then refresh daily. Best-effort —
+	// failures keep the previous projection and never block startup.
+	if a.pricingFetcher != nil {
+		a.bg.Add(1)
+		go func() {
+			defer a.bg.Done()
+			a.runPricingRefresher(ctx)
 		}()
 	}
 
@@ -764,6 +772,181 @@ func buildPricing() map[string]meter.Price {
 	return meter.PricingFromCatalog(prices)
 }
 
+func buildPricingCallbacks(db *store.DB, mtr *meter.Meter, log *slog.Logger) (*pricing.Fetcher, func(context.Context) error, func(context.Context) error) {
+	fetcher := pricing.NewFetcher()
+	lock := make(chan struct{}, 1)
+	var appliedFetchedPrices map[string][]connectors.ModelPrice
+	replacePrices := func(ctx context.Context, fetched map[string][]connectors.ModelPrice) error {
+		prices, err := buildModelPrices(ctx, db, fetched)
+		if err != nil {
+			return err
+		}
+		mtr.ReplacePrices(buildPricing(), prices)
+		logPricingBackfill(ctx, mtr, log)
+		return nil
+	}
+	reload := func(ctx context.Context) error {
+		if err := acquirePricingRefreshLock(ctx, lock, nil); err != nil {
+			return err
+		}
+		defer func() { <-lock }()
+		return replacePrices(ctx, appliedFetchedPrices)
+	}
+	refresh := pricingCatalogRefresher{
+		fetch:                fetcher.Refresh,
+		accounts:             db.Accounts(),
+		replacePrices:        replacePrices,
+		replaceDisplayPrices: connectors.ReplaceFetchedModelPrices,
+		replaceCatalog:       connectors.ReplaceFetchedCatalog,
+		replaceModels:        connectors.ReplaceFetchedModels,
+		log:                  log,
+		lock:                 lock,
+		setAppliedPrices: func(prices map[string][]connectors.ModelPrice) {
+			appliedFetchedPrices = prices
+		},
+	}.Refresh
+	return fetcher, reload, refresh
+}
+
+func logPricingBackfill(ctx context.Context, mtr *meter.Meter, log *slog.Logger) {
+	updated, err := mtr.BackfillUnpriced(ctx)
+	if updated > 0 {
+		log.Info("usage pricing reloaded and historical rows backfilled", "updated", updated)
+	}
+	if err != nil {
+		log.Warn("usage price backfill after reload failed", "err", err)
+	}
+}
+
+type providerAccountLister interface {
+	ListByProviders(context.Context, string, []string) ([]store.Account, error)
+}
+
+// pricingCatalogRefresher serializes fetches so only complete, connected-provider
+// snapshots reach pricing and model discovery.
+type pricingCatalogRefresher struct {
+	fetch                func(context.Context) (pricing.Result, error)
+	accounts             providerAccountLister
+	replacePrices        func(context.Context, map[string][]connectors.ModelPrice) error
+	replaceModels        func(map[string][]connectors.ModelSpec)
+	replaceDisplayPrices func(map[string][]connectors.ModelPrice)
+	replaceCatalog       func(map[string][]connectors.ModelSpec, map[string][]connectors.ModelPrice)
+	setAppliedPrices     func(map[string][]connectors.ModelPrice)
+	log                  *slog.Logger
+	lock                 chan struct{}
+}
+
+func (r pricingCatalogRefresher) Refresh(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+	if err := acquirePricingRefreshLock(ctx, r.lock, nil); err != nil {
+		return err
+	}
+	defer func() { <-r.lock }()
+
+	res, err := r.fetch(ctx)
+	if err != nil {
+		return fmt.Errorf("refresh models.dev catalog: %w", err)
+	}
+	connected, err := connectedFetchedProviders(ctx, r.accounts, res.Models, res.Prices)
+	if err != nil {
+		return fmt.Errorf("filter models.dev catalog: %w", err)
+	}
+	prices := filterFetchedPricesByProvider(res.Prices, connected)
+	models := filterFetchedModelsByProvider(res.Models, connected)
+	if err := r.replacePrices(ctx, prices); err != nil {
+		return err
+	}
+	if r.replaceCatalog != nil {
+		r.replaceCatalog(models, prices)
+	} else {
+		r.replaceModels(models)
+		if r.replaceDisplayPrices != nil {
+			r.replaceDisplayPrices(prices)
+		}
+	}
+	r.setAppliedPrices(prices)
+	r.log.Info("models.dev catalog loaded",
+		"providers", res.Providers,
+		"priced_providers", len(res.Prices),
+		"model_providers", len(models))
+	return nil
+}
+
+func acquirePricingRefreshLock(ctx context.Context, lock chan struct{}, beforeWait func()) error {
+	if beforeWait != nil {
+		beforeWait()
+	}
+	select {
+	case lock <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func connectedProviderIDs(ctx context.Context, accounts providerAccountLister, candidates []string) (map[string]struct{}, error) {
+	connected, err := accounts.ListByProviders(ctx, store.DefaultTenantID, candidates)
+	if err != nil {
+		return nil, err
+	}
+	ids := make(map[string]struct{}, len(connected))
+	for _, account := range connected {
+		ids[account.Provider] = struct{}{}
+	}
+	return ids, nil
+}
+
+func filterFetchedModels(ctx context.Context, accounts providerAccountLister, fetched map[string][]connectors.ModelSpec) (map[string][]connectors.ModelSpec, error) {
+	connected, err := connectedProviderIDs(ctx, accounts, mapKeys(fetched))
+	if err != nil {
+		return nil, err
+	}
+	return filterFetchedModelsByProvider(fetched, connected), nil
+}
+
+func filterFetchedModelsByProvider(fetched map[string][]connectors.ModelSpec, connected map[string]struct{}) map[string][]connectors.ModelSpec {
+	filtered := make(map[string][]connectors.ModelSpec, len(connected))
+	for provider, models := range fetched {
+		if _, ok := connected[provider]; ok {
+			filtered[provider] = models
+		}
+	}
+	return filtered
+}
+
+func filterFetchedPrices(ctx context.Context, accounts providerAccountLister, fetched map[string][]connectors.ModelPrice) (map[string][]connectors.ModelPrice, error) {
+	connected, err := connectedProviderIDs(ctx, accounts, mapKeys(fetched))
+	if err != nil {
+		return nil, err
+	}
+	return filterFetchedPricesByProvider(fetched, connected), nil
+}
+
+func filterFetchedPricesByProvider(fetched map[string][]connectors.ModelPrice, connected map[string]struct{}) map[string][]connectors.ModelPrice {
+	filtered := make(map[string][]connectors.ModelPrice, len(connected))
+	for provider, prices := range fetched {
+		if _, ok := connected[provider]; ok {
+			filtered[provider] = prices
+		}
+	}
+	return filtered
+}
+
+func connectedFetchedProviders(ctx context.Context, accounts providerAccountLister, models map[string][]connectors.ModelSpec, prices map[string][]connectors.ModelPrice) (map[string]struct{}, error) {
+	providers := mapKeys(models)
+	providers = append(providers, mapKeys(prices)...)
+	return connectedProviderIDs(ctx, accounts, providers)
+}
+
+func mapKeys[T any](entries map[string]T) []string {
+	keys := make([]string, 0, len(entries))
+	for key := range entries {
+		keys = append(keys, key)
+	}
+	return keys
+}
+
 // cooldownSweepInterval is how often the background sweeper checks for expired
 // cooldowns. Short enough to recover within seconds; long enough to be trivial.
 const cooldownSweepInterval = 15 * time.Second
@@ -781,6 +964,28 @@ func (a *App) waitForBackground(timeout time.Duration) {
 	case <-done:
 	case <-time.After(timeout):
 		a.log.Warn("background workers did not stop within timeout; proceeding with shutdown")
+	}
+}
+
+// runPricingRefresher refreshes the models.dev catalog on startup and then
+// every DefaultRefreshInterval. Each successful refresh merges fetched prices
+// into the meter and registers fetched models for discovery.
+func (a *App) runPricingRefresher(ctx context.Context) {
+	refresh := func() {
+		if err := a.refreshPricingCatalog(ctx); err != nil {
+			a.log.Warn("models.dev catalog refresh failed; serving last catalog", "err", err)
+		}
+	}
+	refresh()
+	ticker := time.NewTicker(pricing.DefaultRefreshInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			refresh()
+		}
 	}
 }
 
@@ -804,42 +1009,54 @@ func (a *App) runCooldownSweeper(ctx context.Context) {
 	}
 }
 
-// buildModelPrices builds the per-model pricing table from the connector model prices.
-func buildModelPrices(ctx context.Context, db *store.DB, log *slog.Logger) map[string]meter.Price {
-	out := make(map[string]meter.Price)
-	for _, mp := range connectors.ModelPricingTable() {
-		source := mp.Source
-		if source == "" {
-			source = "catalog"
-		}
-		estimated := mp.Estimated || mp.Provider == "kiro"
-		out[mp.Provider+"/"+mp.Model] = meter.Price{
-			InputPerM: mp.InputPerM, OutputPerM: mp.OutputPerM,
-			CachedInputPerM: mp.CachedInputPerM, CacheWritePerM: mp.CacheWritePerM,
-			ReasoningPerM:        mp.ReasoningPerM,
-			LongContextThreshold: mp.LongContextThreshold,
-			LongInputPerM:        mp.LongInputPerM, LongOutputPerM: mp.LongOutputPerM,
-			LongCachedInputPerM: mp.LongCachedInputPerM, LongCacheWritePerM: mp.LongCacheWritePerM,
-			Source: source, SourceURL: mp.SourceURL, Estimated: estimated, ExplicitFree: mp.ExplicitFree,
-		}
-	}
+// buildModelPrices builds the per-model pricing table from the connector model
+// prices, then layers fetched models.dev prices on top. Fetched entries shadow
+// static catalog rows (freshness) but never user-entered custom prices.
+func buildModelPrices(ctx context.Context, db *store.DB, fetched map[string][]connectors.ModelPrice) (map[string]meter.Price, error) {
+	out := catalogModelPrices()
+	mergeFetchedModelPrices(out, fetched)
 	// User-entered custom prices are the highest-priority exact match. Imported
 	// zero values mean "unknown", not free, and intentionally do not override a
 	// canonical vendor catalog match.
 	models, err := db.CustomProviders().ListModels(ctx, store.DefaultTenantID)
 	if err != nil {
-		log.Warn("load custom model prices failed", "err", err)
-		return out
+		return nil, fmt.Errorf("load custom model prices: %w", err)
 	}
+	mergeCustomModelPrices(out, models)
+	return out, nil
+}
+
+func catalogModelPrices() map[string]meter.Price {
+	prices := make(map[string]meter.Price)
+	for _, price := range connectors.ModelPricingTable() {
+		if price.Source == "" {
+			price.Source = "catalog"
+		}
+		price.Estimated = price.Estimated || price.Provider == "kiro"
+		prices[price.Provider+"/"+price.Model] = meterPrice(price)
+	}
+	return prices
+}
+
+func mergeFetchedModelPrices(prices map[string]meter.Price, fetched map[string][]connectors.ModelPrice) {
+	for _, providerPrices := range fetched {
+		for _, price := range providerPrices {
+			key := price.Provider + "/" + price.Model
+			if prices[key].Source != "custom" {
+				prices[key] = meterPrice(price)
+			}
+		}
+	}
+}
+
+func mergeCustomModelPrices(prices map[string]meter.Price, models []store.CustomModel) {
 	for _, model := range models {
-		if model.InputPerM <= 0 && model.OutputPerM <= 0 {
-			continue
-		}
-		out[model.ProviderID+"/"+model.ModelID] = meter.Price{
-			InputPerM: model.InputPerM, OutputPerM: model.OutputPerM,
-			CachedInputPerM: model.InputPerM, CacheWritePerM: model.InputPerM,
-			ReasoningPerM: model.OutputPerM, Source: "custom", Estimated: false,
+		if model.InputPerM > 0 || model.OutputPerM > 0 {
+			prices[model.ProviderID+"/"+model.ModelID] = meter.Price{InputPerM: model.InputPerM, OutputPerM: model.OutputPerM, CachedInputPerM: model.InputPerM, CacheWritePerM: model.InputPerM, ReasoningPerM: model.OutputPerM, Source: "custom"}
 		}
 	}
-	return out
+}
+
+func meterPrice(price connectors.ModelPrice) meter.Price {
+	return meter.Price{InputPerM: price.InputPerM, OutputPerM: price.OutputPerM, CachedInputPerM: price.CachedInputPerM, CacheWritePerM: price.CacheWritePerM, ReasoningPerM: price.ReasoningPerM, LongContextThreshold: price.LongContextThreshold, LongInputPerM: price.LongInputPerM, LongOutputPerM: price.LongOutputPerM, LongCachedInputPerM: price.LongCachedInputPerM, LongCacheWritePerM: price.LongCacheWritePerM, Source: price.Source, SourceURL: price.SourceURL, Estimated: price.Estimated, ExplicitFree: price.ExplicitFree}
 }

@@ -1,0 +1,24 @@
+# Dev deploy override: production-shaped local deployment against the host
+# Postgres. Use together with the base file:
+#
+#   docker compose -f compose.yaml -f compose.dev-deploy.yaml up -d --build
+#
+# Differences from the base deployment:
+#   - Publishes only on 127.0.0.1 (host port 20181) so the instance is not
+#     reachable from the LAN; `make dev` can keep owning :20180.
+#   - Adds host-gateway routing so the container can reach the host Postgres
+#     on Linux too (Docker Desktop maps it natively).
+#   - Switches to the postgres driver with a DSN pointing at the host's
+#     local Postgres. Override KEIROUTER_DATABASE__DSN in .env to use
+#     different credentials.
+services:
+  keirouter:
+    ports: !override
+      - "127.0.0.1:${KEIROUTER_PORT:-20181}:20180"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      KEIROUTER_DATABASE__DRIVER: postgres
+      # DSN comes from the environment/.env; scripts/dev-deploy.sh sets the
+      # default (local user, trust auth, keirouter_dev on host Postgres).
+      KEIROUTER_DATABASE__DSN: "${KEIROUTER_DATABASE__DSN:?set KEIROUTER_DATABASE__DSN (dev-deploy.sh does this)}"
