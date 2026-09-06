@@ -2200,6 +2200,7 @@ function AuthCodeFlow({ provider, onClose }: { provider: OAuthProvider; onClose:
   const [exchanging, setExchanging] = useState(false);
   const stateRef = useRef("");
   const popupRef = useRef<Window | null>(null);
+  const callbackOriginRef = useRef("");
 
   const finishSuccess = () => {
     // Close the OAuth popup from the opener side (the popup's own
@@ -2219,6 +2220,7 @@ function AuthCodeFlow({ provider, onClose }: { provider: OAuthProvider; onClose:
   useEffect(() => {
     if (!waiting) return;
     const handler = async (e: MessageEvent) => {
+      if (e.origin !== callbackOriginRef.current || e.source !== popupRef.current) return;
       if (e.data?.type !== "oauth-callback") return;
       if (e.data.provider && e.data.provider !== provider.provider) return;
       if (e.data.code) {
@@ -2295,6 +2297,7 @@ function AuthCodeFlow({ provider, onClose }: { provider: OAuthProvider; onClose:
     try {
       const res = await api.oauthAuthorize(provider.provider, redirectURIForProvider(provider));
       stateRef.current = res.state;
+      callbackOriginRef.current = new URL(res.redirect_uri || redirectURIForProvider(provider)).origin;
       popupRef.current = window.open(res.authorize_url, "_blank", "popup,width=560,height=760");
       // Always attempt the seamless flow. Whenever the gateway is co-located
       // with the browser, its loopback callback catches the redirect and

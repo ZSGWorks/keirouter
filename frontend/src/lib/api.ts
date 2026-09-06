@@ -1050,6 +1050,7 @@ class APIError extends Error {
 // until a hard refresh. A bounded request rejects, surfacing an error the UI
 // can render (and the user can retry).
 const DEFAULT_TIMEOUT_MS = 20_000;
+const pathSegment = encodeURIComponent;
 
 // fetchWithTimeout wraps fetch with an AbortController-based deadline. On
 // timeout the request is aborted and a clear APIError(408) is thrown so callers
@@ -1225,7 +1226,7 @@ export async function fetchKeyUsage(key: string, days?: number): Promise<KeyUsag
  */
 export async function fetchKeyUsageById(id: string, days?: number): Promise<KeyUsageData> {
   const qs = days ? `?days=${days}` : "";
-  const resp = await fetch(`/v1/portal/keys/${id}/usage${qs}`);
+  const resp = await fetch(`/v1/portal/keys/${pathSegment(id)}/usage${qs}`);
   if (!resp.ok) {
     const data = await resp.json().catch(() => ({}));
     throw new Error(data.error || "Invalid key ID or server error");
@@ -1251,12 +1252,12 @@ export const api = {
   providerModels: (id: string, kind?: string) =>
     request<{ models: ProviderModel[] }>(
       "GET",
-      `/providers/${id}/models${kind ? `?kind=${encodeURIComponent(kind)}` : ""}`,
+      `/providers/${pathSegment(id)}/models${kind ? `?kind=${encodeURIComponent(kind)}` : ""}`,
     ),
   providerRouting: (id: string) =>
-    request<ProviderRoutingSettings>("GET", `/providers/${id}/routing`),
+    request<ProviderRoutingSettings>("GET", `/providers/${pathSegment(id)}/routing`),
   updateProviderRouting: (id: string, patch: Partial<ProviderRoutingSettings>) =>
-    request<ProviderRoutingSettings>("POST", `/providers/${id}/routing`, patch),
+    request<ProviderRoutingSettings>("POST", `/providers/${pathSegment(id)}/routing`, patch),
 
   // Custom provider instances (dynamic OpenAI-/Anthropic-compatible providers).
   listCustomProviders: () =>
@@ -1264,25 +1265,25 @@ export const api = {
   createCustomProvider: (input: { display_name: string; dialect: string; base_url: string; alias?: string }) =>
     request<CustomProvider>("POST", "/custom-providers", input),
   updateCustomProvider: (id: string, patch: { display_name?: string; alias?: string; base_url?: string }) =>
-    request<CustomProvider>("PATCH", `/custom-providers/${id}`, patch),
+    request<CustomProvider>("PATCH", `/custom-providers/${pathSegment(id)}`, patch),
   deleteCustomProvider: (id: string) =>
-    request<{ id: string; deleted: boolean; accounts_disabled?: number }>("DELETE", `/custom-providers/${id}`),
+    request<{ id: string; deleted: boolean; accounts_disabled?: number }>("DELETE", `/custom-providers/${pathSegment(id)}`),
 
   importModels: (id: string) =>
     request<{ provider_id: string; imported: number; skipped: number; total: number }>(
       "POST",
-      `/providers/${id}/import-models`,
+      `/providers/${pathSegment(id)}/import-models`,
     ),
 
   // Custom models, attachable to any provider id (custom or built-in).
   listCustomModels: (providerId: string) =>
-    request<{ models: CustomModel[] }>("GET", `/providers/${providerId}/custom-models`),
+    request<{ models: CustomModel[] }>("GET", `/providers/${pathSegment(providerId)}/custom-models`),
   createCustomModel: (providerId: string, input: CustomModelInput) =>
-    request<CustomModel>("POST", `/providers/${providerId}/custom-models`, input),
+    request<CustomModel>("POST", `/providers/${pathSegment(providerId)}/custom-models`, input),
   updateCustomModel: (providerId: string, dbId: string, patch: Partial<CustomModelInput>) =>
-    request<CustomModel>("PATCH", `/providers/${providerId}/custom-models/${dbId}`, patch),
+    request<CustomModel>("PATCH", `/providers/${pathSegment(providerId)}/custom-models/${pathSegment(dbId)}`, patch),
   deleteCustomModel: (providerId: string, dbId: string) =>
-    request<{ db_id: string; deleted: boolean }>("DELETE", `/providers/${providerId}/custom-models/${dbId}`),
+    request<{ db_id: string; deleted: boolean }>("DELETE", `/providers/${pathSegment(providerId)}/custom-models/${pathSegment(dbId)}`),
 
 
   listPlans: () => request<{ plans: Plan[] }>("GET", "/plans"),
@@ -1311,9 +1312,9 @@ export const api = {
     alert_pct?: number;
     hard_cutoff?: boolean;
     allowed_models?: string[];
-  }) => request<Plan>("PATCH", `/plans/${id}`, patch),
-  deletePlan: (id: string) => request<void>("DELETE", `/plans/${id}`),
-  listPlanKeys: (id: string) => request<{ keys: APIKey[] }>("GET", `/plans/${id}/keys`),
+  }) => request<Plan>("PATCH", `/plans/${pathSegment(id)}`, patch),
+  deletePlan: (id: string) => request<void>("DELETE", `/plans/${pathSegment(id)}`),
+  listPlanKeys: (id: string) => request<{ keys: APIKey[] }>("GET", `/plans/${pathSegment(id)}/keys`),
 
   listKeys: () => request<{ keys: APIKey[] }>("GET", "/keys"),
   createKey: (name: string, opts?: {
@@ -1327,9 +1328,9 @@ export const api = {
   }) =>
     request<CreatedKey>("POST", "/keys", { name, ...(opts ? opts : {}) }),
   updateKey: (id: string, patch: { disabled?: boolean; allowed_models?: string[] }) =>
-    request<{ id: string; disabled?: boolean; allowed_models?: string[] }>("PATCH", `/keys/${id}`, patch),
-  deleteKey: (id: string) => request<void>("DELETE", `/keys/${id}`),
-  deleteKeys: (ids: string[]) => Promise.all(ids.map((id) => request<void>("DELETE", `/keys/${id}`))),
+    request<{ id: string; disabled?: boolean; allowed_models?: string[] }>("PATCH", `/keys/${pathSegment(id)}`, patch),
+  deleteKey: (id: string) => request<void>("DELETE", `/keys/${pathSegment(id)}`),
+  deleteKeys: (ids: string[]) => Promise.all(ids.map((id) => request<void>("DELETE", `/keys/${pathSegment(id)}`))),
 
   listAccounts: () => request<{ accounts: Account[] }>("GET", "/accounts"),
   createAccount: (input: AccountInput) =>
@@ -1337,57 +1338,57 @@ export const api = {
   bulkCreateAccounts: (input: BulkAccountInput) =>
     request<BulkAccountResponse>("POST", "/accounts/bulk", input),
   updateAccount: (id: string, patch: { label?: string; priority?: number; disabled?: boolean; proxy_pool_id?: string }) =>
-    request<{ id: string }>("PATCH", `/accounts/${id}`, patch),
-  deleteAccount: (id: string) => request<void>("DELETE", `/accounts/${id}`),
+    request<{ id: string }>("PATCH", `/accounts/${pathSegment(id)}`, patch),
+  deleteAccount: (id: string) => request<void>("DELETE", `/accounts/${pathSegment(id)}`),
   testAccount: (id: string) =>
-    request<{ id: string; status: string; message: string }>("POST", `/accounts/${id}/test`),
+    request<{ id: string; status: string; message: string }>("POST", `/accounts/${pathSegment(id)}/test`),
   validateKey: (input: AccountInput) =>
     request<{ status: string; message?: string }>("POST", "/validate-key", input),
   accountQuota: (id: string) =>
     request<{ provider: string; supported: boolean; plan_name?: string; message?: string; quotas?: UpstreamQuota[] }>(
-      "GET", `/accounts/${id}/quota`,
+      "GET", `/accounts/${pathSegment(id)}/quota`,
     ),
   codexResetCredits: (id: string) =>
-    request<CodexResetCredits>("GET", `/accounts/${id}/codex-reset-credits`),
+    request<CodexResetCredits>("GET", `/accounts/${pathSegment(id)}/codex-reset-credits`),
   codexConsumeCredit: (id: string, creditId?: string) =>
-    request<CodexConsumeResult>("POST", `/accounts/${id}/codex-consume-credit`, creditId ? { credit_id: creditId } : {}),
+    request<CodexConsumeResult>("POST", `/accounts/${pathSegment(id)}/codex-consume-credit`, creditId ? { credit_id: creditId } : {}),
   codexUsageDetails: (id: string) =>
-    request<CodexUsageDetails>("GET", `/accounts/${id}/codex-usage-details`),
+    request<CodexUsageDetails>("GET", `/accounts/${pathSegment(id)}/codex-usage-details`),
 
   listChains: () => request<{ chains: Chain[] }>("GET", "/chains"),
   createChain: (input: { name: string; strategy?: string; fallback_provider?: string; fallback_model?: string; token_saving?: ChainTokenSaving; steps: { provider: string; model: string }[] }) =>
     request<{ id: string }>("POST", "/chains", input),
   updateChain: (id: string, patch: { name?: string; strategy?: string; fallback_provider?: string; fallback_model?: string; token_saving?: ChainTokenSaving; steps?: { provider: string; model: string }[] }) =>
-    request<{ id: string }>("PATCH", `/chains/${id}`, patch),
-  deleteChain: (id: string) => request<void>("DELETE", `/chains/${id}`),
+    request<{ id: string }>("PATCH", `/chains/${pathSegment(id)}`, patch),
+  deleteChain: (id: string) => request<void>("DELETE", `/chains/${pathSegment(id)}`),
 
   listBudgets: () => request<{ budgets: Budget[] }>("GET", "/budgets"),
   budgetStatus: () => request<{ budgets: BudgetStatus[] }>("GET", "/budgets/status"),
   createBudget: (input: { scope_kind?: string; scope_id?: string; limit_usd?: number; limit_tokens?: number; period?: string; alert_pct?: number; hard_cutoff?: boolean }) =>
     request<{ id: string }>("POST", "/budgets", input),
   updateBudget: (id: string, patch: { limit_usd?: number; limit_tokens?: number; period?: string; alert_pct?: number; hard_cutoff?: boolean }) =>
-    request<void>("PATCH", `/budgets/${id}`, patch),
-  deleteBudget: (id: string) => request<void>("DELETE", `/budgets/${id}`),
+    request<void>("PATCH", `/budgets/${pathSegment(id)}`, patch),
+  deleteBudget: (id: string) => request<void>("DELETE", `/budgets/${pathSegment(id)}`),
 
-  usage: (period: string) => request<UsageSummary>("GET", `/usage?period=${period}&tz=${browserTZ()}`),
+  usage: (period: string) => request<UsageSummary>("GET", `/usage?period=${encodeURIComponent(period)}&tz=${encodeURIComponent(browserTZ())}`),
   usageInsights: (period: string) =>
-    request<UsageInsights>("GET", `/usage/insights?period=${period}&tz=${browserTZ()}`),
+    request<UsageInsights>("GET", `/usage/insights?period=${encodeURIComponent(period)}&tz=${encodeURIComponent(browserTZ())}`),
   modelUsage: (period: string) =>
-    request<ModelUsageResponse>("GET", `/usage/models?period=${period}&tz=${browserTZ()}`),
+    request<ModelUsageResponse>("GET", `/usage/models?period=${encodeURIComponent(period)}&tz=${encodeURIComponent(browserTZ())}`),
 
   quota: (period: string) =>
-    request<{ accounts: QuotaAccount[]; since: string }>("GET", `/quota?period=${period}&tz=${browserTZ()}`),
+    request<{ accounts: QuotaAccount[]; since: string }>("GET", `/quota?period=${encodeURIComponent(period)}&tz=${encodeURIComponent(browserTZ())}`),
   quotaByProvider: (provider: string) =>
-    request<{ accounts: QuotaAccount[]; since: string }>("GET", `/quota?period=today&tz=${browserTZ()}&provider=${provider}`),
+    request<{ accounts: QuotaAccount[]; since: string }>("GET", `/quota?period=today&tz=${encodeURIComponent(browserTZ())}&provider=${encodeURIComponent(provider)}`),
 
   consoleLog: () => request<{ logs: ConsoleLogEntry[] }>("GET", "/console"),
 
   cliTools: (model?: string) =>
     request<CLIToolsResponse>("GET", model ? `/cli-tools?model=${encodeURIComponent(model)}` : "/cli-tools"),
   cliToolConfigure: (toolId: string, body: { base_url: string; api_key: string; models?: string[] }) =>
-    request<{ ok: boolean }>("POST", `/cli-tools/${toolId}/configure`, body),
+    request<{ ok: boolean }>("POST", `/cli-tools/${pathSegment(toolId)}/configure`, body),
   cliToolRemove: (toolId: string) =>
-    request<{ ok: boolean }>("POST", `/cli-tools/${toolId}/remove`),
+    request<{ ok: boolean }>("POST", `/cli-tools/${pathSegment(toolId)}/remove`),
 
   listProxyPools: () => request<{ pools: ProxyPool[] }>("GET", "/proxy-pools"),
   createProxyPool: (input: { name: string; type?: string; proxy_url: string; no_proxy?: string; strict?: boolean; is_active?: boolean }) =>
@@ -1395,15 +1396,15 @@ export const api = {
   deployCloudflareRelay: (input: { account_id: string; api_token: string; project_name?: string }) =>
     request<{ id: string; name: string; deploy_url: string; test_status: string }>("POST", "/proxy-pools/cloudflare-deploy", input),
   updateProxyPool: (id: string, patch: { name?: string; proxy_url?: string; no_proxy?: string; strict?: boolean; is_active?: boolean }) =>
-    request<void>("PATCH", `/proxy-pools/${id}`, patch),
-  deleteProxyPool: (id: string) => request<void>("DELETE", `/proxy-pools/${id}`),
+    request<void>("PATCH", `/proxy-pools/${pathSegment(id)}`, patch),
+  deleteProxyPool: (id: string) => request<void>("DELETE", `/proxy-pools/${pathSegment(id)}`),
 
   listSkills: () => request<{ skills: Skill[] }>("GET", "/skills"),
   createSkill: (input: { name: string; description?: string; prompt?: string; enabled?: boolean }) =>
     request<Skill>("POST", "/skills", input),
   updateSkill: (id: string, patch: { enabled?: boolean }) =>
-    request<void>("POST", `/skills/${id}`, patch),
-  deleteSkill: (id: string) => request<void>("DELETE", `/skills/${id}`),
+    request<void>("POST", `/skills/${pathSegment(id)}`, patch),
+  deleteSkill: (id: string) => request<void>("DELETE", `/skills/${pathSegment(id)}`),
 
   endpointSettings: () => request<EndpointSettings>("GET", "/settings/endpoint"),
   updateEndpointSettings: (patch: Partial<EndpointSettings>) =>
@@ -1472,23 +1473,23 @@ export const api = {
 
   // Proxy pool test.
   testProxyPool: (id: string) =>
-    request<{ status: string; last_tested?: string; elapsed_ms?: number; error?: string }>("POST", `/proxy-pools/${id}/test`),
+    request<{ status: string; last_tested?: string; elapsed_ms?: number; error?: string }>("POST", `/proxy-pools/${pathSegment(id)}/test`),
 
   // OAuth provider connections.
   oauthProviders: () => request<{ providers: OAuthProvider[] }>("GET", "/oauth/providers"),
   oauthAuthorize: (provider: string, redirectUri: string) =>
-    request<{ authorize_url: string; state: string; redirect_uri?: string }>("POST", `/oauth/${provider}/authorize`, {
+    request<{ authorize_url: string; state: string; redirect_uri?: string }>("POST", `/oauth/${pathSegment(provider)}/authorize`, {
       redirect_uri: redirectUri,
     }),
   oauthExchange: (provider: string, input: { code: string; state: string; label?: string }) =>
-    request<{ id: string; provider: string; email: string }>("POST", `/oauth/${provider}/exchange`, input),
+    request<{ id: string; provider: string; email: string }>("POST", `/oauth/${pathSegment(provider)}/exchange`, input),
   // Polls whether a redirect-based flow completed server-side. Needed for
   // providers whose auth pages sever window.opener (COOP), where the popup's
   // postMessage never reaches the dashboard.
   oauthCallbackStatus: (provider: string, state: string) =>
-    request<OAuthCallbackStatus>("GET", `/oauth/${provider}/callback-status?state=${encodeURIComponent(state)}`),
+    request<OAuthCallbackStatus>("GET", `/oauth/${pathSegment(provider)}/callback-status?state=${encodeURIComponent(state)}`),
   oauthDeviceCode: (provider: string) =>
-    request<DeviceCode>("POST", `/oauth/${provider}/device-code`, {}),
+    request<DeviceCode>("POST", `/oauth/${pathSegment(provider)}/device-code`, {}),
   oauthDeviceCodeSubmit: (
     provider: string,
     input: {
@@ -1500,9 +1501,9 @@ export const api = {
       expires_in: number;
       interval: number;
     },
-  ) => request<DeviceCode>("POST", `/oauth/${provider}/device-code-submit`, input),
+  ) => request<DeviceCode>("POST", `/oauth/${pathSegment(provider)}/device-code-submit`, input),
   oauthPoll: (provider: string, deviceCode: string, label?: string) =>
-    request<OAuthPollResult>("POST", `/oauth/${provider}/poll`, { device_code: deviceCode, label }),
+    request<OAuthPollResult>("POST", `/oauth/${pathSegment(provider)}/poll`, { device_code: deviceCode, label }),
 
   // Kiro connect flow (AWS SSO OIDC device flows + import token). Mounted under
   // /kiro (not /oauth/kiro) to avoid the chi /oauth/{provider} route collision.
@@ -1574,7 +1575,7 @@ export const api = {
       scope ? `/guardrails?scope=${encodeURIComponent(scope)}` : "/guardrails",
     ),
   getGuardrail: (id: string) =>
-    request<GuardrailPolicy>("GET", `/guardrails/${id}`),
+    request<GuardrailPolicy>("GET", `/guardrails/${pathSegment(id)}`),
   createGuardrail: (input: {
     name?: string;
     scope: GuardrailScope;
@@ -1585,9 +1586,9 @@ export const api = {
   updateGuardrail: (
     id: string,
     patch: { name?: string; enabled?: boolean; config?: GuardrailPolicyConfig },
-  ) => request<GuardrailPolicy>("PATCH", `/guardrails/${id}`, patch),
+  ) => request<GuardrailPolicy>("PATCH", `/guardrails/${pathSegment(id)}`, patch),
   deleteGuardrail: (id: string) =>
-    request<void>("DELETE", `/guardrails/${id}`),
+    request<void>("DELETE", `/guardrails/${pathSegment(id)}`),
   effectiveGuardrail: (params: {
     provider?: string;
     model?: string;

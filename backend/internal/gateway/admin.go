@@ -3226,8 +3226,12 @@ func (s *Server) adminTestProxy(w http.ResponseWriter, r *http.Request) {
 	// infrastructure, so SSRF restrictions (which guard outbound target URLs)
 	// do not apply here. Localhost proxies (Clash, V2Ray, etc.) are expected.
 	parsed, err := url.Parse(body.ProxyURL)
-	if err != nil || parsed.Host == "" {
+	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": "invalid proxy URL: " + err.Error()})
+		return
+	}
+	if parsed.Host == "" {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": "invalid proxy URL: host is required"})
 		return
 	}
 	scheme := strings.ToLower(parsed.Scheme)
