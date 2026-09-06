@@ -255,7 +255,7 @@ export function mapRawModelToModelV2(
       url: toOpenAICompatibleBaseURL(baseURL),
       npm: "@ai-sdk/openai-compatible",
     },
-    name: raw.name || raw.id,
+    name: modelDisplayName(raw),
     capabilities: {
       temperature: caps.temperature ?? true,
       reasoning: Boolean(caps.reasoning || caps.thinking),
@@ -309,7 +309,7 @@ export function buildStaticProviderEntry(
 
 export function mapRawModel(raw: KeiRouterRawModel): KeiRouterStaticModel {
   const caps = raw.capabilities ?? {};
-  const model: KeiRouterStaticModel = { name: raw.name || raw.id };
+  const model: KeiRouterStaticModel = { name: modelDisplayName(raw) };
 
   const noMetadata =
     !raw.capabilities &&
@@ -513,4 +513,17 @@ function normalizeModalities(values: unknown): string[] {
 
 function cleanString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function modelDisplayName(raw: KeiRouterRawModel): string {
+  const name = raw.name || raw.id;
+  if (raw.owned_by === "combo") return name;
+
+  const provider = cleanString(raw.provider) ?? providerFromModelID(raw.id);
+  return provider ? `${provider} / ${name}` : name;
+}
+
+function providerFromModelID(id: string): string | undefined {
+  const separator = id.indexOf("/");
+  return separator > 0 ? id.slice(0, separator) : undefined;
 }

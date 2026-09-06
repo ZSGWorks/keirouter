@@ -20,6 +20,7 @@ import {
 const rawModels: KeiRouterRawModel[] = [
   {
     id: "claude/sonnet-4",
+    provider: "anthropic",
     name: "Claude Sonnet 4",
     context_length: 200_000,
     max_output_tokens: 8_192,
@@ -102,7 +103,7 @@ test("fetch strips plugin provider prefix only from chain requests", async () =>
 
 test("maps raw /v1/models entries without combo synthesis", () => {
   assert.deepEqual(mapRawModel(rawModels[0]), {
-    name: "Claude Sonnet 4",
+    name: "anthropic / Claude Sonnet 4",
     attachment: true,
     reasoning: true,
     tool_call: true,
@@ -113,7 +114,7 @@ test("maps raw /v1/models entries without combo synthesis", () => {
 
   assert.deepEqual(buildModelMap(rawModels), {
     "claude/sonnet-4": {
-      name: "Claude Sonnet 4",
+      name: "anthropic / Claude Sonnet 4",
       attachment: true,
       reasoning: true,
       tool_call: true,
@@ -123,6 +124,17 @@ test("maps raw /v1/models entries without combo synthesis", () => {
     },
     "keirouter/fast-chain": { name: "fast-chain", attachment: true },
   });
+});
+
+test("prefixes direct-model names without changing their routable ids", () => {
+  const opts = resolveKeiRouterPluginOptions();
+  const dynamic = mapRawModelToModelV2(rawModels[0], opts, "http://kei");
+
+  assert.equal(dynamic.id, "claude/sonnet-4");
+  assert.equal(dynamic.name, "anthropic / Claude Sonnet 4");
+  assert.equal(mapRawModel({ id: "openai/gpt-5", name: "GPT-5" }).name, "openai / GPT-5");
+  assert.equal(mapRawModel({ id: "opaque-model", name: "Opaque model" }).name, "Opaque model");
+  assert.equal(mapRawModel(rawModels[1]).name, "fast-chain");
 });
 
 test("no-metadata entries default attachment optimistically", () => {
@@ -241,6 +253,7 @@ test("static provider entry uses OpenAI-compatible package", () => {
   );
   assert.equal(entry.npm, "@ai-sdk/openai-compatible");
   assert.equal(entry.options.baseURL, "http://kei/v1");
+  assert.equal(entry.models["claude/sonnet-4"].name, "anthropic / Claude Sonnet 4");
   assert.equal(entry.models["keirouter/fast-chain"].name, "fast-chain");
 });
 
