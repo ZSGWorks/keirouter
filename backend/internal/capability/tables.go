@@ -18,11 +18,12 @@ package capability
 // modality flags it implies, so user-defined media models are not treated as
 // text-only.
 var serviceKindCapabilities = map[string]caps{
-	"imageToText": {Vision: true},
-	"image":       {ImageOutput: true},
-	"stt":         {AudioInput: true},
-	"tts":         {AudioOutput: true},
-	"embedding":   {NoTools: true},
+	"imageToText":   {Vision: true}, // Legacy custom-model spelling.
+	"image_to_text": {Vision: true},
+	"image":         {ImageOutput: true},
+	"stt":           {AudioInput: true},
+	"tts":           {AudioOutput: true},
+	"embedding":     {NoTools: true},
 }
 
 // capabilitiesFromServiceKind returns the modality override for a media-service

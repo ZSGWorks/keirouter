@@ -156,14 +156,34 @@ func TestProjectModelSpecs(t *testing.T) {
 
 func assertModelKinds(t *testing.T, models []connectors.ModelSpec, id string) {
 	t.Helper()
-	kinds := map[core.ServiceKind]bool{}
+	var matching []connectors.ModelSpec
 	for _, model := range models {
 		if model.ID == id {
-			kinds[model.Kind] = true
+			matching = append(matching, model)
 		}
 	}
-	if !kinds[core.ServiceLLM] || !kinds[core.ServiceImageToText] {
-		t.Fatalf("%s kinds = %v, want LLM and vision", id, kinds)
+	if len(matching) != 1 {
+		t.Fatalf("%s models = %v, want one model", id, matching)
+	}
+	if !matching[0].SupportsKind(core.ServiceLLM) {
+		t.Fatalf("%s kinds = %v, want LLM", id, matching[0].SupportedKinds())
+	}
+	if !matching[0].SupportsKind(core.ServiceImageToText) {
+		t.Fatalf("%s kinds = %v, want vision", id, matching[0].SupportedKinds())
+	}
+}
+
+func TestModelSpecsMergesImageInputAndOutputKinds(t *testing.T) {
+	specs := modelSpecs(modelsDevModel{
+		ID: "multimodal", Modalities: &modelsDevMod{Input: []string{"image"}, Output: []string{"image"}},
+	})
+	if len(specs) != 1 {
+		t.Fatalf("specs = %v, want one model", specs)
+	}
+	for _, kind := range []core.ServiceKind{core.ServiceLLM, core.ServiceImageToText, core.ServiceImage} {
+		if !specs[0].SupportsKind(kind) {
+			t.Fatalf("model missing %q: %v", kind, specs[0].SupportedKinds())
+		}
 	}
 }
 

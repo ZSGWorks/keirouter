@@ -2707,6 +2707,10 @@ function CodexLimitWindow({ label, usedPercent, resetAt }: { label: string; used
 }
 
 // ModelCell renders a single model in a structural hairline grid.
+function displayModelKinds(model: ProviderModel) {
+  return model.kinds?.length ? model.kinds : [model.kind || "Model"];
+}
+
 function ModelCell({
   model,
   provider,
@@ -2768,7 +2772,11 @@ function ModelCell({
             {disabled ? "Disabled" : "Enabled"}
           </Badge>
         </div>
-        <Badge tone="neutral">{model.kind || "Model"}</Badge>
+        <div className="flex flex-wrap justify-end gap-1">
+          {displayModelKinds(model).map((kind) => (
+            <Badge key={kind} tone="neutral">{kind}</Badge>
+          ))}
+        </div>
       </div>
 
       <div className="relative z-10 mt-5 min-w-0 flex-1">

@@ -4,6 +4,8 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/mydisha/keirouter/backend/internal/core"
 )
 
@@ -60,21 +62,21 @@ func assertFetchedModelsSurviveCustomReload(t *testing.T, ids []string) {
 	}
 }
 
-func TestSetFetchedModelsPreservesServiceKindVariants(t *testing.T) {
+func TestSetFetchedModelsMergesServiceKindVariants(t *testing.T) {
 	t.Cleanup(func() { SetFetchedModels(FetchedModelUpdate{ProviderID: "openrouter"}) })
 	SetFetchedModels(FetchedModelUpdate{
 		ProviderID: "openrouter",
 		Models:     []ModelSpec{{ID: "openai/gpt-4o", Name: "GPT-4o dup", Kind: core.ServiceLLM}},
 	})
-	kinds := map[core.ServiceKind]bool{}
+	var models []ModelSpec
 	for _, m := range ModelsForProvider("openrouter") {
 		if m.ID == "openai/gpt-4o" {
-			kinds[m.Kind] = true
+			models = append(models, m)
 		}
 	}
-	if !kinds[core.ServiceLLM] || !kinds[core.ServiceImageToText] {
-		t.Fatalf("expected LLM and vision variants, got %v", kinds)
-	}
+	require.Len(t, models, 1)
+	require.True(t, models[0].SupportsKind(core.ServiceLLM))
+	require.True(t, models[0].SupportsKind(core.ServiceImageToText))
 	model, ok := FindModel("openrouter", "openai/gpt-4o")
 	if !ok || model.Kind != core.ServiceLLM {
 		t.Fatalf("FindModel = %+v, %v; want LLM variant", model, ok)
@@ -112,7 +114,7 @@ func TestReplaceFetchedModelsClearsAbsentProviders(t *testing.T) {
 	}
 }
 
-func TestCustomModelOverridesOnlyMatchingKind(t *testing.T) {
+func TestCustomModelMergesServiceKindsWithFetchedModel(t *testing.T) {
 	t.Cleanup(func() {
 		ReplaceFetchedModels(nil)
 		SetDynamicModels("openrouter", nil)
@@ -123,15 +125,15 @@ func TestCustomModelOverridesOnlyMatchingKind(t *testing.T) {
 	SetDynamicModels("openrouter", []ModelSpec{
 		{ID: "vendor/model", Name: "Custom vision", Kind: core.ServiceImageToText},
 	})
-	var gotLLM, gotVision bool
+	var models []ModelSpec
 	for _, m := range ModelsForProvider("openrouter") {
 		if m.ID != "vendor/model" {
 			continue
 		}
-		gotLLM = gotLLM || m.Kind == core.ServiceLLM
-		gotVision = gotVision || m.Kind == core.ServiceImageToText
+		models = append(models, m)
 	}
-	if !gotLLM || !gotVision {
-		t.Fatalf("expected fetched LLM and custom vision, llm=%v vision=%v", gotLLM, gotVision)
-	}
+	require.Len(t, models, 1)
+	require.Equal(t, "Custom vision", models[0].Name)
+	require.True(t, models[0].SupportsKind(core.ServiceLLM))
+	require.True(t, models[0].SupportsKind(core.ServiceImageToText))
 }

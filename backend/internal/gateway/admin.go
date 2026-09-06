@@ -306,6 +306,7 @@ func (s *Server) adminProviderModels(w http.ResponseWriter, r *http.Request) {
 		ID               string                      `json:"id"`
 		Name             string                      `json:"name"`
 		Kind             string                      `json:"kind"`
+		Kinds            []string                    `json:"kinds,omitempty"`
 		Capabilities     modelCapabilities           `json:"capabilities"`
 		CapabilitySource capability.CapabilitySource `json:"capability_source"`
 		Custom           bool                        `json:"custom,omitempty"`
@@ -336,12 +337,16 @@ func (s *Server) adminProviderModels(w http.ResponseWriter, r *http.Request) {
 	out := make([]modelInfo, 0, len(static))
 	for _, m := range static {
 		kind := modelKind(m.Kind)
-		if kindFilter != "" && kind != kindFilter {
+		if kindFilter != "" && !m.SupportsKind(kindFilter) {
 			continue
 		}
-		caps, source := capabilityPayload(providerID, m.ID, kind)
+		responseKind := kind
+		if kindFilter != "" {
+			responseKind = kindFilter
+		}
+		caps, source := capabilityPayloadForModel(providerID, m, kindFilter)
 		price, ok := staticPrices[m.ID]
-		mi := modelInfo{ID: m.ID, Name: m.Name, Kind: string(kind), Capabilities: caps, CapabilitySource: source, Pricing: modelPrice(price, ok)}
+		mi := modelInfo{ID: m.ID, Name: m.Name, Kind: string(responseKind), Kinds: modelKindNames(m), Capabilities: caps, CapabilitySource: source, Pricing: modelPrice(price, ok)}
 		if cm, ok := customByID[m.ID]; ok {
 			mi.Custom = true
 			mi.DBID = cm.ID
@@ -366,15 +371,19 @@ func (s *Server) adminProviderModels(w http.ResponseWriter, r *http.Request) {
 			added := false
 			for _, lm := range models {
 				kind := modelKind(lm.Kind)
-				if kindFilter != "" && kind != kindFilter {
+				if kindFilter != "" && !lm.SupportsKind(kindFilter) {
 					continue
+				}
+				responseKind := kind
+				if kindFilter != "" {
+					responseKind = kindFilter
 				}
 				if seen[lm.ID] {
 					continue
 				}
-				caps, source := capabilityPayload(providerID, lm.ID, kind)
+				caps, source := capabilityPayloadForModel(providerID, lm, kindFilter)
 				price, ok := connectors.ModelDisplayPriceByProviderModel(providerID, lm.ID)
-				out = append(out, modelInfo{ID: lm.ID, Name: lm.Name, Kind: string(kind), Capabilities: caps, CapabilitySource: source, Discovered: true, Pricing: modelPrice(price, ok)})
+				out = append(out, modelInfo{ID: lm.ID, Name: lm.Name, Kind: string(responseKind), Kinds: modelKindNames(lm), Capabilities: caps, CapabilitySource: source, Discovered: true, Pricing: modelPrice(price, ok)})
 				seen[lm.ID] = true
 				added = true
 			}

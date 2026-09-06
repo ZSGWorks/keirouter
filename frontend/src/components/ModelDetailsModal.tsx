@@ -17,6 +17,8 @@ const CAPABILITY_LABELS = [
 const rate = (value: number) =>
   `$${value.toLocaleString(undefined, { maximumFractionDigits: 6 })} / M tokens`;
 
+const displayModelKinds = (model: ProviderModel) => model.kinds?.length ? model.kinds : [model.kind || "Model"];
+
 function CapabilityDetails({ model }: { model: ProviderModel }) {
   const supported = model.capabilities
     ? CAPABILITY_LABELS.filter(([key]) => model.capabilities?.[key])
@@ -143,7 +145,9 @@ export function ModelDetailsModal({
             {provider.alias || provider.id}/{model.id}
           </code>
           <div className="flex flex-wrap gap-2">
-            <Badge tone="neutral">{model.kind || "Model"}</Badge>
+            {displayModelKinds(model).map((kind) => (
+              <Badge key={kind} tone="neutral">{kind}</Badge>
+            ))}
             {model.discovered && <Badge tone="accent">Discovered</Badge>}
             {model.pricing?.estimated && <Badge tone="warning">Estimated pricing</Badge>}
           </div>

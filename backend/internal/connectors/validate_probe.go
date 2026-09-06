@@ -32,7 +32,7 @@ func ProbeModelForCredentials(ctx context.Context, provider string, creds core.C
 		return ""
 	}
 	for _, model := range models {
-		if model.Kind == core.ServiceLLM && model.ID != "" {
+		if model.SupportsKind(core.ServiceLLM) && model.ID != "" {
 			return model.ID
 		}
 	}

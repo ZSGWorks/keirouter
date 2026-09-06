@@ -21,8 +21,33 @@ type ModelSpec struct {
 	Name string `json:"name"`
 	// Kind is the service kind this model serves (defaults to LLM).
 	Kind core.ServiceKind `json:"kind"`
+	// Kinds lists every service kind supported by this model. Kind remains the
+	// primary kind for callers that only understand one service kind.
+	Kinds []core.ServiceKind `json:"kinds,omitempty"`
 	// Dimensions is the embedding vector width (embedding models only).
 	Dimensions int `json:"dimensions,omitempty"`
+}
+
+// SupportedKinds returns all model service kinds in a stable order. Legacy
+// single-kind entries remain LLM-only when Kind is empty.
+func (m ModelSpec) SupportedKinds() []core.ServiceKind {
+	kinds := make([]core.ServiceKind, 0, len(m.Kinds)+1)
+	primary := m.Kind
+	if primary == "" {
+		primary = core.ServiceLLM
+	}
+	kinds = append(kinds, primary)
+	for _, kind := range m.Kinds {
+		if !core.HasServiceKind(kinds, kind) {
+			kinds = append(kinds, kind)
+		}
+	}
+	return kinds
+}
+
+// SupportsKind reports whether this model can serve the requested operation.
+func (m ModelSpec) SupportsKind(kind core.ServiceKind) bool {
+	return core.HasServiceKind(m.SupportedKinds(), kind)
 }
 
 // ModelsForProvider returns the model list for a provider id, composing the
@@ -61,7 +86,7 @@ func dynamicNonLLMModelsFor(providerID string) []ModelSpec {
 func filterModelSpecsByKind(models []ModelSpec, kind core.ServiceKind) []ModelSpec {
 	var out []ModelSpec
 	for _, mdl := range models {
-		if mdl.Kind == kind {
+		if mdl.SupportsKind(kind) {
 			out = append(out, mdl)
 		}
 	}
@@ -71,8 +96,11 @@ func filterModelSpecsByKind(models []ModelSpec, kind core.ServiceKind) []ModelSp
 func filterModelSpecsExcludingKind(models []ModelSpec, kind core.ServiceKind) []ModelSpec {
 	var out []ModelSpec
 	for _, mdl := range models {
-		if mdl.Kind != kind {
-			out = append(out, mdl)
+		for _, supported := range mdl.SupportedKinds() {
+			if supported != kind {
+				out = append(out, mdl)
+				break
+			}
 		}
 	}
 	return out
@@ -83,8 +111,8 @@ func filterModelSpecsExcludingKind(models []ModelSpec, kind core.ServiceKind) []
 // locks. Callers holding (or having just released) dynMu use it to keep the
 // model list consistent with a price snapshot.
 func modelsForProviderFromSnapshot(providerID string, fetched, custom []ModelSpec) []ModelSpec {
-	out := append([]ModelSpec{}, mergeNonLLMModels(providerStaticModels[providerID], filterModelSpecsExcludingKind(custom, core.ServiceLLM))...)
-	return append(out, mergeLLMModels(fetched, filterModelSpecsByKind(custom, core.ServiceLLM))...)
+	base := mergeModelSpecs(providerStaticModels[providerID], fetched)
+	return mergeCustomModelSpecs(base, custom)
 }
 
 // ModelsAndDisplayPricesForProvider returns a model list and its resolved
@@ -126,29 +154,11 @@ func mergeNonLLMModels(static, custom []ModelSpec) []ModelSpec {
 }
 
 func mergeCustomModelSpecs(base, custom []ModelSpec) []ModelSpec {
-	if len(custom) == 0 {
-		return base
-	}
-	keys := modelSpecKeys(custom)
-	merged := make([]ModelSpec, 0, len(base)+len(custom))
-	for _, model := range base {
-		if !keys[modelSpecKey(model)] {
-			merged = append(merged, model)
-		}
-	}
-	return append(merged, custom...)
+	return mergeModelSpecs(base, custom)
 }
 
 func appendMissingModelSpecs(primary, additions []ModelSpec) []ModelSpec {
-	keys := modelSpecKeys(primary)
-	merged := append([]ModelSpec{}, primary...)
-	for _, model := range additions {
-		if !keys[modelSpecKey(model)] {
-			keys[modelSpecKey(model)] = true
-			merged = append(merged, model)
-		}
-	}
-	return merged
+	return mergeModelSpecs(primary, additions)
 }
 
 func modelSpecKeys(models []ModelSpec) map[string]bool {
@@ -160,7 +170,72 @@ func modelSpecKeys(models []ModelSpec) map[string]bool {
 }
 
 func modelSpecKey(m ModelSpec) string {
-	return m.ID + "/" + string(m.Kind)
+	return m.ID
+}
+
+// mergeModelSpecs preserves one model per provider-local ID. Later entries
+// override display metadata while service-kind membership is unioned.
+func mergeModelSpecs(primary, additions []ModelSpec) []ModelSpec {
+	merged := make([]ModelSpec, 0, len(primary)+len(additions))
+	indexes := make(map[string]int, len(primary)+len(additions))
+	appendModel := func(model ModelSpec, override bool) {
+		key := modelSpecKey(model)
+		if index, ok := indexes[key]; ok {
+			merged[index] = mergeModelSpec(merged[index], model, override)
+			return
+		}
+		indexes[key] = len(merged)
+		merged = append(merged, normalizeModelSpec(model))
+	}
+	for _, model := range primary {
+		appendModel(model, false)
+	}
+	for _, model := range additions {
+		appendModel(model, true)
+	}
+	return merged
+}
+
+func normalizeModelSpec(model ModelSpec) ModelSpec {
+	model.Kinds = model.SupportedKinds()
+	model.Kind = primaryModelKind(model.Kinds)
+	return model
+}
+
+func mergeModelSpec(base, addition ModelSpec, override bool) ModelSpec {
+	baseKinds := base.SupportedKinds()
+	if override {
+		if addition.Name == "" {
+			addition.Name = base.Name
+		}
+		if addition.Dimensions == 0 {
+			addition.Dimensions = base.Dimensions
+		}
+		base = addition
+	}
+	base.Kinds = unionModelKinds(baseKinds, addition.SupportedKinds())
+	base.Kind = primaryModelKind(base.Kinds)
+	return base
+}
+
+func unionModelKinds(primary, additions []core.ServiceKind) []core.ServiceKind {
+	merged := append([]core.ServiceKind{}, primary...)
+	for _, kind := range additions {
+		if !core.HasServiceKind(merged, kind) {
+			merged = append(merged, kind)
+		}
+	}
+	return merged
+}
+
+func primaryModelKind(kinds []core.ServiceKind) core.ServiceKind {
+	if core.HasServiceKind(kinds, core.ServiceLLM) {
+		return core.ServiceLLM
+	}
+	if len(kinds) > 0 {
+		return kinds[0]
+	}
+	return core.ServiceLLM
 }
 
 // ModelsByKind returns all (providerID, model) pairs across the catalog that
@@ -182,7 +257,7 @@ func ModelsByKind(kind core.ServiceKind) []ProviderModel {
 			continue
 		}
 		for _, mdl := range ModelsForProvider(spec.ID) {
-			if mdl.Kind == kind {
+			if mdl.SupportsKind(kind) {
 				out = append(out, ProviderModel{Provider: spec.ID, Model: mdl})
 			}
 		}
@@ -192,20 +267,10 @@ func ModelsByKind(kind core.ServiceKind) []ProviderModel {
 
 // FindModel locates a model by provider id and model id.
 func FindModel(providerID, modelID string) (ModelSpec, bool) {
-	var fallback ModelSpec
-	found := false
 	for _, mdl := range ModelsForProvider(providerID) {
 		if mdl.ID == modelID {
-			if mdl.Kind == core.ServiceLLM {
-				return mdl, true
-			}
-			if !found {
-				fallback, found = mdl, true
-			}
+			return mdl, true
 		}
-	}
-	if found {
-		return fallback, true
 	}
 	return ModelSpec{}, false
 }

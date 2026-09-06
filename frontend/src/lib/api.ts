@@ -41,6 +41,7 @@ export interface ProviderModel {
   id: string;
   name: string;
   kind: string;
+  kinds?: string[];
   custom?: boolean;
   db_id?: string;
   discovered?: boolean;
