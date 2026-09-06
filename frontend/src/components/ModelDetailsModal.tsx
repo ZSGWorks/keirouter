@@ -19,7 +19,7 @@ const rate = (value: number) =>
 
 const displayModelKinds = (model: ProviderModel) => model.kinds?.length ? model.kinds : [model.kind || "Model"];
 
-function CapabilityDetails({ model }: { model: ProviderModel }) {
+function CapabilityDetails({ model }: Readonly<{ model: ProviderModel }>) {
   const supported = model.capabilities
     ? CAPABILITY_LABELS.filter(([key]) => model.capabilities?.[key])
     : [];
@@ -44,7 +44,7 @@ function CapabilityDetails({ model }: { model: ProviderModel }) {
   );
 }
 
-function RateList({ rates }: { rates: Array<[string, number]> }) {
+function RateList({ rates }: Readonly<{ rates: Array<[string, number]> }>) {
   return rates.map(([label, value]) => (
     <div key={label} className="flex justify-between gap-4 text-sm">
       <span className="text-[var(--text-muted)]">{label}</span>
@@ -53,7 +53,7 @@ function RateList({ rates }: { rates: Array<[string, number]> }) {
   ));
 }
 
-function PricingDetails({ model }: { model: ProviderModel }) {
+function PricingDetails({ model }: Readonly<{ model: ProviderModel }>) {
   const pricing = model.pricing;
   if (!pricing) {
     return (
@@ -130,12 +130,12 @@ export function ModelDetailsModal({
   model,
   provider,
   onClose,
-}: {
+}: Readonly<{
   open: boolean;
   model: ProviderModel;
   provider: Provider;
   onClose: () => void;
-}) {
+}>) {
   return (
     <Modal open={open} onClose={onClose} title={model.name || model.id} subtitle="Read-only model metadata and pricing.">
       <div className="space-y-5 px-6 py-5">
@@ -166,11 +166,11 @@ export function ModelDetailsModal({
   );
 }
 
-function Metric({ label, value }: { label: string; value: number | undefined }) {
+function Metric({ label, value }: Readonly<{ label: string; value: number | undefined }>) {
   return (
     <div className="rounded-lg bg-[var(--bg-subtle)] p-3">
       <p className="text-xs text-[var(--text-muted)]">{label}</p>
-      <p className="mt-1 font-medium">{value ? value.toLocaleString() : "Unavailable"}</p>
+      <p className="mt-1 font-medium">{value === undefined ? "Unavailable" : value.toLocaleString()}</p>
     </div>
   );
 }

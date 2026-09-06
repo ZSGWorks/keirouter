@@ -33,6 +33,11 @@ import {
   useClientPagination,
 } from "../components/ui";
 
+const AUTH_KIND_LABELS: Record<string, string> = {
+  none: "Public endpoint",
+  oauth: "OAuth",
+};
+
 // redirectURIForProvider returns the OAuth callback the provider redirects to
 // after sign-in.
 //
@@ -517,7 +522,7 @@ export function ProviderDetailPage() {
                 {provider.auth_kind === "none" && <Badge tone="success">No credentials required</Badge>}
               </div>
               <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-[var(--text-muted)]">
-                <span>{provider.auth_kind === "none" ? "Public endpoint" : provider.auth_kind === "oauth" ? "OAuth" : "API key"}</span>
+                <span>{AUTH_KIND_LABELS[provider.auth_kind] ?? "API key"}</span>
                 <span aria-hidden="true">·</span>
                 <span>{myAccounts.length} account{myAccounts.length === 1 ? "" : "s"}</span>
                 <span aria-hidden="true">·</span>
@@ -1071,7 +1076,7 @@ export function ProviderDetailPage() {
 // provider (OpenAI- or Anthropic-compatible) on the provider detail header,
 // with a one-click copy affordance. Hidden for built-in providers whose base
 // URL is fixed and not user-configurable.
-function BaseURLDisplay({ baseURL, dialect }: { baseURL: string; dialect?: string }) {
+function BaseURLDisplay({ baseURL, dialect }: Readonly<{ baseURL: string; dialect?: string }>) {
   const [copied, setCopied] = useState(false);
 
   const copy = async () => {
@@ -1120,21 +1125,21 @@ function BaseURLDisplay({ baseURL, dialect }: { baseURL: string; dialect?: strin
 }
 
 const routingOptions = [
-  { value: "inherit", label: "Inherit" },
-  { value: "fill-first", label: "Fill first" },
-  { value: "round-robin", label: "Round robin" },
-  { value: "smart-round-robin", label: "Smart" },
+  { value: "inherit", label: "Inherit", description: "Follow router-wide configuration." },
+  { value: "fill-first", label: "Fill first", description: "Keep the highest-priority healthy account in use." },
+  { value: "round-robin", label: "Round robin", description: "Rotate after a request window." },
+  { value: "smart-round-robin", label: "Smart", description: "Rotate while retaining client affinity." },
 ];
 
 function RoutingControls({
   settings,
   saving,
   onUpdate,
-}: {
+}: Readonly<{
   settings: ProviderRoutingSettings;
   saving: boolean;
   onUpdate: (patch: Partial<ProviderRoutingSettings>) => void;
-}) {
+}>) {
   const [mode, setMode] = useState(settings?.routing_strategy || "inherit");
   const [stickyLimit, setStickyLimit] = useState(settings?.sticky_limit || 3);
   const [ttlHours, setTtlHours] = useState(Math.max(1, Math.round((settings?.affinity_ttl_minutes || 1440) / 60)));
@@ -1188,7 +1193,7 @@ function RoutingControls({
             >
               <span className="block text-sm font-semibold">{option.label}</span>
               <span className="mt-0.5 block text-xs leading-5 text-[var(--text-muted)]">
-                {option.value === "inherit" ? "Follow router-wide configuration." : option.value === "fill-first" ? "Keep the highest-priority healthy account in use." : option.value === "round-robin" ? "Rotate after a request window." : "Rotate while retaining client affinity."}
+                {option.description}
               </span>
             </button>
           );
@@ -1205,7 +1210,7 @@ function RoutingControls({
               max={100}
               value={stickyLimit}
               disabled={saving}
-              onChange={(event) => setStickyLimit(Math.max(1, parseInt(event.target.value, 10) || 1))}
+              onChange={(event) => setStickyLimit(Math.max(1, Number.parseInt(event.target.value, 10) || 1))}
             />
           </Field>
           {usesAffinity && (
@@ -1217,7 +1222,7 @@ function RoutingControls({
                 max={168}
                 value={ttlHours}
                 disabled={saving}
-                onChange={(event) => setTtlHours(Math.max(1, parseInt(event.target.value, 10) || 1))}
+                onChange={(event) => setTtlHours(Math.max(1, Number.parseInt(event.target.value, 10) || 1))}
               />
             </Field>
           )}
@@ -1259,7 +1264,7 @@ function AccountRow({
   onUpdateProxy,
   testResult,
   disabledByBatch,
-}: {
+}: Readonly<{
   account: Account;
   index: number;
   total: number;
@@ -1273,7 +1278,7 @@ function AccountRow({
   onUpdateProxy: (patch: { priority?: number; proxy_pool_id?: string; disabled?: boolean }) => void;
   testResult?: { status: "testing" | "ok" | "error"; message?: string };
   disabledByBatch?: boolean;
-}) {
+}>) {
   const testing = testResult?.status === "testing";
   const [localPriority, setLocalPriority] = useState(a.priority);
   const priorityRef = useRef(a.priority);
@@ -1286,7 +1291,7 @@ function AccountRow({
 
   const commitPriority = () => {
     const val = localPriority;
-    if (!isNaN(val) && val >= 0 && val !== a.priority) {
+    if (!Number.isNaN(val) && val >= 0 && val !== a.priority) {
       onUpdateProxy({ priority: val });
     }
   };
@@ -1351,8 +1356,8 @@ function AccountRow({
               type="number"
               value={localPriority}
               onChange={(event) => {
-                const value = parseInt(event.target.value, 10);
-                if (!isNaN(value) && value >= 0) setLocalPriority(value);
+                const value = Number.parseInt(event.target.value, 10);
+                if (!Number.isNaN(value) && value >= 0) setLocalPriority(value);
               }}
               onBlur={commitPriority}
               onKeyDown={(event) => event.key === "Enter" && (event.target as HTMLInputElement).blur()}
@@ -1480,7 +1485,7 @@ function AccountQuotaPanel({
   quotas,
   disabled,
   onRefresh,
-}: {
+}: Readonly<{
   loading: boolean;
   error: string;
   planName?: string;
@@ -1488,7 +1493,7 @@ function AccountQuotaPanel({
   quotas: UpstreamQuota[];
   disabled: boolean;
   onRefresh: () => void;
-}) {
+}>) {
   return (
     <div className="rounded-xl bg-[var(--bg-subtle)] p-3 shadow-[inset_0_0_0_1px_var(--border)] sm:p-4">
       <div className="flex items-start justify-between gap-3">
@@ -1543,7 +1548,7 @@ function AccountQuotaPanel({
   );
 }
 
-function QuotaBarInline({ quota: q }: { quota: UpstreamQuota }) {
+function QuotaBarInline({ quota: q }: Readonly<{ quota: UpstreamQuota }>) {
   const pct = q.limit > 0 ? Math.min(100, Math.round((q.used / q.limit) * 100)) : 0;
   const remainingPct = q.limit > 0 ? Math.round((q.remaining / q.limit) * 100) : 0;
   const tone =
@@ -1562,7 +1567,7 @@ function QuotaBarInline({ quota: q }: { quota: UpstreamQuota }) {
       ? new Date(Number(q.reset_at) * (Number(q.reset_at) > 10_000_000_000 ? 1 : 1000))
       : new Date(q.reset_at)
     : null;
-  const resetLabel = resetDate && !isNaN(resetDate.getTime())
+  const resetLabel = resetDate && !Number.isNaN(resetDate.getTime())
     ? resetDate.toLocaleDateString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
     : null;
 
@@ -1589,7 +1594,7 @@ function QuotaBarInline({ quota: q }: { quota: UpstreamQuota }) {
 // varies per line. The standardized paste format is parsed live with a preview,
 // keys can be loaded from a .txt/.csv file, and the backend returns a per-row
 // outcome that is rendered after import.
-function BulkAddKeysModal({ provider, onClose }: { provider: Provider; onClose: () => void }) {
+function BulkAddKeysModal({ provider, onClose }: Readonly<{ provider: Provider; onClose: () => void }>) {
   const qc = useQueryClient();
   const toast = useToast();
   const [text, setText] = useState("");
@@ -1833,11 +1838,11 @@ function BulkResultsView({
   results,
   onClose,
   onAgain,
-}: {
+}: Readonly<{
   results: BulkAccountResult[];
   onClose: () => void;
   onAgain: () => void;
-}) {
+}>) {
   const created = results.filter((r) => r.status === "created").length;
   const skipped = results.filter((r) => r.status === "skipped").length;
   const failed = results.filter((r) => r.status === "error").length;
@@ -1904,7 +1909,7 @@ function AddApiKeyModal({
   onAzureOrganization,
   onSubmit,
   onClose,
-}: {
+}: Readonly<{
   provider: Provider;
   hasRegions: boolean;
   label: string;
@@ -1929,7 +1934,7 @@ function AddApiKeyModal({
   onAzureOrganization: (v: string) => void;
   onSubmit: () => void;
   onClose: () => void;
-}) {
+}>) {
   const [checkStatus, setCheckStatus] = useState<"idle" | "ok" | "error">("idle");
   const [checkMsg, setCheckMsg] = useState("");
   const [checking, setChecking] = useState(false);
@@ -1986,17 +1991,24 @@ function AddApiKeyModal({
   };
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm"
-      onClick={onClose}
-    >
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <button
+        type="button"
+        aria-label="Close add API key dialog"
+        tabIndex={-1}
+        className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+        onClick={onClose}
+      />
       <div
-        className="w-full max-w-md rounded-2xl border border-[var(--border)] bg-[var(--bg-elevated)] shadow-[var(--shadow-float)] overflow-hidden"
-        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="add-api-key-title"
+        className="relative z-10 w-full max-w-md overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--bg-elevated)] shadow-[var(--shadow-float)]"
       >
         <div className="flex items-center justify-between border-b border-[var(--border)] px-6 py-4">
-          <h2 className="text-sm font-semibold">Add API key — {provider.display_name}</h2>
+          <h2 id="add-api-key-title" className="text-sm font-semibold">Add API key — {provider.display_name}</h2>
           <button
+            type="button"
             onClick={onClose}
             className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--text-muted)] transition-colors hover:bg-ink-100 hover:text-[var(--text)] dark:hover:bg-ink-800"
           >
@@ -2159,19 +2171,26 @@ function AddApiKeyModal({
 
 // ---- OAuth connect modal (reused flow) --------------------------------------
 
-function ConnectModal({ provider, onClose }: { provider: OAuthProvider; onClose: () => void }) {
+function ConnectModal({ provider, onClose }: Readonly<{ provider: OAuthProvider; onClose: () => void }>) {
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm"
-      onClick={onClose}
-    >
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <button
+        type="button"
+        aria-label="Close connect dialog"
+        tabIndex={-1}
+        className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+        onClick={onClose}
+      />
       <div
-        className="w-full max-w-md rounded-2xl border border-[var(--border)] bg-[var(--bg-elevated)] shadow-[var(--shadow-float)]"
-        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="connect-provider-title"
+        className="relative z-10 w-full max-w-md rounded-2xl border border-[var(--border)] bg-[var(--bg-elevated)] shadow-[var(--shadow-float)]"
       >
         <div className="flex items-center justify-between border-b border-[var(--border)] px-6 py-4">
-          <h2 className="text-sm font-semibold">Connect {provider.display_name}</h2>
+          <h2 id="connect-provider-title" className="text-sm font-semibold">Connect {provider.display_name}</h2>
           <button
+            type="button"
             onClick={onClose}
             className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--text-muted)] transition-colors hover:bg-ink-100 hover:text-[var(--text)] dark:hover:bg-ink-800"
           >
@@ -2188,7 +2207,7 @@ function ConnectModal({ provider, onClose }: { provider: OAuthProvider; onClose:
   );
 }
 
-function AuthCodeFlow({ provider, onClose }: { provider: OAuthProvider; onClose: () => void }) {
+function AuthCodeFlow({ provider, onClose }: Readonly<{ provider: OAuthProvider; onClose: () => void }>) {
   const qc = useQueryClient();
   const [waiting, setWaiting] = useState(false);
   const [error, setError] = useState("");
@@ -2411,7 +2430,7 @@ function AuthCodeFlow({ provider, onClose }: { provider: OAuthProvider; onClose:
   );
 }
 
-function DeviceFlow({ provider, onClose }: { provider: OAuthProvider; onClose: () => void }) {
+function DeviceFlow({ provider, onClose }: Readonly<{ provider: OAuthProvider; onClose: () => void }>) {
   const qc = useQueryClient();
   const [dc, setDc] = useState<DeviceCode | null>(null);
   const [status, setStatus] = useState<"idle" | "waiting" | "done" | "error">("idle");
@@ -2538,7 +2557,7 @@ function DeviceFlow({ provider, onClose }: { provider: OAuthProvider; onClose: (
 
 // ---- Codex reset credits section --------------------------------------------
 
-function CodexResetCreditsSection({ accountId }: { accountId: string }) {
+function CodexResetCreditsSection({ accountId }: Readonly<{ accountId: string }>) {
   const qc = useQueryClient();
   const toast = useToast();
   const [confirmingReset, setConfirmingReset] = useState(false);
@@ -2681,7 +2700,7 @@ function CodexResetCreditsSection({ accountId }: { accountId: string }) {
   );
 }
 
-function CodexLimitWindow({ label, usedPercent, resetAt }: { label: string; usedPercent: number; resetAt: number }) {
+function CodexLimitWindow({ label, usedPercent, resetAt }: Readonly<{ label: string; usedPercent: number; resetAt: number }>) {
   const used = Math.min(100, Math.max(0, usedPercent));
   const remaining = Math.max(0, 100 - used);
   const tone = used >= 80
@@ -2722,7 +2741,7 @@ function ModelCell({
   onOpen,
   onToggleSelect,
   onToggleDisable,
-}: {
+}: Readonly<{
   model: ProviderModel;
   provider: Provider;
   disabled?: boolean;
@@ -2730,7 +2749,7 @@ function ModelCell({
   onOpen: () => void;
   onToggleSelect?: () => void;
   onToggleDisable?: () => void;
-}) {
+}>) {
   const [copied, setCopied] = useState(false);
   const fullModel = `${provider.alias || provider.id}/${model.id}`;
 
@@ -2742,17 +2761,13 @@ function ModelCell({
 
   return (
     <article
-      onClick={onOpen}
       className={`group relative flex min-h-36 flex-col bg-[var(--bg-elevated)] p-4 transition-[background-color,box-shadow] duration-150 hover:bg-[var(--bg-subtle)] ${
         disabled ? "opacity-65" : ""
       } ${selected ? "bg-accent-50/70 ring-2 ring-inset ring-accent-400/30 dark:bg-accent-900/15" : ""}`}
     >
       <button
         type="button"
-        onClick={(event) => {
-          event.stopPropagation();
-          onOpen();
-        }}
+        onClick={onOpen}
         className="absolute inset-0 z-0 rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/50"
         aria-label={`View details for ${model.name || model.id}`}
       />
@@ -2763,11 +2778,7 @@ function ModelCell({
               type="checkbox"
               className="h-4 w-4 shrink-0 rounded border-[var(--border)] accent-[var(--color-accent-500)]"
               checked={!!selected}
-              onClick={(event) => event.stopPropagation()}
-              onChange={(event) => {
-                event.stopPropagation();
-                onToggleSelect();
-              }}
+              onChange={onToggleSelect}
               aria-label={`Select ${model.name || model.id}`}
             />
           )}
@@ -2801,10 +2812,7 @@ function ModelCell({
           {onToggleDisable && (
             <button
               type="button"
-              onClick={(event) => {
-                event.stopPropagation();
-                onToggleDisable();
-              }}
+              onClick={onToggleDisable}
               className="flex h-9 w-9 items-center justify-center rounded-lg text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-subtle)] hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/50"
               title={disabled ? "Enable model" : "Disable model"}
               aria-label={disabled ? `Enable ${model.name || model.id}` : `Disable ${model.name || model.id}`}
@@ -2814,10 +2822,7 @@ function ModelCell({
           )}
           <button
             type="button"
-            onClick={(event) => {
-              event.stopPropagation();
-              handleCopy();
-            }}
+            onClick={handleCopy}
             className="flex h-9 w-9 items-center justify-center rounded-lg text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-subtle)] hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/50"
             title="Copy model path"
             aria-label={`Copy model path ${fullModel}`}
@@ -2831,7 +2836,7 @@ function ModelCell({
 }
 
 // ProviderIcon renders the provider PNG with a colored fallback initial.
-function ProviderIcon({ provider: p, size = 40 }: { provider: Provider; size?: number }) {
+function ProviderIcon({ provider: p, size = 40 }: Readonly<{ provider: Provider; size?: number }>) {
   const [errored, setErrored] = useState(false);
   const dim = { width: size, height: size };
   if (errored || !p.icon) {
