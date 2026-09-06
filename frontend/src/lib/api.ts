@@ -1447,10 +1447,7 @@ export const api = {
   // whose credentials are re-keyed to the passphrase (movable across machines
   // with different master keys).
   exportDatabase: (passphrase?: string) =>
-    request<Record<string, unknown>>(
-      "GET",
-      passphrase ? `/settings/database?passphrase=${encodeURIComponent(passphrase)}` : "/settings/database",
-    ),
+    request<Record<string, unknown>>("POST", "/settings/database/export", { passphrase }),
   importDatabase: (payload: Record<string, unknown>, passphrase?: string) =>
     request<{ imported: number }>("POST", "/settings/database", passphrase ? { ...payload, passphrase } : payload),
 

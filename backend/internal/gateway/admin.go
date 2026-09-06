@@ -111,7 +111,7 @@ func (s *Server) mountAdmin(r chi.Router) {
 	r.Post("/settings/headroom-test", s.adminTestHeadroom)
 	r.Get("/settings/access", s.adminGetAccessSettings)
 	r.Post("/settings/access", s.adminUpdateAccessSettings)
-	r.Get("/settings/database", s.adminExportDatabase)
+	r.Post("/settings/database/export", s.adminExportDatabase)
 	r.Post("/settings/database", s.adminImportDatabase)
 	r.Post("/settings/database/import-foreign", s.adminImportForeignConfig)
 	r.Get("/settings/sqlite", s.adminSQLiteStatus)
@@ -2943,7 +2943,10 @@ func (s *Server) adminExportDatabase(w http.ResponseWriter, r *http.Request) {
 	// Optional passphrase enables a portable backup: each sealed credential is
 	// re-keyed from the local master key to a passphrase-derived key, so the
 	// backup can be restored on a machine with a different master key.
-	passphrase := strings.TrimSpace(r.URL.Query().Get("passphrase"))
+	passphrase, ok := decodeDatabaseExportPassphrase(w, r)
+	if !ok {
+		return
+	}
 	portable := passphrase != ""
 	export["portable"] = portable
 
@@ -3039,6 +3042,16 @@ func (s *Server) adminExportDatabase(w http.ResponseWriter, r *http.Request) {
 	export["aliases"] = aliasMap
 
 	writeJSON(w, http.StatusOK, export)
+}
+
+func decodeDatabaseExportPassphrase(w http.ResponseWriter, r *http.Request) (string, bool) {
+	var req struct {
+		Passphrase string `json:"passphrase"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return "", false
+	}
+	return strings.TrimSpace(req.Passphrase), true
 }
 
 func (s *Server) adminImportDatabase(w http.ResponseWriter, r *http.Request) {
