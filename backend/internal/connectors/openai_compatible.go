@@ -44,7 +44,11 @@ func (c *OpenAICompatible) ID() string            { return c.id }
 func (c *OpenAICompatible) Dialect() core.Dialect { return core.DialectOpenAI }
 
 func (c *OpenAICompatible) baseURL(creds core.Credentials) string {
-	u := c.defaultBase
+	return resolvedBaseURL(c.defaultBase, creds)
+}
+
+func resolvedBaseURL(defaultBase string, creds core.Credentials) string {
+	u := defaultBase
 	if creds.BaseURL != "" {
 		u = creds.BaseURL
 	}
@@ -226,61 +230,87 @@ func isStreamRequiredError(err error) bool {
 // drainStreamToResponse consumes a stream channel and folds the chunks into a
 // single ChatResponse. Used by Chat when the provider requires streaming.
 func drainStreamToResponse(stream <-chan core.StreamChunk, model string) (*core.ChatResponse, error) {
-	msg := core.Message{Role: core.RoleAssistant}
-	var text, thinking string
-	toolCalls := map[string]*core.ToolCall{}
-	var toolOrder []string
-	finish := core.FinishStop
-	var usage core.Usage
-
+	accumulator := streamResponseAccumulator{
+		toolCalls: map[string]*core.ToolCall{},
+		finish:    core.FinishStop,
+	}
 	for ch := range stream {
-		switch ch.Type {
-		case core.ChunkText:
-			text += ch.Delta
-		case core.ChunkThinking:
-			thinking += ch.Delta
-		case core.ChunkToolCall:
-			if ch.ToolCall != nil {
-				existing, ok := toolCalls[ch.ToolCall.ID]
-				if !ok {
-					tc := *ch.ToolCall
-					toolCalls[ch.ToolCall.ID] = &tc
-					toolOrder = append(toolOrder, ch.ToolCall.ID)
-				} else if len(ch.ToolCall.Arguments) > 0 {
-					existing.Arguments = append(existing.Arguments, ch.ToolCall.Arguments...)
-				}
-				finish = core.FinishToolCalls
-			}
-		case core.ChunkFinish:
-			if ch.FinishReason != "" {
-				finish = ch.FinishReason
-			}
-		case core.ChunkUsage:
-			if ch.Usage != nil {
-				usage = *ch.Usage
-			}
-		case core.ChunkError:
-			if ch.Err != nil {
-				return nil, ch.Err
-			}
+		if err := accumulator.add(ch); err != nil {
+			return nil, err
 		}
 	}
+	return accumulator.response(model), nil
+}
 
-	if thinking != "" {
-		msg.Content = append(msg.Content, core.ContentPart{Type: core.PartThinking, Text: thinking})
+type streamResponseAccumulator struct {
+	text, thinking string
+	toolCalls      map[string]*core.ToolCall
+	toolOrder      []string
+	finish         core.FinishReason
+	usage          core.Usage
+}
+
+func (a *streamResponseAccumulator) add(ch core.StreamChunk) error {
+	if ch.Type == core.ChunkError {
+		return ch.Err
 	}
-	if text != "" {
-		msg.Content = append(msg.Content, core.ContentPart{Type: core.PartText, Text: text})
+	switch ch.Type {
+	case core.ChunkText:
+		a.text += ch.Delta
+	case core.ChunkThinking:
+		a.thinking += ch.Delta
+	default:
+		a.addMetadata(ch)
 	}
-	for _, id := range toolOrder {
-		tc := toolCalls[id]
+	return nil
+}
+
+func (a *streamResponseAccumulator) addMetadata(ch core.StreamChunk) {
+	switch ch.Type {
+	case core.ChunkToolCall:
+		a.addToolCall(ch.ToolCall)
+	case core.ChunkFinish:
+		if ch.FinishReason != "" {
+			a.finish = ch.FinishReason
+		}
+	case core.ChunkUsage:
+		if ch.Usage != nil {
+			a.usage = *ch.Usage
+		}
+	}
+}
+
+func (a *streamResponseAccumulator) addToolCall(call *core.ToolCall) {
+	if call == nil {
+		return
+	}
+	existing, ok := a.toolCalls[call.ID]
+	if !ok {
+		copy := *call
+		a.toolCalls[call.ID] = &copy
+		a.toolOrder = append(a.toolOrder, call.ID)
+	} else if len(call.Arguments) > 0 {
+		existing.Arguments = append(existing.Arguments, call.Arguments...)
+	}
+	a.finish = core.FinishToolCalls
+}
+
+func (a *streamResponseAccumulator) response(model string) *core.ChatResponse {
+	msg := core.Message{Role: core.RoleAssistant}
+	if a.thinking != "" {
+		msg.Content = append(msg.Content, core.ContentPart{Type: core.PartThinking, Text: a.thinking})
+	}
+	if a.text != "" {
+		msg.Content = append(msg.Content, core.ContentPart{Type: core.PartText, Text: a.text})
+	}
+	for _, id := range a.toolOrder {
+		tc := a.toolCalls[id]
 		if len(tc.Arguments) == 0 {
 			tc.Arguments = json.RawMessage("{}")
 		}
 		msg.Content = append(msg.Content, core.ContentPart{Type: core.PartToolCall, ToolCall: tc})
 	}
-
-	return &core.ChatResponse{Model: model, Message: msg, FinishReason: finish, Usage: usage}, nil
+	return &core.ChatResponse{Model: model, Message: msg, FinishReason: a.finish, Usage: a.usage}
 }
 
 func (c *OpenAICompatible) Chat(ctx context.Context, req *core.ChatRequest, creds core.Credentials) (*core.ChatResponse, error) {
@@ -377,7 +407,7 @@ func (c *OpenAICompatible) Validate(ctx context.Context, creds core.Credentials)
 
 func (c *OpenAICompatible) validateAzure(ctx context.Context, creds core.Credentials) error {
 	body := []byte(`{"messages":[{"role":"user","content":"ping"}],"max_tokens":1}`)
-	err := validateProbe(ctx, c.id, c.chatCompletionsURL(creds, "validate"), body, c.headers(creds))
+	err := validateProbe(ctx, validationProbe{c.id, c.chatCompletionsURL(creds, "validate"), body, c.headers(creds)})
 	if err != nil {
 		return c.validationError(err)
 	}
@@ -452,18 +482,26 @@ func (c *OpenAICompatible) chatAuthProbe(ctx context.Context, creds core.Credent
 		"max_tokens": 1,
 		"stream":     false,
 	})
-	return validateProbe(ctx, c.id, c.chatCompletionsURL(creds, probeModel), body, c.headers(creds))
+	return validateProbe(ctx, validationProbe{c.id, c.chatCompletionsURL(creds, probeModel), body, c.headers(creds)})
 }
 
-func validateProbe(ctx context.Context, provider, endpoint string, body []byte, headers map[string]string) error {
-	_, err := doJSON(ctx, provider, "validate", endpoint, body, headers)
-	if err == nil {
-		return nil
-	}
-	if isNonJSONResponseError(err) || validationAuthError(err) || !validationReachedUpstream(err) {
+type validationProbe struct {
+	provider string
+	endpoint string
+	body     []byte
+	headers  map[string]string
+}
+
+func validateProbe(ctx context.Context, probe validationProbe) error {
+	_, err := doJSON(ctx, probe.provider, "validate", probe.endpoint, probe.body, probe.headers)
+	if probeFailureIsFatal(err) {
 		return err
 	}
 	return nil
+}
+
+func probeFailureIsFatal(err error) bool {
+	return err != nil && (isNonJSONResponseError(err) || validationAuthError(err) || !validationReachedUpstream(err))
 }
 
 func validationAuthError(err error) bool {
@@ -497,50 +535,49 @@ type OpenAICompatibleModelSource struct {
 
 // ListModels fetches GET /models from the upstream and returns ModelSpecs.
 func (s *OpenAICompatibleModelSource) ListModels(ctx context.Context, creds core.Credentials) ([]ModelSpec, error) {
-	base := s.defaultBase
-	if creds.BaseURL != "" {
-		base = creds.BaseURL
-	}
-	// Resolve template placeholders (e.g. cloudflare {accountId}).
-	for key, val := range creds.Extra {
-		base = strings.ReplaceAll(base, "{"+key+"}", val)
-	}
-
-	url := joinURL(base, "models")
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	url := joinURL(resolvedBaseURL(s.defaultBase, creds), "models")
+	req, err := openAIModelsRequest(ctx, url, creds)
 	if err != nil {
 		return nil, err
 	}
-	switch {
-	case creds.AccessToken != "":
-		req.Header.Set("Authorization", bearer(creds.AccessToken))
-	case creds.APIKey != "":
-		req.Header.Set("Authorization", bearer(creds.APIKey))
-	}
-	req.Header.Set("Accept", "application/json")
-
 	resp, err := sharedClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8*1024))
-		return nil, fmt.Errorf("GET /models returned %d: %s", resp.StatusCode, truncateError(body))
+		return nil, modelsStatusError(resp)
 	}
+	return decodeOpenAIModels(resp.Body)
+}
 
-	// Parse the standard OpenAI models response shape.
+func openAIModelsRequest(ctx context.Context, url string, creds core.Credentials) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	if token := credentialToken(creds); token != "" {
+		req.Header.Set("Authorization", bearer(token))
+	}
+	req.Header.Set("Accept", "application/json")
+	return req, nil
+}
+
+func modelsStatusError(resp *http.Response) error {
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8*1024))
+	return fmt.Errorf("GET /models returned %d: %s", resp.StatusCode, truncateError(body))
+}
+
+func decodeOpenAIModels(body io.Reader) ([]ModelSpec, error) {
 	var envelope struct {
 		Data []struct {
 			ID      string `json:"id"`
 			OwnedBy string `json:"owned_by"`
 		} `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+	if err := json.NewDecoder(body).Decode(&envelope); err != nil {
 		return nil, fmt.Errorf("decode /models response: %w", err)
 	}
-
 	out := make([]ModelSpec, 0, len(envelope.Data))
 	for _, entry := range envelope.Data {
 		if entry.ID == "" {
@@ -574,57 +611,68 @@ func (c *OpenAICompatible) StreamRaw(ctx context.Context, req *core.ChatRequest,
 
 // Stream performs a streaming completion, emitting canonical chunks.
 func (c *OpenAICompatible) Stream(ctx context.Context, req *core.ChatRequest, creds core.Credentials, cfg core.StreamConfig) (<-chan core.StreamChunk, error) {
+	resp, err := c.openChatStream(ctx, req, creds)
+	if err != nil {
+		return nil, err
+	}
+	return c.streamResponse(ctx, req.Model, cfg, resp.Body), nil
+}
+
+func (c *OpenAICompatible) openChatStream(ctx context.Context, req *core.ChatRequest, creds core.Credentials) (*http.Response, error) {
 	req.Stream = true
 	body, err := c.codec.RenderRequestForProvider(req, c.id)
 	if err != nil {
 		return nil, &core.ProviderError{Kind: core.ErrInternal, Provider: c.id, Model: req.Model, Message: err.Error(), Cause: err}
 	}
+	return openStream(ctx, c.id, req.Model, c.chatCompletionsURL(creds, req.Model), body, c.headers(creds))
+}
 
-	url := c.chatCompletionsURL(creds, req.Model)
-	resp, err := openStream(ctx, c.id, req.Model, url, body, c.headers(creds))
-	if err != nil {
-		return nil, err
-	}
-
+func (c *OpenAICompatible) streamResponse(ctx context.Context, model string, cfg core.StreamConfig, body io.ReadCloser) <-chan core.StreamChunk {
 	out := make(chan core.StreamChunk, 16)
 	go func() {
 		defer close(out)
-		defer resp.Body.Close()
-
+		defer body.Close()
 		ttft := newTTFTTracker(cfg)
-
-		scanner := sseScanner(resp.Body)
+		scanner := sseScanner(body)
 		for scanner.Scan() {
-			select {
-			case <-ctx.Done():
+			if !c.streamSSELine(ctx, model, ttft, out, scanner.Text()) {
 				return
-			default:
-			}
-
-			payload, ok := parseSSEData(scanner.Text())
-			if !ok {
-				continue
-			}
-			chunks, perr := c.codec.ParseStreamLine([]byte(payload), req.Model)
-			if perr != nil {
-				// Skip a single malformed chunk rather than aborting the stream.
-				continue
-			}
-			for _, ch := range chunks {
-				ttft.maybeReport(ch)
-				select {
-				case out <- ch:
-				case <-ctx.Done():
-					return
-				}
 			}
 		}
 		if err := scanner.Err(); err != nil {
 			out <- core.StreamChunk{
 				Type: core.ChunkError,
-				Err:  &core.ProviderError{Kind: core.ErrTimeout, Provider: c.id, Model: req.Model, Message: err.Error(), Cause: err},
+				Err:  &core.ProviderError{Kind: core.ErrTimeout, Provider: c.id, Model: model, Message: err.Error(), Cause: err},
 			}
 		}
 	}()
-	return out, nil
+	return out
+}
+
+func (c *OpenAICompatible) streamSSELine(ctx context.Context, model string, ttft *ttftTracker, out chan<- core.StreamChunk, line string) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	payload, ok := parseSSEData(line)
+	if !ok {
+		return true
+	}
+	chunks, err := c.codec.ParseStreamLine([]byte(payload), model)
+	if err != nil {
+		// Skip a single malformed chunk rather than aborting the stream.
+		return true
+	}
+	return sendStreamChunks(ctx, ttft, out, chunks)
+}
+
+func sendStreamChunks(ctx context.Context, ttft *ttftTracker, out chan<- core.StreamChunk, chunks []core.StreamChunk) bool {
+	for _, ch := range chunks {
+		ttft.maybeReport(ch)
+		select {
+		case out <- ch:
+		case <-ctx.Done():
+			return false
+		}
+	}
+	return true
 }
