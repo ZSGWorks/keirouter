@@ -202,6 +202,45 @@ func TestAnthropic_ParseResponseUsesThinkingField(t *testing.T) {
 	require.Equal(t, []core.ContentPart{{Type: core.PartThinking, Text: "reasoning"}}, resp.Message.Content)
 }
 
+func TestAnthropic_ParseMessageContentBlocks(t *testing.T) {
+	message := parseAntMessage(antMessage{
+		Role: "assistant",
+		Content: []byte(`[
+			{"type":"text","text":"answer"},
+			{"type":"thinking","thinking":"reasoning","signature":"sig_1"},
+			{"type":"tool_use","id":"toolu_1","name":"get_weather","input":{"city":"SF"}},
+			{"type":"tool_result","tool_use_id":"toolu_1","content":[{"type":"text","text":"sunny"},{"type":"text","text":", 22C"}],"is_error":true},
+			{"type":"image","source":{"type":"base64","media_type":"image/png","data":"abc"}},
+			{"type":"image","source":{"type":"url","url":"https://example.com/image.png"}}
+		]`),
+	})
+
+	require.Equal(t, core.RoleAssistant, message.Role)
+	require.Len(t, message.Content, 6)
+	require.Equal(t, core.ContentPart{Type: core.PartText, Text: "answer"}, message.Content[0])
+	require.Equal(t, core.ContentPart{Type: core.PartThinking, Text: "reasoning", Signature: "sig_1"}, message.Content[1])
+	require.Equal(t, core.PartToolCall, message.Content[2].Type)
+	require.Equal(t, "toolu_1", message.Content[2].ToolCall.ID)
+	require.Equal(t, "get_weather", message.Content[2].ToolCall.Name)
+	require.JSONEq(t, `{"city":"SF"}`, string(message.Content[2].ToolCall.Arguments))
+	require.Equal(t, core.PartToolResult, message.Content[3].Type)
+	require.Equal(t, "toolu_1", message.Content[3].ToolResult.CallID)
+	require.Equal(t, "sunny, 22C", message.Content[3].ToolResult.Content)
+	require.True(t, message.Content[3].ToolResult.IsError)
+	require.Equal(t, &core.MediaPayload{MIMEType: "image/png", Data: "abc"}, message.Content[4].Media)
+	require.Equal(t, &core.MediaPayload{URL: "https://example.com/image.png"}, message.Content[5].Media)
+}
+
+func TestAnthropic_ParseMessageStringAndMalformedContent(t *testing.T) {
+	plain := parseAntMessage(antMessage{Role: "user", Content: []byte(`"hello"`)})
+	require.Equal(t, core.RoleUser, plain.Role)
+	require.Equal(t, []core.ContentPart{{Type: core.PartText, Text: "hello"}}, plain.Content)
+
+	malformed := parseAntMessage(antMessage{Role: "tool", Content: []byte(`{}`)})
+	require.Equal(t, core.RoleUser, malformed.Role)
+	require.Empty(t, malformed.Content)
+}
+
 func TestAnthropic_RenderStreamChunkZeroStateStartsAtIndexZero(t *testing.T) {
 	state := &StreamState{Model: "claude-x"}
 	events, err := AnthropicCodec{}.RenderStreamChunk(core.StreamChunk{

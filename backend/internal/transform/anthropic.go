@@ -174,49 +174,72 @@ func parseAntMessage(m antMessage) core.Message {
 		return msg
 	}
 	for _, b := range blocks {
-		switch b.Type {
-		case "text":
-			msg.Content = append(msg.Content, core.ContentPart{Type: core.PartText, Text: b.Text})
-		case "thinking":
-			// Anthropic thinking blocks carry content in the "thinking" field
-			// (not "text"). Signature must be preserved for echoing back on
-			// follow-up turns — the upstream validates it.
-			msg.Content = append(msg.Content, core.ContentPart{
-				Type:      core.PartThinking,
-				Text:      b.Thinking,
-				Signature: b.Signature,
-			})
-		case "tool_use":
-			msg.Content = append(msg.Content, core.ContentPart{
-				Type:     core.PartToolCall,
-				ToolCall: &core.ToolCall{ID: b.ID, Name: b.Name, Arguments: b.Input},
-			})
-		case "tool_result":
-			msg.Content = append(msg.Content, core.ContentPart{
-				Type: core.PartToolResult,
-				ToolResult: &core.ToolResult{
-					CallID:  b.ToolUseID,
-					Content: decodeAntToolResultContent(b.Content),
-					IsError: b.IsError,
-				},
-			})
-		case "image":
-			if b.Source != nil {
-				if b.Source.Type == "url" && b.Source.URL != "" {
-					msg.Content = append(msg.Content, core.ContentPart{
-						Type:  core.PartImage,
-						Media: &core.MediaPayload{URL: b.Source.URL},
-					})
-				} else {
-					msg.Content = append(msg.Content, core.ContentPart{
-						Type:  core.PartImage,
-						Media: &core.MediaPayload{MIMEType: b.Source.MediaType, Data: b.Source.Data},
-					})
-				}
-			}
+		part, ok := parseAntContentBlock(b)
+		if ok {
+			msg.Content = append(msg.Content, part)
 		}
 	}
 	return msg
+}
+
+func parseAntContentBlock(block antBlock) (core.ContentPart, bool) {
+	switch block.Type {
+	case "text":
+		return parseAntTextBlock(block), true
+	case "thinking":
+		return parseAntThinkingContentBlock(block), true
+	case "tool_use":
+		return parseAntToolUseBlock(block), true
+	case "tool_result":
+		return parseAntToolResultBlock(block), true
+	case "image":
+		return parseAntImageContentBlock(block)
+	default:
+		return core.ContentPart{}, false
+	}
+}
+
+func parseAntTextBlock(block antBlock) core.ContentPart {
+	return core.ContentPart{Type: core.PartText, Text: block.Text}
+}
+
+func parseAntThinkingContentBlock(block antBlock) core.ContentPart {
+	return core.ContentPart{
+		Type:      core.PartThinking,
+		Text:      block.Thinking,
+		Signature: block.Signature,
+	}
+}
+
+func parseAntToolUseBlock(block antBlock) core.ContentPart {
+	return core.ContentPart{
+		Type:     core.PartToolCall,
+		ToolCall: &core.ToolCall{ID: block.ID, Name: block.Name, Arguments: block.Input},
+	}
+}
+
+func parseAntToolResultBlock(block antBlock) core.ContentPart {
+	return core.ContentPart{
+		Type: core.PartToolResult,
+		ToolResult: &core.ToolResult{
+			CallID:  block.ToolUseID,
+			Content: decodeAntToolResultContent(block.Content),
+			IsError: block.IsError,
+		},
+	}
+}
+
+func parseAntImageContentBlock(block antBlock) (core.ContentPart, bool) {
+	if block.Source == nil {
+		return core.ContentPart{}, false
+	}
+	if block.Source.Type == "url" && block.Source.URL != "" {
+		return core.ContentPart{Type: core.PartImage, Media: &core.MediaPayload{URL: block.Source.URL}}, true
+	}
+	return core.ContentPart{
+		Type:  core.PartImage,
+		Media: &core.MediaPayload{MIMEType: block.Source.MediaType, Data: block.Source.Data},
+	}, true
 }
 
 func decodeAntToolResultContent(raw json.RawMessage) string {

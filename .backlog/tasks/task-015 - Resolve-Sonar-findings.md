@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@opencode'
 created_date: '2026-09-06 10:01'
-updated_date: '2026-09-06 10:39'
+updated_date: '2026-09-06 10:53'
 labels: []
 dependencies: []
 modified_files:
@@ -69,6 +69,10 @@ Focused provider-model unit: refactor only `backend/internal/gateway/admin.go` `
 Focused export-passphrase security unit: replace the GET `/settings/database?passphrase=...` contract with POST JSON `{passphrase}`. Decode only this field server-side, preserve portable-export behavior and response payload/download flow, update frontend `api.exportDatabase`, and add focused gateway regression coverage proving body passphrase enables portable export while query passphrase is ignored. Run gofmt, focused gateway tests, and frontend typecheck.
 
 Continuation approved 2026-09-06: close remaining security redaction, export route coverage, connector/Anthropic parser complexity, targeted admin/dashboard Code Health findings, and mechanical diagnostics in separate verified commits. Official Sonar execution remains a final prerequisite once scanner/configuration is available.
+
+Closure transform slice: refactor only `backend/internal/transform/anthropic.go` so `parseAntMessage` delegates each supported Anthropic content-block type to focused helpers. Preserve role mapping, string/array/malformed handling, thinking signatures, tool calls/results, and URL/base64 images. Add parser tests in existing transform test coverage, then run gofmt and `go test ./backend/internal/transform -count=1`.
+
+Closure connector slice: refactor only backend/internal/connectors/openai_compatible.go and focused connector tests. Extract small helpers from drainStreamToResponse for chunk accumulation/response construction, validateProbe for failure classification, OpenAI-compatible ListModels for endpoint/header/request/error/model conversion work, and Stream for request opening and SSE chunk emission. Preserve all existing response ordering, defaults, error classification, authentication precedence, malformed-chunk skipping, cancellation, scanner errors, and TTFT behavior. Add focused regressions for drain tool/thinking/usage assembly, probe acceptance/rejection semantics, discovery auth/template/error parsing, and stream malformed/cancellation/scanner behavior as supported by current tests. Run gofmt and go test ./backend/internal/connectors -count=1. Do not commit.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
@@ -95,4 +99,8 @@ Focused `adminProviderModels` refactor complete. Extracted pricing/response cons
 Focused app startup unit complete. Extracted openDatabase, buildSemanticCache, configureEndpointSettings, and buildGuardrails lifecycle helpers from Build. Preserved database open → migrate → default tenant → cooldown cleanup ordering; cache/endpoint/guardrail constructor order; retention ownership; and every returned App field. Verified gofmt, go test ./backend/internal/app -count=1, git diff --check, and IDE error lint. Code Health: app.go 7.13 → 7.50; Build cyclomatic complexity 34 → 13. No commit created.
 
 Focused export-passphrase security unit complete. Replaced GET `/settings/database?passphrase=...` with POST `/settings/database/export` and JSON `{passphrase}`; retained POST `/settings/database` import. The frontend download flow now posts body data, so passphrases cannot appear in request URLs. Added gateway regression coverage proving only JSON-body passphrases are used and unknown fields fail. Verified `gofmt`, `go test ./backend/internal/gateway -count=1`, `npm run typecheck` in `frontend`, IDE error lint, IDE targeted build, and `git diff --check`. No commit created.
+
+Closure transform slice complete: `parseAntMessage` now delegates text, thinking/signature, tool-use, tool-result, and image blocks to focused helpers. Added direct parser coverage for all supported blocks, both image forms, string content, role mapping, and malformed object content. Verified `gofmt`, `go test ./backend/internal/transform -count=1`, IDE build/error lint, and Code Health 10.0 for `anthropic.go`. No commit created.
+
+Closure connector slice complete: refactored only `drainStreamToResponse`, `validateProbe`, OpenAI-compatible `ListModels`, and `Stream` in `backend/internal/connectors/openai_compatible.go` into focused helpers. Preserved chunk ordering/default tool arguments/usage, probe acceptance and fatal-error semantics, credentials/template discovery behavior, SSE malformed-chunk skipping, cancellation, scanner errors, and TTFT reporting. Added regression coverage for assembled drain responses, probe classification, dynamic discovery request/model/error behavior, and malformed SSE handling. Verified `gofmt`, `go test ./backend/internal/connectors -count=1`, `git diff --check`, IDE build/error lint, and Code Health 10.0 for `openai_compatible.go`. No commit created.
 <!-- SECTION:NOTES:END -->
