@@ -5,13 +5,14 @@ status: In Progress
 assignee:
   - '@opencode'
 created_date: '2026-09-06 10:01'
-updated_date: '2026-09-06 10:15'
+updated_date: '2026-09-06 10:21'
 labels: []
 dependencies: []
 modified_files:
   - backend/internal/gateway/admin.go
   - backend/internal/app/app.go
   - backend/internal/connectors/openai_compatible.go
+  - backend/internal/connectors/connectors_test.go
   - backend/internal/transform/anthropic.go
   - backend/internal/capability/tables.go
   - frontend/src/pages/ProviderDetail.tsx
@@ -54,10 +55,28 @@ Sonar findings cover security-sensitive API boundaries, dashboard accessibility,
 5. After each commit run targeted tests; finish with gofmt, go vet ./backend/..., go test ./backend/..., frontend typecheck/build, ./scripts/verify.sh, Sonar, Code Health, and final diff review.
 
 Focused unit: refactor only backend/internal/gateway/admin.go adminUpdatePlan. Move its PATCH-field validation and mutation into a typed helper, preserving every existing error literal, status, payload, persistence call, and timestamp behavior. Add focused handler tests for successful multi-field updates and rejected invalid fields, then run gofmt and gateway package tests.
+
+Focused OpenAI-compatible connector unit: extract small helpers from `headers`, `Chat`, and `Validate` only. Preserve provider-specific header literals/auth ordering, validation fallbacks, and stream-required retry behavior. Add or adjust focused connector tests, then run gofmt and `go test ./backend/internal/connectors -count=1`.
+
+Focused cleanup: in backend/internal/capability/tables.go, declare shared constants for only repeated Claude thinking-format literals (claude-adaptive and claude-budget), replace their existing values in exact and ordered pattern entries without moving entries or changing fields. Retain existing resolution-chain tests; run gofmt and go test ./backend/internal/capability -count=1.
+
+Focused Anthropic transform unit: limit changes to backend/internal/transform/anthropic.go plus transform tests. Extract request max-token/thinking setup, request metadata, and per-content-block rendering helpers from RenderRequest/renderAntBlocks without changing JSON output or thinking signature forwarding. Correct confirmed ParseResponse thinking extraction to use antBlock.Thinking, with a regression test. Run gofmt and focused transform tests.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
 Focused adminUpdatePlan unit complete: extracted typed PATCH validation/mutation into applyPlanUpdate, preserving route/status/error literals/payload/persistence behavior. Added success and invalid-field persistence regression tests. Verified `go test ./backend/internal/gateway -count=1`; Code Health confirms admin.go has pre-existing broader Brain Class and complex-method findings outside this intentionally scoped unit.
+
+Starting requested focused connector refactor limited to `backend/internal/connectors/openai_compatible.go` and its tests.
+
+Research confirmed Anthropic ParseResponse currently maps thinking blocks from b.Text even though antBlock uses the thinking JSON key. Scoped correction and regression coverage are within requested transform-only unit.
+
+Focused capability-table literal cleanup complete: added shared constants for claude-adaptive and claude-budget, replaced only repeated values across existing exact and ordered pattern entries. Table order and fields remain unchanged; existing resolution-chain coverage passed with `go test ./backend/internal/capability -count=1`. Ran gofmt on backend/internal/capability/tables.go.
+
+Focused Anthropic transform unit complete. Extracted token/thinking reconciliation, request metadata, message aggregation, and content-block rendering helpers from RenderRequest/renderAntBlocks. Existing thinking signature round-trip coverage remains passing; added ParseResponse regression confirming the Anthropic thinking field populates canonical thinking content. Verified gofmt, `go test ./backend/internal/transform -count=1`, IDE error lint, and Code Health 9.09 (only pre-existing parseAntMessage finding remains). No commit created.
+
+Focused OpenAI-compatible connector refactor complete. Extracted provider header builders with named User-Agent constants, shared stream fallback helpers, and validation success/error branches. Added header regression table covering Azure, Cline, CodeBuddy, AgentRouter, Kimchi, and header override behavior. Verified `gofmt`, `go test ./backend/internal/connectors -count=1`, `git diff --check`, and IDE error lint. Code Health remains 8.1; remaining findings are pre-existing `drainStreamToResponse`, `Stream`, `ListModels`, and `validateProbe` work outside requested Headers/Chat/Validate scope.
+
+Added a dynamic-provider regression test for HTTP 400 `Stream must be set to true`: Chat retries once using SSE and returns the drained response. Re-ran `gofmt`, `go test ./backend/internal/connectors -count=1`, and `git diff --check`.
 <!-- SECTION:NOTES:END -->
