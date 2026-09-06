@@ -87,23 +87,9 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 		return nil, err
 	}
 
-	db, err := store.Open(ctx, cfg.Database, dataDir)
+	db, err := openDatabase(ctx, cfg, dataDir, log)
 	if err != nil {
 		return nil, err
-	}
-	if err := db.Migrate(ctx); err != nil {
-		return nil, fmt.Errorf("app: migrate: %w", err)
-	}
-	if err := db.Tenants().EnsureDefault(ctx); err != nil {
-		return nil, fmt.Errorf("app: ensure default tenant: %w", err)
-	}
-
-	// Clear stale cooldowns left over from a previous session so accounts
-	// are immediately usable after a restart.
-	if cleared, cerr := db.Accounts().ClearExpiredCooldowns(ctx); cerr != nil {
-		log.Warn("failed to clear expired cooldowns", "err", cerr)
-	} else if cleared > 0 {
-		log.Info("cleared stale account cooldowns from previous session", "count", cleared)
 	}
 
 	masterKey, err := loadOrCreateMasterKey(cfg, dataDir, log)
@@ -173,46 +159,10 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 	slim := slimmer.Default()
 	metrics := observ.New()
 
-	// Semantic cache. Defaults to a local in-memory store keyed by a
-	// deterministic hash embedder (exact-prompt caching). When configured with
-	// backend=redis + embedding_provider=api, uses Redis for persistence and
-	// an embedding API for true semantic near-match caching.
-	var cacheStore cache.Store
-	if cfg.Cache.Backend == "redis" && cfg.Cache.RedisURL != "" {
-		rs, err := cache.NewRedisStore(cache.RedisStoreConfig{
-			URL:    cfg.Cache.RedisURL,
-			TTL:    cfg.Cache.TTL,
-			Logger: log,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("app: redis cache store: %w", err)
-		}
-		cacheStore = rs
-		log.Info("semantic cache: redis backend", "url", cfg.Cache.RedisURL)
+	semanticCache, embedder, err := buildSemanticCache(cfg, log)
+	if err != nil {
+		return nil, err
 	}
-
-	var embedder cache.Embedder
-	if cfg.Cache.EmbeddingProvider == "api" && cfg.Cache.EmbeddingAPIKey != "" {
-		embedder = cache.NewAPIEmbedder(cache.APIEmbedderConfig{
-			BaseURL: cfg.Cache.EmbeddingAPIURL,
-			APIKey:  cfg.Cache.EmbeddingAPIKey,
-			Model:   cfg.Cache.EmbeddingModel,
-			Dims:    cfg.Cache.EmbeddingDims,
-		})
-		log.Info("semantic cache: API embedder", "model", cfg.Cache.EmbeddingModel)
-	} else {
-		embedder = cache.NewHashEmbedder(32)
-		if cfg.Cache.Enabled {
-			log.Info("semantic cache: hash embedder (exact-match only)")
-		}
-	}
-
-	semanticCache := cache.New(cache.Config{
-		Enabled:             cfg.Cache.Enabled,
-		SimilarityThreshold: cfg.Cache.SimilarityThreshold,
-		TTL:                 cfg.Cache.TTL,
-		MaxEntries:          10000,
-	}, cacheStore)
 
 	// Timeout notifier: initialize from persisted dashboard settings, then keep
 	// accepting live updates without a restart. Previously startup ignored the
@@ -226,93 +176,12 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 	)
 	timeoutNotifier := gateway.NewTimeoutNotifier(stallTimeout, responseHeaderTimeout, requestTimeout)
 
-	// Proxy notifier: atomic cache of outbound proxy config that can be updated
-	// at runtime from the dashboard settings without restarting.
-	var proxyEnabled bool
-	var proxyURL, noProxy string
-	if raw, err := db.Settings().Get(ctx, "endpoint_settings"); err == nil && raw != "" {
-		var es struct {
-			OutboundProxyEnabled bool   `json:"outbound_proxy_enabled"`
-			OutboundProxyURL     string `json:"outbound_proxy_url"`
-			OutboundNoProxy      string `json:"outbound_no_proxy"`
-		}
-		if json.Unmarshal([]byte(raw), &es) == nil {
-			proxyEnabled = es.OutboundProxyEnabled
-			proxyURL = es.OutboundProxyURL
-			noProxy = es.OutboundNoProxy
-		}
-	}
-	proxyNotifier := gateway.NewProxyNotifier(proxyEnabled, proxyURL, noProxy)
+	proxyNotifier := configureEndpointSettings(ctx, &cfg, db.Settings())
 	disp.SetGlobalProxy(proxyNotifier)
 
-	cfg.Limits.Enabled = true
-	if raw, err := db.Settings().Get(ctx, "endpoint_settings"); err == nil && raw != "" {
-		var es struct {
-			RateLimitsEnabled *bool `json:"rate_limits_enabled"`
-		}
-		if json.Unmarshal([]byte(raw), &es) == nil && es.RateLimitsEnabled != nil {
-			cfg.Limits.Enabled = *es.RateLimitsEnabled
-		}
-	}
-
-	// Guardrails: content-safety policies layered global → provider → model →
-	// chain → apikey. Resolver caches lookups for 30s; audit writer drains a
-	// buffered channel to the guardrail_logs table.
-	guardrailResolver := guardrails.NewResolver(db.Guardrails(), 30*time.Second)
-	// Audit log hub: AuditWriter publishes successfully-flushed rows here so
-	// the dashboard's Logs tab can subscribe via SSE for near-real-time
-	// updates without polling.
-	guardrailLogHub := guardrails.NewLogHub()
-	guardrailAudit := guardrails.NewAuditWriter(db.GuardrailLogs(), log, guardrails.AuditWriterConfig{Hub: guardrailLogHub})
-	// Toxicity: native engine ships unconditionally; OpenAI Moderation is
-	// wired only when an API key is configured.
-	toxCfg := toxicity.Config{}
-	if cfg.Guardrails.Toxicity.OpenAIAPIKey != "" {
-		toxCfg.OpenAI = &toxicity.OpenAIConfig{
-			APIKey:  cfg.Guardrails.Toxicity.OpenAIAPIKey,
-			BaseURL: cfg.Guardrails.Toxicity.OpenAIBaseURL,
-			Model:   cfg.Guardrails.Toxicity.OpenAIModel,
-			Timeout: cfg.Guardrails.Toxicity.OpenAITimeout,
-		}
-		log.Info("guardrails: toxicity OpenAI engine enabled")
-	}
-	// PII: native recognizers always ship; Presidio sidecar is wired only
-	// when an analyzer URL is configured. Policies opt in per-tenant via
-	// PIIConfig.Engine = "presidio".
-	piiCfg := pii.Config{}
-	if cfg.Guardrails.PII.PresidioAnalyzerURL != "" {
-		piiCfg.Presidio = pii.NewPresidioEngine(pii.PresidioConfig{
-			AnalyzerURL: cfg.Guardrails.PII.PresidioAnalyzerURL,
-			Timeout:     cfg.Guardrails.PII.PresidioTimeout,
-			Language:    cfg.Guardrails.PII.PresidioLanguage,
-		})
-		log.Info("guardrails: PII Presidio engine enabled", "analyzer", cfg.Guardrails.PII.PresidioAnalyzerURL)
-	}
-	// Per-tenant guardrails settings (currently just allow_external_engines).
-	guardrailTenantPolicy := guardrails.NewSettingsTenantPolicy(db.Settings(), 30*time.Second)
-	guardrailEngine := guardrails.NewEngine(guardrails.EngineConfig{
-		Resolver: guardrailResolver,
-		Audit:    guardrailAudit,
-		Detectors: []guardrails.Detector{
-			pii.NewWithConfig(piiCfg),
-			injection.New(),
-			topics.New(topics.Config{Embedder: embedder}),
-			toxicity.New(toxCfg),
-			bias.New(),
-		},
-		Logger:       log,
-		Metrics:      metrics,
-		TenantPolicy: guardrailTenantPolicy,
+	guardrails := buildGuardrails(guardrailBuildDeps{
+		cfg: cfg, db: db, log: log, embedder: embedder, metrics: metrics,
 	})
-	// Retention sweeper: deletes guardrail_logs older than N days.
-	var guardrailRetention *guardrails.RetentionSweeper
-	if cfg.Guardrails.AuditRetentionDays > 0 {
-		guardrailRetention = guardrails.NewRetentionSweeper(db.GuardrailLogs(), log, guardrails.RetentionConfig{
-			Retention: time.Duration(cfg.Guardrails.AuditRetentionDays) * 24 * time.Hour,
-		})
-		guardrailRetention.Start()
-		log.Info("guardrails: audit retention sweeper started", "days", cfg.Guardrails.AuditRetentionDays)
-	}
 
 	limiter := limits.NewMemory(limits.MemoryConfig{
 		Enabled:         cfg.Limits.Enabled,
@@ -341,7 +210,7 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 		Metrics:            metrics,
 		Cache:              semanticCache,
 		Embedder:           embedder,
-		Guardrails:         guardrailEngine,
+		Guardrails:         guardrails.engine,
 		Limiter:            limiter,
 		Logger:             log,
 		RequestTimeout:     cfg.Server.RequestTimeout,
@@ -411,11 +280,11 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 		Refresher:             tokenRefresher,
 		ReloadPricing:         reloadPricing,
 		RefreshPricingCatalog: refreshPricingCatalog,
-		Guardrails:            guardrailEngine,
+		Guardrails:            guardrails.engine,
 		GuardrailRepo:         db.Guardrails(),
 		GuardrailLogs:         db.GuardrailLogs(),
-		GuardrailHub:          guardrailLogHub,
-		GuardrailTenantFlags:  guardrailTenantPolicy,
+		GuardrailHub:          guardrails.logHub,
+		GuardrailTenantFlags:  guardrails.tenantPolicy,
 		Health:                db.Health(),
 		HealthChecker:         healthChecker,
 		ProviderHealth:        healthSvc,
@@ -434,7 +303,154 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 	// usable without a manual "connect" step in the dashboard.
 	seedFreeAccounts(ctx, db.Accounts(), log)
 
-	return &App{cfg: cfg, log: log, db: db, accounts: db.Accounts(), server: srv, keepAlive: keepAlive, guardrailAudit: guardrailAudit, guardrailRetention: guardrailRetention, meter: mtr, healthChecker: healthChecker, providerHealth: healthSvc, probeRunner: probeRunner, pricingFetcher: pricingFetcher, reloadPricing: reloadPricing, refreshPricingCatalog: refreshPricingCatalog}, nil
+	return &App{cfg: cfg, log: log, db: db, accounts: db.Accounts(), server: srv, keepAlive: keepAlive, guardrailAudit: guardrails.audit, guardrailRetention: guardrails.retention, meter: mtr, healthChecker: healthChecker, providerHealth: healthSvc, probeRunner: probeRunner, pricingFetcher: pricingFetcher, reloadPricing: reloadPricing, refreshPricingCatalog: refreshPricingCatalog}, nil
+}
+
+func openDatabase(ctx context.Context, cfg config.Config, dataDir string, log *slog.Logger) (*store.DB, error) {
+	db, err := store.Open(ctx, cfg.Database, dataDir)
+	if err != nil {
+		return nil, err
+	}
+	if err := db.Migrate(ctx); err != nil {
+		return nil, fmt.Errorf("app: migrate: %w", err)
+	}
+	if err := db.Tenants().EnsureDefault(ctx); err != nil {
+		return nil, fmt.Errorf("app: ensure default tenant: %w", err)
+	}
+	if cleared, err := db.Accounts().ClearExpiredCooldowns(ctx); err != nil {
+		log.Warn("failed to clear expired cooldowns", "err", err)
+	} else if cleared > 0 {
+		log.Info("cleared stale account cooldowns from previous session", "count", cleared)
+	}
+	return db, nil
+}
+
+func buildSemanticCache(cfg config.Config, log *slog.Logger) (*cache.Cache, cache.Embedder, error) {
+	var cacheStore cache.Store
+	if cfg.Cache.Backend == "redis" && cfg.Cache.RedisURL != "" {
+		store, err := cache.NewRedisStore(cache.RedisStoreConfig{
+			URL:    cfg.Cache.RedisURL,
+			TTL:    cfg.Cache.TTL,
+			Logger: log,
+		})
+		if err != nil {
+			return nil, nil, fmt.Errorf("app: redis cache store: %w", err)
+		}
+		cacheStore = store
+		log.Info("semantic cache: redis backend", "url", cfg.Cache.RedisURL)
+	}
+
+	var embedder cache.Embedder
+	if cfg.Cache.EmbeddingProvider == "api" && cfg.Cache.EmbeddingAPIKey != "" {
+		embedder = cache.NewAPIEmbedder(cache.APIEmbedderConfig{
+			BaseURL: cfg.Cache.EmbeddingAPIURL,
+			APIKey:  cfg.Cache.EmbeddingAPIKey,
+			Model:   cfg.Cache.EmbeddingModel,
+			Dims:    cfg.Cache.EmbeddingDims,
+		})
+		log.Info("semantic cache: API embedder", "model", cfg.Cache.EmbeddingModel)
+	} else {
+		embedder = cache.NewHashEmbedder(32)
+		if cfg.Cache.Enabled {
+			log.Info("semantic cache: hash embedder (exact-match only)")
+		}
+	}
+
+	return cache.New(cache.Config{
+		Enabled:             cfg.Cache.Enabled,
+		SimilarityThreshold: cfg.Cache.SimilarityThreshold,
+		TTL:                 cfg.Cache.TTL,
+		MaxEntries:          10000,
+	}, cacheStore), embedder, nil
+}
+
+func configureEndpointSettings(ctx context.Context, cfg *config.Config, settings *store.SettingsRepo) *gateway.ProxyNotifier {
+	var proxyEnabled bool
+	var proxyURL, noProxy string
+	if raw, err := settings.Get(ctx, "endpoint_settings"); err == nil && raw != "" {
+		var endpointSettings struct {
+			OutboundProxyEnabled bool   `json:"outbound_proxy_enabled"`
+			OutboundProxyURL     string `json:"outbound_proxy_url"`
+			OutboundNoProxy      string `json:"outbound_no_proxy"`
+		}
+		if json.Unmarshal([]byte(raw), &endpointSettings) == nil {
+			proxyEnabled = endpointSettings.OutboundProxyEnabled
+			proxyURL = endpointSettings.OutboundProxyURL
+			noProxy = endpointSettings.OutboundNoProxy
+		}
+	}
+
+	cfg.Limits.Enabled = true
+	if raw, err := settings.Get(ctx, "endpoint_settings"); err == nil && raw != "" {
+		var endpointSettings struct {
+			RateLimitsEnabled *bool `json:"rate_limits_enabled"`
+		}
+		if json.Unmarshal([]byte(raw), &endpointSettings) == nil && endpointSettings.RateLimitsEnabled != nil {
+			cfg.Limits.Enabled = *endpointSettings.RateLimitsEnabled
+		}
+	}
+	return gateway.NewProxyNotifier(proxyEnabled, proxyURL, noProxy)
+}
+
+type guardrailServices struct {
+	engine       *guardrails.Engine
+	audit        *guardrails.AuditWriter
+	retention    *guardrails.RetentionSweeper
+	logHub       *guardrails.LogHub
+	tenantPolicy *guardrails.SettingsTenantPolicy
+}
+
+type guardrailBuildDeps struct {
+	cfg      config.Config
+	db       *store.DB
+	log      *slog.Logger
+	embedder cache.Embedder
+	metrics  *observ.Metrics
+}
+
+func buildGuardrails(deps guardrailBuildDeps) guardrailServices {
+	resolver := guardrails.NewResolver(deps.db.Guardrails(), 30*time.Second)
+	logHub := guardrails.NewLogHub()
+	audit := guardrails.NewAuditWriter(deps.db.GuardrailLogs(), deps.log, guardrails.AuditWriterConfig{Hub: logHub})
+	toxicityConfig := toxicity.Config{}
+	if deps.cfg.Guardrails.Toxicity.OpenAIAPIKey != "" {
+		toxicityConfig.OpenAI = &toxicity.OpenAIConfig{
+			APIKey:  deps.cfg.Guardrails.Toxicity.OpenAIAPIKey,
+			BaseURL: deps.cfg.Guardrails.Toxicity.OpenAIBaseURL,
+			Model:   deps.cfg.Guardrails.Toxicity.OpenAIModel,
+			Timeout: deps.cfg.Guardrails.Toxicity.OpenAITimeout,
+		}
+		deps.log.Info("guardrails: toxicity OpenAI engine enabled")
+	}
+	piiConfig := pii.Config{}
+	if deps.cfg.Guardrails.PII.PresidioAnalyzerURL != "" {
+		piiConfig.Presidio = pii.NewPresidioEngine(pii.PresidioConfig{
+			AnalyzerURL: deps.cfg.Guardrails.PII.PresidioAnalyzerURL,
+			Timeout:     deps.cfg.Guardrails.PII.PresidioTimeout,
+			Language:    deps.cfg.Guardrails.PII.PresidioLanguage,
+		})
+		deps.log.Info("guardrails: PII Presidio engine enabled", "analyzer", deps.cfg.Guardrails.PII.PresidioAnalyzerURL)
+	}
+	tenantPolicy := guardrails.NewSettingsTenantPolicy(deps.db.Settings(), 30*time.Second)
+	services := guardrailServices{
+		engine: guardrails.NewEngine(guardrails.EngineConfig{
+			Resolver: resolver,
+			Audit:    audit,
+			Detectors: []guardrails.Detector{
+				pii.NewWithConfig(piiConfig), injection.New(), topics.New(topics.Config{Embedder: deps.embedder}), toxicity.New(toxicityConfig), bias.New(),
+			},
+			Logger: deps.log, Metrics: deps.metrics, TenantPolicy: tenantPolicy,
+		}),
+		audit: audit, logHub: logHub, tenantPolicy: tenantPolicy,
+	}
+	if deps.cfg.Guardrails.AuditRetentionDays > 0 {
+		services.retention = guardrails.NewRetentionSweeper(deps.db.GuardrailLogs(), deps.log, guardrails.RetentionConfig{
+			Retention: time.Duration(deps.cfg.Guardrails.AuditRetentionDays) * 24 * time.Hour,
+		})
+		services.retention.Start()
+		deps.log.Info("guardrails: audit retention sweeper started", "days", deps.cfg.Guardrails.AuditRetentionDays)
+	}
+	return services
 }
 
 // seedFreeAccounts auto-creates a default account for providers that are free
@@ -848,12 +864,13 @@ func (r pricingCatalogRefresher) Refresh(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("refresh models.dev catalog: %w", err)
 	}
-	connected, err := connectedFetchedProviders(ctx, r.accounts, res.Models, res.Prices)
+	prices, err := filterFetchedPrices(ctx, r.accounts, res.Prices)
 	if err != nil {
-		return fmt.Errorf("filter models.dev catalog: %w", err)
+		return fmt.Errorf("filter models.dev prices: %w", err)
 	}
-	prices := filterFetchedPricesByProvider(res.Prices, connected)
-	models := filterFetchedModelsByProvider(res.Models, connected)
+	// Models are public discovery metadata. Gateway listing still filters them
+	// to usable accounts, so keep the complete snapshot for newly added accounts.
+	models := res.Models
 	if err := r.replacePrices(ctx, prices); err != nil {
 		return err
 	}
@@ -897,24 +914,6 @@ func connectedProviderIDs(ctx context.Context, accounts providerAccountLister, c
 	return ids, nil
 }
 
-func filterFetchedModels(ctx context.Context, accounts providerAccountLister, fetched map[string][]connectors.ModelSpec) (map[string][]connectors.ModelSpec, error) {
-	connected, err := connectedProviderIDs(ctx, accounts, mapKeys(fetched))
-	if err != nil {
-		return nil, err
-	}
-	return filterFetchedModelsByProvider(fetched, connected), nil
-}
-
-func filterFetchedModelsByProvider(fetched map[string][]connectors.ModelSpec, connected map[string]struct{}) map[string][]connectors.ModelSpec {
-	filtered := make(map[string][]connectors.ModelSpec, len(connected))
-	for provider, models := range fetched {
-		if _, ok := connected[provider]; ok {
-			filtered[provider] = models
-		}
-	}
-	return filtered
-}
-
 func filterFetchedPrices(ctx context.Context, accounts providerAccountLister, fetched map[string][]connectors.ModelPrice) (map[string][]connectors.ModelPrice, error) {
 	connected, err := connectedProviderIDs(ctx, accounts, mapKeys(fetched))
 	if err != nil {
@@ -931,12 +930,6 @@ func filterFetchedPricesByProvider(fetched map[string][]connectors.ModelPrice, c
 		}
 	}
 	return filtered
-}
-
-func connectedFetchedProviders(ctx context.Context, accounts providerAccountLister, models map[string][]connectors.ModelSpec, prices map[string][]connectors.ModelPrice) (map[string]struct{}, error) {
-	providers := mapKeys(models)
-	providers = append(providers, mapKeys(prices)...)
-	return connectedProviderIDs(ctx, accounts, providers)
 }
 
 func mapKeys[T any](entries map[string]T) []string {

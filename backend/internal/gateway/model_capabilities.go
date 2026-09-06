@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"github.com/mydisha/keirouter/backend/internal/capability"
+	"github.com/mydisha/keirouter/backend/internal/connectors"
 	"github.com/mydisha/keirouter/backend/internal/core"
 )
 
@@ -18,6 +19,25 @@ type modelCapabilities struct {
 	StructuredOutput bool `json:"structured_output"`
 	ContextWindow    int  `json:"context_window"`
 	MaxOutput        int  `json:"max_output"`
+}
+
+func capabilityPayloadForModel(provider string, model connectors.ModelSpec, requestedKind core.ServiceKind) (modelCapabilities, capability.CapabilitySource) {
+	profile, source := capabilityProfileForModel(provider, model, requestedKind)
+	return modelCapabilitiesFromProfile(profile), source
+}
+
+func capabilityProfileForModel(provider string, model connectors.ModelSpec, requestedKind core.ServiceKind) (capability.Profile, capability.CapabilitySource) {
+	if requestedKind != "" {
+		resolution := capability.ResolveForServiceKind(provider, model.ID, requestedKind)
+		return resolution.Profile, resolution.Source
+	}
+
+	profiles := make([]capability.Profile, 0, len(model.SupportedKinds()))
+	resolution := capability.ResolveForServiceKind(provider, model.ID, model.Kind)
+	for _, kind := range model.SupportedKinds() {
+		profiles = append(profiles, capability.ResolveForServiceKind(provider, model.ID, kind).Profile)
+	}
+	return capability.MergeChainProfiles(profiles), resolution.Source
 }
 
 func capabilityPayload(provider, model string, kind core.ServiceKind) (modelCapabilities, capability.CapabilitySource) {

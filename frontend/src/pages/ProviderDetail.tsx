@@ -33,6 +33,11 @@ import {
   useClientPagination,
 } from "../components/ui";
 
+const AUTH_KIND_LABELS: Record<string, string> = {
+  none: "Public endpoint",
+  oauth: "OAuth",
+};
+
 // redirectURIForProvider returns the OAuth callback the provider redirects to
 // after sign-in.
 //
@@ -517,7 +522,7 @@ export function ProviderDetailPage() {
                 {provider.auth_kind === "none" && <Badge tone="success">No credentials required</Badge>}
               </div>
               <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-[var(--text-muted)]">
-                <span>{provider.auth_kind === "none" ? "Public endpoint" : provider.auth_kind === "oauth" ? "OAuth" : "API key"}</span>
+                <span>{AUTH_KIND_LABELS[provider.auth_kind] ?? "API key"}</span>
                 <span aria-hidden="true">·</span>
                 <span>{myAccounts.length} account{myAccounts.length === 1 ? "" : "s"}</span>
                 <span aria-hidden="true">·</span>
@@ -1071,7 +1076,7 @@ export function ProviderDetailPage() {
 // provider (OpenAI- or Anthropic-compatible) on the provider detail header,
 // with a one-click copy affordance. Hidden for built-in providers whose base
 // URL is fixed and not user-configurable.
-function BaseURLDisplay({ baseURL, dialect }: { baseURL: string; dialect?: string }) {
+function BaseURLDisplay({ baseURL, dialect }: Readonly<{ baseURL: string; dialect?: string }>) {
   const [copied, setCopied] = useState(false);
 
   const copy = async () => {
@@ -1120,21 +1125,21 @@ function BaseURLDisplay({ baseURL, dialect }: { baseURL: string; dialect?: strin
 }
 
 const routingOptions = [
-  { value: "inherit", label: "Inherit" },
-  { value: "fill-first", label: "Fill first" },
-  { value: "round-robin", label: "Round robin" },
-  { value: "smart-round-robin", label: "Smart" },
+  { value: "inherit", label: "Inherit", description: "Follow router-wide configuration." },
+  { value: "fill-first", label: "Fill first", description: "Keep the highest-priority healthy account in use." },
+  { value: "round-robin", label: "Round robin", description: "Rotate after a request window." },
+  { value: "smart-round-robin", label: "Smart", description: "Rotate while retaining client affinity." },
 ];
 
 function RoutingControls({
   settings,
   saving,
   onUpdate,
-}: {
+}: Readonly<{
   settings: ProviderRoutingSettings;
   saving: boolean;
   onUpdate: (patch: Partial<ProviderRoutingSettings>) => void;
-}) {
+}>) {
   const [mode, setMode] = useState(settings?.routing_strategy || "inherit");
   const [stickyLimit, setStickyLimit] = useState(settings?.sticky_limit || 3);
   const [ttlHours, setTtlHours] = useState(Math.max(1, Math.round((settings?.affinity_ttl_minutes || 1440) / 60)));
@@ -1188,7 +1193,7 @@ function RoutingControls({
             >
               <span className="block text-sm font-semibold">{option.label}</span>
               <span className="mt-0.5 block text-xs leading-5 text-[var(--text-muted)]">
-                {option.value === "inherit" ? "Follow router-wide configuration." : option.value === "fill-first" ? "Keep the highest-priority healthy account in use." : option.value === "round-robin" ? "Rotate after a request window." : "Rotate while retaining client affinity."}
+                {option.description}
               </span>
             </button>
           );
@@ -1205,7 +1210,7 @@ function RoutingControls({
               max={100}
               value={stickyLimit}
               disabled={saving}
-              onChange={(event) => setStickyLimit(Math.max(1, parseInt(event.target.value, 10) || 1))}
+              onChange={(event) => setStickyLimit(Math.max(1, Number.parseInt(event.target.value, 10) || 1))}
             />
           </Field>
           {usesAffinity && (
@@ -1217,7 +1222,7 @@ function RoutingControls({
                 max={168}
                 value={ttlHours}
                 disabled={saving}
-                onChange={(event) => setTtlHours(Math.max(1, parseInt(event.target.value, 10) || 1))}
+                onChange={(event) => setTtlHours(Math.max(1, Number.parseInt(event.target.value, 10) || 1))}
               />
             </Field>
           )}
@@ -1245,6 +1250,167 @@ function RoutingControls({
   );
 }
 
+function AccountBadges({
+  account: a,
+  testResult,
+}: Readonly<{ account: Account; testResult?: { status: "testing" | "ok" | "error"; message?: string } }>) {
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <span className="truncate text-sm font-semibold" title={a.label || a.provider}>{a.label || a.provider}</span>
+      <Badge tone="neutral">{a.auth_kind === "oauth" ? "OAuth" : "API key"}</Badge>
+      {a.disabled && <Badge tone="danger">Disabled</Badge>}
+      {a.needs_reconnect && (
+        <Badge tone="warning" title="The OAuth token was revoked. Delete this account and reconnect.">
+          <RefreshCw className="h-3 w-3" />
+          Reconnect
+        </Badge>
+      )}
+      {testResult?.status === "ok" && <Badge tone="success">Verified</Badge>}
+      {testResult?.status === "error" && <Badge tone="danger" title={testResult.message}>Test failed</Badge>}
+      {testResult?.status === "testing" && <Badge tone="neutral">Testing…</Badge>}
+    </div>
+  );
+}
+
+function PriorityControls({
+  account: a,
+  index,
+  total,
+  localPriority,
+  onPriorityChange,
+  onCommitPriority,
+  onMoveUp,
+  onMoveDown,
+}: Readonly<{
+  account: Account;
+  index: number;
+  total: number;
+  localPriority: number;
+  onPriorityChange: (value: number) => void;
+  onCommitPriority: () => void;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
+}>) {
+  return (
+    <div className="inline-flex shrink-0 items-center overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)]" title="Routing priority">
+      <button
+        type="button"
+        onClick={onMoveUp}
+        disabled={index === 0}
+        className="flex h-10 w-9 items-center justify-center text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-subtle)] disabled:cursor-not-allowed disabled:opacity-25"
+        aria-label="Move account up"
+      >
+        <ArrowUp className="h-3.5 w-3.5" />
+      </button>
+      <input
+        type="number"
+        value={localPriority}
+        onChange={(event) => {
+          const value = Number.parseInt(event.target.value, 10);
+          if (!Number.isNaN(value) && value >= 0) onPriorityChange(value);
+        }}
+        onBlur={onCommitPriority}
+        onKeyDown={(event) => event.key === "Enter" && (event.target as HTMLInputElement).blur()}
+        aria-label={`Priority for ${a.label || a.provider}`}
+        className="h-10 w-10 border-x border-[var(--border)] bg-transparent text-center text-xs font-semibold text-[var(--text)] focus:bg-[var(--bg)] focus:outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+        min={0}
+        max={999}
+      />
+      <button
+        type="button"
+        onClick={onMoveDown}
+        disabled={index === total - 1}
+        className="flex h-10 w-9 items-center justify-center text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-subtle)] disabled:cursor-not-allowed disabled:opacity-25"
+        aria-label="Move account down"
+      >
+        <ArrowDown className="h-3.5 w-3.5" />
+      </button>
+    </div>
+  );
+}
+
+function ProxySelect({
+  account: a,
+  pools,
+  onUpdateProxy,
+}: Readonly<{ account: Account; pools: ProxyPool[]; onUpdateProxy: (patch: { proxy_pool_id?: string }) => void }>) {
+  const boundPool = pools.find((p) => p.id === a.proxy_pool_id);
+  return (
+    <div className="order-4 min-w-0 pl-6 lg:order-none lg:pl-0">
+      <select
+        value={a.proxy_pool_id || ""}
+        onChange={(event) => onUpdateProxy({ proxy_pool_id: event.target.value || "" })}
+        aria-label={`Proxy for ${a.label || a.provider}`}
+        className="h-10 w-full min-w-0 rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] px-2 text-xs focus:border-accent-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/40"
+      >
+        <option value="">Direct connection</option>
+        {pools.map((pool) => (
+          <option key={pool.id} value={pool.id}>
+            {pool.name}{!pool.is_active ? " (inactive)" : ""}
+          </option>
+        ))}
+      </select>
+      {boundPool && (
+        <span className="mt-1 hidden xl:inline-flex">
+          <Badge tone={boundPool.test_status === "active" ? "success" : boundPool.test_status === "error" ? "danger" : "neutral"}>
+            {boundPool.test_status === "active" ? "Proxy healthy" : boundPool.test_status === "error" ? "Proxy error" : "Proxy unknown"}
+          </Badge>
+        </span>
+      )}
+    </div>
+  );
+}
+
+function AccountActions({
+  account: a,
+  testing,
+  disabledByBatch,
+  onTest,
+  onUpdateProxy,
+  onDelete,
+}: Readonly<{
+  account: Account;
+  testing: boolean;
+  disabledByBatch?: boolean;
+  onTest: () => void;
+  onUpdateProxy: (patch: { disabled?: boolean }) => void;
+  onDelete: () => void;
+}>) {
+  const iconButtonClass = "flex h-10 w-10 items-center justify-center rounded-lg text-[var(--text-muted)] transition-[transform,background-color,color] duration-150 active:scale-[0.96] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/50";
+  return (
+    <div className="order-2 flex shrink-0 items-center gap-0.5 justify-self-end lg:order-none">
+      <button
+        type="button"
+        onClick={onTest}
+        disabled={testing || disabledByBatch}
+        className={`${iconButtonClass} hover:bg-[var(--bg-subtle)] hover:text-[var(--text)] disabled:cursor-not-allowed disabled:opacity-40 disabled:active:scale-100`}
+        title="Test account connection"
+        aria-label={`Test ${a.label || a.provider}`}
+      >
+        {testing ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle className="h-4 w-4" />}
+      </button>
+      <button
+        type="button"
+        onClick={() => onUpdateProxy({ disabled: !a.disabled })}
+        className={`${iconButtonClass} hover:bg-[var(--bg-subtle)] hover:text-[var(--text)]`}
+        title={a.disabled ? "Enable account" : "Disable account"}
+        aria-label={a.disabled ? `Enable ${a.label || a.provider}` : `Disable ${a.label || a.provider}`}
+      >
+        {a.disabled ? <ToggleLeft className="h-4 w-4" /> : <ToggleRight className="h-4 w-4 text-emerald-600" />}
+      </button>
+      <button
+        type="button"
+        onClick={onDelete}
+        className={`${iconButtonClass} hover:bg-[color:var(--color-danger)]/10 hover:text-[color:var(--color-danger)] focus-visible:ring-[color:var(--color-danger)]/40`}
+        title="Delete account"
+        aria-label={`Delete ${a.label || a.provider}`}
+      >
+        <Trash2 className="h-4 w-4" />
+      </button>
+    </div>
+  );
+}
+
 function AccountRow({
   account: a,
   index,
@@ -1259,7 +1425,7 @@ function AccountRow({
   onUpdateProxy,
   testResult,
   disabledByBatch,
-}: {
+}: Readonly<{
   account: Account;
   index: number;
   total: number;
@@ -1273,7 +1439,7 @@ function AccountRow({
   onUpdateProxy: (patch: { priority?: number; proxy_pool_id?: string; disabled?: boolean }) => void;
   testResult?: { status: "testing" | "ok" | "error"; message?: string };
   disabledByBatch?: boolean;
-}) {
+}>) {
   const testing = testResult?.status === "testing";
   const [localPriority, setLocalPriority] = useState(a.priority);
   const priorityRef = useRef(a.priority);
@@ -1286,12 +1452,11 @@ function AccountRow({
 
   const commitPriority = () => {
     const val = localPriority;
-    if (!isNaN(val) && val >= 0 && val !== a.priority) {
+    if (!Number.isNaN(val) && val >= 0 && val !== a.priority) {
       onUpdateProxy({ priority: val });
     }
   };
 
-  const boundPool = pools.find((p) => p.id === a.proxy_pool_id);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const supportsQuota = a.provider === "kiro" || a.provider === "qoder";
   const hasExpandableDetails = supportsQuota || a.provider === "codex";
@@ -1317,116 +1482,35 @@ function AccountRow({
               className="h-4 w-4 shrink-0 rounded border-[var(--border)] accent-[var(--color-accent-500)]"
             />
           )}
-
           <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className="truncate text-sm font-semibold" title={a.label || a.provider}>{a.label || a.provider}</span>
-            <Badge tone="neutral">{a.auth_kind === "oauth" ? "OAuth" : "API key"}</Badge>
-            {a.disabled && <Badge tone="danger">Disabled</Badge>}
-            {a.needs_reconnect && (
-              <Badge tone="warning" title="The OAuth token was revoked. Delete this account and reconnect.">
-                <RefreshCw className="h-3 w-3" />
-                Reconnect
-              </Badge>
-            )}
-            {testResult?.status === "ok" && <Badge tone="success">Verified</Badge>}
-            {testResult?.status === "error" && <Badge tone="danger" title={testResult.message}>Test failed</Badge>}
-            {testResult?.status === "testing" && <Badge tone="neutral">Testing…</Badge>}
-          </div>
+            <AccountBadges account={a} testResult={testResult} />
           </div>
         </div>
 
         <div className="order-3 flex items-center gap-2 pl-6 lg:order-none lg:pl-0">
-          <div className="inline-flex shrink-0 items-center overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)]" title="Routing priority">
-            <button
-              type="button"
-              onClick={onMoveUp}
-              disabled={index === 0}
-              className="flex h-10 w-9 items-center justify-center text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-subtle)] disabled:cursor-not-allowed disabled:opacity-25"
-              aria-label="Move account up"
-            >
-              <ArrowUp className="h-3.5 w-3.5" />
-            </button>
-            <input
-              type="number"
-              value={localPriority}
-              onChange={(event) => {
-                const value = parseInt(event.target.value, 10);
-                if (!isNaN(value) && value >= 0) setLocalPriority(value);
-              }}
-              onBlur={commitPriority}
-              onKeyDown={(event) => event.key === "Enter" && (event.target as HTMLInputElement).blur()}
-              aria-label={`Priority for ${a.label || a.provider}`}
-              className="h-10 w-10 border-x border-[var(--border)] bg-transparent text-center text-xs font-semibold text-[var(--text)] focus:bg-[var(--bg)] focus:outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-              min={0}
-              max={999}
-            />
-            <button
-              type="button"
-              onClick={onMoveDown}
-              disabled={index === total - 1}
-              className="flex h-10 w-9 items-center justify-center text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-subtle)] disabled:cursor-not-allowed disabled:opacity-25"
-              aria-label="Move account down"
-            >
-              <ArrowDown className="h-3.5 w-3.5" />
-            </button>
-          </div>
+          <PriorityControls
+            account={a}
+            index={index}
+            total={total}
+            localPriority={localPriority}
+            onPriorityChange={setLocalPriority}
+            onCommitPriority={commitPriority}
+            onMoveUp={onMoveUp}
+            onMoveDown={onMoveDown}
+          />
           <span className="text-xs text-[var(--text-muted)] lg:hidden">Routing priority</span>
         </div>
 
-        <div className="order-4 min-w-0 pl-6 lg:order-none lg:pl-0">
-          <select
-              value={a.proxy_pool_id || ""}
-              onChange={(event) => onUpdateProxy({ proxy_pool_id: event.target.value || "" })}
-              aria-label={`Proxy for ${a.label || a.provider}`}
-              className="h-10 w-full min-w-0 rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] px-2 text-xs focus:border-accent-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/40"
-            >
-              <option value="">Direct connection</option>
-              {pools.map((pool) => (
-                <option key={pool.id} value={pool.id}>
-                  {pool.name}{!pool.is_active ? " (inactive)" : ""}
-                </option>
-              ))}
-            </select>
-          {boundPool && (
-              <span className="mt-1 hidden xl:inline-flex">
-                <Badge tone={boundPool.test_status === "active" ? "success" : boundPool.test_status === "error" ? "danger" : "neutral"}>
-                  {boundPool.test_status === "active" ? "Proxy healthy" : boundPool.test_status === "error" ? "Proxy error" : "Proxy unknown"}
-                </Badge>
-              </span>
-            )}
-        </div>
+        <ProxySelect account={a} pools={pools} onUpdateProxy={onUpdateProxy} />
 
-        <div className="order-2 flex shrink-0 items-center gap-0.5 justify-self-end lg:order-none">
-          <button
-            type="button"
-            onClick={onTest}
-            disabled={testing || disabledByBatch}
-            className="flex h-10 w-10 items-center justify-center rounded-lg text-[var(--text-muted)] transition-[transform,background-color,color] duration-150 hover:bg-[var(--bg-subtle)] hover:text-[var(--text)] active:scale-[0.96] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/50 disabled:cursor-not-allowed disabled:opacity-40 disabled:active:scale-100"
-            title="Test account connection"
-            aria-label={`Test ${a.label || a.provider}`}
-          >
-            {testing ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle className="h-4 w-4" />}
-          </button>
-          <button
-            type="button"
-            onClick={() => onUpdateProxy({ disabled: !a.disabled })}
-            className="flex h-10 w-10 items-center justify-center rounded-lg text-[var(--text-muted)] transition-[transform,background-color,color] duration-150 hover:bg-[var(--bg-subtle)] hover:text-[var(--text)] active:scale-[0.96] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/50"
-            title={a.disabled ? "Enable account" : "Disable account"}
-            aria-label={a.disabled ? `Enable ${a.label || a.provider}` : `Disable ${a.label || a.provider}`}
-          >
-            {a.disabled ? <ToggleLeft className="h-4 w-4" /> : <ToggleRight className="h-4 w-4 text-emerald-600" />}
-          </button>
-          <button
-            type="button"
-            onClick={onDelete}
-            className="flex h-10 w-10 items-center justify-center rounded-lg text-[var(--text-muted)] transition-[transform,background-color,color] duration-150 hover:bg-[color:var(--color-danger)]/10 hover:text-[color:var(--color-danger)] active:scale-[0.96] focus:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-danger)]/40"
-            title="Delete account"
-            aria-label={`Delete ${a.label || a.provider}`}
-          >
-            <Trash2 className="h-4 w-4" />
-          </button>
-        </div>
+        <AccountActions
+          account={a}
+          testing={testing}
+          disabledByBatch={disabledByBatch}
+          onTest={onTest}
+          onUpdateProxy={onUpdateProxy}
+          onDelete={onDelete}
+        />
       </div>
 
       {testResult?.status === "error" && testResult.message && (
@@ -1480,7 +1564,7 @@ function AccountQuotaPanel({
   quotas,
   disabled,
   onRefresh,
-}: {
+}: Readonly<{
   loading: boolean;
   error: string;
   planName?: string;
@@ -1488,7 +1572,7 @@ function AccountQuotaPanel({
   quotas: UpstreamQuota[];
   disabled: boolean;
   onRefresh: () => void;
-}) {
+}>) {
   return (
     <div className="rounded-xl bg-[var(--bg-subtle)] p-3 shadow-[inset_0_0_0_1px_var(--border)] sm:p-4">
       <div className="flex items-start justify-between gap-3">
@@ -1543,7 +1627,7 @@ function AccountQuotaPanel({
   );
 }
 
-function QuotaBarInline({ quota: q }: { quota: UpstreamQuota }) {
+function QuotaBarInline({ quota: q }: Readonly<{ quota: UpstreamQuota }>) {
   const pct = q.limit > 0 ? Math.min(100, Math.round((q.used / q.limit) * 100)) : 0;
   const remainingPct = q.limit > 0 ? Math.round((q.remaining / q.limit) * 100) : 0;
   const tone =
@@ -1562,7 +1646,7 @@ function QuotaBarInline({ quota: q }: { quota: UpstreamQuota }) {
       ? new Date(Number(q.reset_at) * (Number(q.reset_at) > 10_000_000_000 ? 1 : 1000))
       : new Date(q.reset_at)
     : null;
-  const resetLabel = resetDate && !isNaN(resetDate.getTime())
+  const resetLabel = resetDate && !Number.isNaN(resetDate.getTime())
     ? resetDate.toLocaleDateString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
     : null;
 
@@ -1589,7 +1673,7 @@ function QuotaBarInline({ quota: q }: { quota: UpstreamQuota }) {
 // varies per line. The standardized paste format is parsed live with a preview,
 // keys can be loaded from a .txt/.csv file, and the backend returns a per-row
 // outcome that is rendered after import.
-function BulkAddKeysModal({ provider, onClose }: { provider: Provider; onClose: () => void }) {
+function BulkAddKeysModal({ provider, onClose }: Readonly<{ provider: Provider; onClose: () => void }>) {
   const qc = useQueryClient();
   const toast = useToast();
   const [text, setText] = useState("");
@@ -1833,11 +1917,11 @@ function BulkResultsView({
   results,
   onClose,
   onAgain,
-}: {
+}: Readonly<{
   results: BulkAccountResult[];
   onClose: () => void;
   onAgain: () => void;
-}) {
+}>) {
   const created = results.filter((r) => r.status === "created").length;
   const skipped = results.filter((r) => r.status === "skipped").length;
   const failed = results.filter((r) => r.status === "error").length;
@@ -1879,6 +1963,135 @@ function BulkResultsView({
   );
 }
 
+function ApiKeyModalFields({
+  provider,
+  isAzure,
+  hasRegions,
+  inheritsBaseURL,
+  requiresBaseURL,
+  baseURL,
+  region,
+  azureEndpoint,
+  azureDeployment,
+  azureAPIVersion,
+  azureOrganization,
+  onBaseURL,
+  onRegion,
+  onAzureEndpoint,
+  onAzureDeployment,
+  onAzureAPIVersion,
+  onAzureOrganization,
+}: Readonly<{
+  provider: Provider;
+  isAzure: boolean;
+  hasRegions: boolean;
+  inheritsBaseURL: boolean;
+  requiresBaseURL: boolean;
+  baseURL: string;
+  region: string;
+  azureEndpoint: string;
+  azureDeployment: string;
+  azureAPIVersion: string;
+  azureOrganization: string;
+  onBaseURL: (v: string) => void;
+  onRegion: (v: string) => void;
+  onAzureEndpoint: (v: string) => void;
+  onAzureDeployment: (v: string) => void;
+  onAzureAPIVersion: (v: string) => void;
+  onAzureOrganization: (v: string) => void;
+}>) {
+  if (isAzure) {
+    return (
+      <div className="space-y-3 rounded-xl border border-[var(--border)] bg-[var(--bg-subtle)] p-4">
+        <Field label="Azure endpoint">
+          <Input
+            value={azureEndpoint}
+            onChange={(e) => onAzureEndpoint(e.target.value)}
+            placeholder="https://your-resource.openai.azure.com"
+            required
+          />
+        </Field>
+        <Field label="Deployment name">
+          <Input
+            value={azureDeployment}
+            onChange={(e) => onAzureDeployment(e.target.value)}
+            placeholder="gpt-4o"
+            required
+          />
+        </Field>
+        <Field label="API version">
+          <Input
+            value={azureAPIVersion}
+            onChange={(e) => onAzureAPIVersion(e.target.value)}
+            placeholder="2024-10-01-preview"
+          />
+        </Field>
+        <Field label="Organization (optional)">
+          <Input
+            value={azureOrganization}
+            onChange={(e) => onAzureOrganization(e.target.value)}
+            placeholder="org_..."
+          />
+        </Field>
+      </div>
+    );
+  }
+  if (hasRegions) {
+    return (
+      <Field label="Region">
+        <select
+          value={region}
+          onChange={(e) => onRegion(e.target.value)}
+          className="w-full rounded-xl border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-2 text-sm focus:border-accent-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/40"
+        >
+          {(provider.regions ?? []).map((r) => (
+            <option key={r.id} value={r.id}>
+              {r.label}
+            </option>
+          ))}
+        </select>
+      </Field>
+    );
+  }
+  if (inheritsBaseURL) {
+    return (
+      <Field label="Base URL">
+        <div className="flex items-center rounded-xl border border-[var(--border)] bg-[var(--bg-subtle)] px-3 py-2">
+          <code className="truncate font-mono text-xs text-[var(--text-muted)]" title={provider.base_url}>
+            {provider.base_url}
+          </code>
+        </div>
+        <p className="mt-1 text-xs text-[var(--text-muted)]">
+          Inherited from this provider. Change it in the provider settings.
+        </p>
+      </Field>
+    );
+  }
+  return (
+    <Field label={requiresBaseURL ? "Base URL" : "Base URL (optional)"}>
+      <Input
+        value={baseURL}
+        onChange={(e) => onBaseURL(e.target.value)}
+        placeholder="for custom endpoints"
+        required={requiresBaseURL}
+      />
+    </Field>
+  );
+}
+
+function CloudflareAccountIDField({ accountID, onAccountID }: Readonly<{ accountID: string; onAccountID: (v: string) => void }>) {
+  return (
+    <Field label="Account ID">
+      <Input
+        value={accountID}
+        onChange={(e) => onAccountID(e.target.value)}
+        placeholder="e.g. a1b2c3d4e5f6..."
+        required
+      />
+    </Field>
+  );
+}
+
 function AddApiKeyModal({
   provider,
   hasRegions,
@@ -1904,7 +2117,7 @@ function AddApiKeyModal({
   onAzureOrganization,
   onSubmit,
   onClose,
-}: {
+}: Readonly<{
   provider: Provider;
   hasRegions: boolean;
   label: string;
@@ -1929,7 +2142,7 @@ function AddApiKeyModal({
   onAzureOrganization: (v: string) => void;
   onSubmit: () => void;
   onClose: () => void;
-}) {
+}>) {
   const [checkStatus, setCheckStatus] = useState<"idle" | "ok" | "error">("idle");
   const [checkMsg, setCheckMsg] = useState("");
   const [checking, setChecking] = useState(false);
@@ -1986,17 +2199,24 @@ function AddApiKeyModal({
   };
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm"
-      onClick={onClose}
-    >
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <button
+        type="button"
+        aria-label="Close add API key dialog"
+        tabIndex={-1}
+        className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+        onClick={onClose}
+      />
       <div
-        className="w-full max-w-md rounded-2xl border border-[var(--border)] bg-[var(--bg-elevated)] shadow-[var(--shadow-float)] overflow-hidden"
-        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="add-api-key-title"
+        className="relative z-10 w-full max-w-md overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--bg-elevated)] shadow-[var(--shadow-float)]"
       >
         <div className="flex items-center justify-between border-b border-[var(--border)] px-6 py-4">
-          <h2 className="text-sm font-semibold">Add API key — {provider.display_name}</h2>
+          <h2 id="add-api-key-title" className="text-sm font-semibold">Add API key — {provider.display_name}</h2>
           <button
+            type="button"
             onClick={onClose}
             className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--text-muted)] transition-colors hover:bg-ink-100 hover:text-[var(--text)] dark:hover:bg-ink-800"
           >
@@ -2051,84 +2271,28 @@ function AddApiKeyModal({
                   </li>
                 </ol>
               </div>
-              <Field label="Account ID">
-                <Input
-                  value={accountID}
-                  onChange={(e) => { onAccountID(e.target.value); setCheckStatus("idle"); }}
-                  placeholder="e.g. a1b2c3d4e5f6..."
-                  required
-                />
-              </Field>
+              <CloudflareAccountIDField accountID={accountID} onAccountID={(v) => { onAccountID(v); setCheckStatus("idle"); }} />
             </div>
           )}
-          {isAzure ? (
-            <div className="space-y-3 rounded-xl border border-[var(--border)] bg-[var(--bg-subtle)] p-4">
-              <Field label="Azure endpoint">
-                <Input
-                  value={azureEndpoint}
-                  onChange={(e) => { onAzureEndpoint(e.target.value); setCheckStatus("idle"); }}
-                  placeholder="https://your-resource.openai.azure.com"
-                  required
-                />
-              </Field>
-              <Field label="Deployment name">
-                <Input
-                  value={azureDeployment}
-                  onChange={(e) => { onAzureDeployment(e.target.value); setCheckStatus("idle"); }}
-                  placeholder="gpt-4o"
-                  required
-                />
-              </Field>
-              <Field label="API version">
-                <Input
-                  value={azureAPIVersion}
-                  onChange={(e) => { onAzureAPIVersion(e.target.value); setCheckStatus("idle"); }}
-                  placeholder="2024-10-01-preview"
-                />
-              </Field>
-              <Field label="Organization (optional)">
-                <Input
-                  value={azureOrganization}
-                  onChange={(e) => { onAzureOrganization(e.target.value); setCheckStatus("idle"); }}
-                  placeholder="org_..."
-                />
-              </Field>
-            </div>
-          ) : hasRegions ? (
-            <Field label="Region">
-              <select
-                value={region}
-                onChange={(e) => onRegion(e.target.value)}
-                className="w-full rounded-xl border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-2 text-sm focus:border-accent-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/40"
-              >
-                {(provider.regions ?? []).map((r) => (
-                  <option key={r.id} value={r.id}>
-                    {r.label}
-                  </option>
-                ))}
-              </select>
-            </Field>
-          ) : inheritsBaseURL ? (
-            <Field label="Base URL">
-              <div className="flex items-center rounded-xl border border-[var(--border)] bg-[var(--bg-subtle)] px-3 py-2">
-                <code className="truncate font-mono text-xs text-[var(--text-muted)]" title={provider.base_url}>
-                  {provider.base_url}
-                </code>
-              </div>
-              <p className="mt-1 text-xs text-[var(--text-muted)]">
-                Inherited from this provider. Change it in the provider settings.
-              </p>
-            </Field>
-          ) : (
-            <Field label={requiresBaseURL ? "Base URL" : "Base URL (optional)"}>
-              <Input
-                value={baseURL}
-                onChange={(e) => onBaseURL(e.target.value)}
-                placeholder="for custom endpoints"
-                required={requiresBaseURL}
-              />
-            </Field>
-          )}
+          <ApiKeyModalFields
+            provider={provider}
+            isAzure={isAzure}
+            hasRegions={hasRegions}
+            inheritsBaseURL={inheritsBaseURL}
+            requiresBaseURL={requiresBaseURL}
+            baseURL={baseURL}
+            region={region}
+            azureEndpoint={azureEndpoint}
+            azureDeployment={azureDeployment}
+            azureAPIVersion={azureAPIVersion}
+            azureOrganization={azureOrganization}
+            onBaseURL={onBaseURL}
+            onRegion={onRegion}
+            onAzureEndpoint={(v) => { onAzureEndpoint(v); setCheckStatus("idle"); }}
+            onAzureDeployment={(v) => { onAzureDeployment(v); setCheckStatus("idle"); }}
+            onAzureAPIVersion={(v) => { onAzureAPIVersion(v); setCheckStatus("idle"); }}
+            onAzureOrganization={(v) => { onAzureOrganization(v); setCheckStatus("idle"); }}
+          />
 
           {checkStatus === "ok" && (
             <div className="flex items-center gap-2 rounded-lg border border-accent-300 bg-accent-50 px-3 py-2 text-sm text-accent-700 dark:border-accent-700 dark:bg-accent-900/30 dark:text-accent-200">
@@ -2159,19 +2323,26 @@ function AddApiKeyModal({
 
 // ---- OAuth connect modal (reused flow) --------------------------------------
 
-function ConnectModal({ provider, onClose }: { provider: OAuthProvider; onClose: () => void }) {
+function ConnectModal({ provider, onClose }: Readonly<{ provider: OAuthProvider; onClose: () => void }>) {
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm"
-      onClick={onClose}
-    >
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <button
+        type="button"
+        aria-label="Close connect dialog"
+        tabIndex={-1}
+        className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+        onClick={onClose}
+      />
       <div
-        className="w-full max-w-md rounded-2xl border border-[var(--border)] bg-[var(--bg-elevated)] shadow-[var(--shadow-float)]"
-        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="connect-provider-title"
+        className="relative z-10 w-full max-w-md rounded-2xl border border-[var(--border)] bg-[var(--bg-elevated)] shadow-[var(--shadow-float)]"
       >
         <div className="flex items-center justify-between border-b border-[var(--border)] px-6 py-4">
-          <h2 className="text-sm font-semibold">Connect {provider.display_name}</h2>
+          <h2 id="connect-provider-title" className="text-sm font-semibold">Connect {provider.display_name}</h2>
           <button
+            type="button"
             onClick={onClose}
             className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--text-muted)] transition-colors hover:bg-ink-100 hover:text-[var(--text)] dark:hover:bg-ink-800"
           >
@@ -2188,7 +2359,7 @@ function ConnectModal({ provider, onClose }: { provider: OAuthProvider; onClose:
   );
 }
 
-function AuthCodeFlow({ provider, onClose }: { provider: OAuthProvider; onClose: () => void }) {
+function AuthCodeFlow({ provider, onClose }: Readonly<{ provider: OAuthProvider; onClose: () => void }>) {
   const qc = useQueryClient();
   const [waiting, setWaiting] = useState(false);
   const [error, setError] = useState("");
@@ -2200,6 +2371,7 @@ function AuthCodeFlow({ provider, onClose }: { provider: OAuthProvider; onClose:
   const [exchanging, setExchanging] = useState(false);
   const stateRef = useRef("");
   const popupRef = useRef<Window | null>(null);
+  const callbackOriginRef = useRef("");
 
   const finishSuccess = () => {
     // Close the OAuth popup from the opener side (the popup's own
@@ -2219,6 +2391,7 @@ function AuthCodeFlow({ provider, onClose }: { provider: OAuthProvider; onClose:
   useEffect(() => {
     if (!waiting) return;
     const handler = async (e: MessageEvent) => {
+      if (e.origin !== callbackOriginRef.current || e.source !== popupRef.current) return;
       if (e.data?.type !== "oauth-callback") return;
       if (e.data.provider && e.data.provider !== provider.provider) return;
       if (e.data.code) {
@@ -2295,6 +2468,7 @@ function AuthCodeFlow({ provider, onClose }: { provider: OAuthProvider; onClose:
     try {
       const res = await api.oauthAuthorize(provider.provider, redirectURIForProvider(provider));
       stateRef.current = res.state;
+      callbackOriginRef.current = new URL(res.redirect_uri || redirectURIForProvider(provider)).origin;
       popupRef.current = window.open(res.authorize_url, "_blank", "popup,width=560,height=760");
       // Always attempt the seamless flow. Whenever the gateway is co-located
       // with the browser, its loopback callback catches the redirect and
@@ -2408,7 +2582,7 @@ function AuthCodeFlow({ provider, onClose }: { provider: OAuthProvider; onClose:
   );
 }
 
-function DeviceFlow({ provider, onClose }: { provider: OAuthProvider; onClose: () => void }) {
+function DeviceFlow({ provider, onClose }: Readonly<{ provider: OAuthProvider; onClose: () => void }>) {
   const qc = useQueryClient();
   const [dc, setDc] = useState<DeviceCode | null>(null);
   const [status, setStatus] = useState<"idle" | "waiting" | "done" | "error">("idle");
@@ -2535,7 +2709,7 @@ function DeviceFlow({ provider, onClose }: { provider: OAuthProvider; onClose: (
 
 // ---- Codex reset credits section --------------------------------------------
 
-function CodexResetCreditsSection({ accountId }: { accountId: string }) {
+function CodexResetCreditsSection({ accountId }: Readonly<{ accountId: string }>) {
   const qc = useQueryClient();
   const toast = useToast();
   const [confirmingReset, setConfirmingReset] = useState(false);
@@ -2678,7 +2852,7 @@ function CodexResetCreditsSection({ accountId }: { accountId: string }) {
   );
 }
 
-function CodexLimitWindow({ label, usedPercent, resetAt }: { label: string; usedPercent: number; resetAt: number }) {
+function CodexLimitWindow({ label, usedPercent, resetAt }: Readonly<{ label: string; usedPercent: number; resetAt: number }>) {
   const used = Math.min(100, Math.max(0, usedPercent));
   const remaining = Math.max(0, 100 - used);
   const tone = used >= 80
@@ -2707,6 +2881,10 @@ function CodexLimitWindow({ label, usedPercent, resetAt }: { label: string; used
 }
 
 // ModelCell renders a single model in a structural hairline grid.
+function displayModelKinds(model: ProviderModel) {
+  return model.kinds?.length ? model.kinds : [model.kind || "Model"];
+}
+
 function ModelCell({
   model,
   provider,
@@ -2715,7 +2893,7 @@ function ModelCell({
   onOpen,
   onToggleSelect,
   onToggleDisable,
-}: {
+}: Readonly<{
   model: ProviderModel;
   provider: Provider;
   disabled?: boolean;
@@ -2723,7 +2901,7 @@ function ModelCell({
   onOpen: () => void;
   onToggleSelect?: () => void;
   onToggleDisable?: () => void;
-}) {
+}>) {
   const [copied, setCopied] = useState(false);
   const fullModel = `${provider.alias || provider.id}/${model.id}`;
 
@@ -2735,17 +2913,13 @@ function ModelCell({
 
   return (
     <article
-      onClick={onOpen}
       className={`group relative flex min-h-36 flex-col bg-[var(--bg-elevated)] p-4 transition-[background-color,box-shadow] duration-150 hover:bg-[var(--bg-subtle)] ${
         disabled ? "opacity-65" : ""
       } ${selected ? "bg-accent-50/70 ring-2 ring-inset ring-accent-400/30 dark:bg-accent-900/15" : ""}`}
     >
       <button
         type="button"
-        onClick={(event) => {
-          event.stopPropagation();
-          onOpen();
-        }}
+        onClick={onOpen}
         className="absolute inset-0 z-0 rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/50"
         aria-label={`View details for ${model.name || model.id}`}
       />
@@ -2756,11 +2930,7 @@ function ModelCell({
               type="checkbox"
               className="h-4 w-4 shrink-0 rounded border-[var(--border)] accent-[var(--color-accent-500)]"
               checked={!!selected}
-              onClick={(event) => event.stopPropagation()}
-              onChange={(event) => {
-                event.stopPropagation();
-                onToggleSelect();
-              }}
+              onChange={onToggleSelect}
               aria-label={`Select ${model.name || model.id}`}
             />
           )}
@@ -2768,7 +2938,11 @@ function ModelCell({
             {disabled ? "Disabled" : "Enabled"}
           </Badge>
         </div>
-        <Badge tone="neutral">{model.kind || "Model"}</Badge>
+        <div className="flex flex-wrap justify-end gap-1">
+          {displayModelKinds(model).map((kind) => (
+            <Badge key={kind} tone="neutral">{kind}</Badge>
+          ))}
+        </div>
       </div>
 
       <div className="relative z-10 mt-5 min-w-0 flex-1">
@@ -2790,10 +2964,7 @@ function ModelCell({
           {onToggleDisable && (
             <button
               type="button"
-              onClick={(event) => {
-                event.stopPropagation();
-                onToggleDisable();
-              }}
+              onClick={onToggleDisable}
               className="flex h-9 w-9 items-center justify-center rounded-lg text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-subtle)] hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/50"
               title={disabled ? "Enable model" : "Disable model"}
               aria-label={disabled ? `Enable ${model.name || model.id}` : `Disable ${model.name || model.id}`}
@@ -2803,10 +2974,7 @@ function ModelCell({
           )}
           <button
             type="button"
-            onClick={(event) => {
-              event.stopPropagation();
-              handleCopy();
-            }}
+            onClick={handleCopy}
             className="flex h-9 w-9 items-center justify-center rounded-lg text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-subtle)] hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/50"
             title="Copy model path"
             aria-label={`Copy model path ${fullModel}`}
@@ -2820,7 +2988,7 @@ function ModelCell({
 }
 
 // ProviderIcon renders the provider PNG with a colored fallback initial.
-function ProviderIcon({ provider: p, size = 40 }: { provider: Provider; size?: number }) {
+function ProviderIcon({ provider: p, size = 40 }: Readonly<{ provider: Provider; size?: number }>) {
   const [errored, setErrored] = useState(false);
   const dim = { width: size, height: size };
   if (errored || !p.icon) {

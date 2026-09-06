@@ -39,9 +39,12 @@ var codexModelAliases = map[string]string{
 // "gpt-5.1-codex-max-2025-11-13".
 var codexDashVersion = regexp.MustCompile(`^(gpt-\d+)-(\d+)`)
 
-// codexModelKnown reports whether id is in the curated Codex catalog.
+// codexModelKnown reports whether id is in the dynamically discovered Codex
+// model set (models.dev snapshot plus user-registered custom models). Unknown
+// ids are treated as not known and passed through; the upstream 400 is then
+// classified as model-unavailable for fallback.
 func codexModelKnown(id string) bool {
-	for _, spec := range providerModels["codex"] {
+	for _, spec := range LLMModelsForProvider("codex") {
 		if spec.ID == id {
 			return true
 		}

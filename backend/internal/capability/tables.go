@@ -18,11 +18,12 @@ package capability
 // modality flags it implies, so user-defined media models are not treated as
 // text-only.
 var serviceKindCapabilities = map[string]caps{
-	"imageToText": {Vision: true},
-	"image":       {ImageOutput: true},
-	"stt":         {AudioInput: true},
-	"tts":         {AudioOutput: true},
-	"embedding":   {NoTools: true},
+	"imageToText":   {Vision: true}, // Legacy custom-model spelling.
+	"image_to_text": {Vision: true},
+	"image":         {ImageOutput: true},
+	"stt":           {AudioInput: true},
+	"tts":           {AudioOutput: true},
+	"embedding":     {NoTools: true},
 }
 
 // capabilitiesFromServiceKind returns the modality override for a media-service
@@ -35,19 +36,24 @@ func capabilitiesFromServiceKind(kind string) (caps, bool) {
 // modelCapabilities holds canonical exact-id overrides for models that a glob
 // pattern would otherwise mis-match. Keyed by bare model id (vendor prefix
 // stripped before lookup).
+const (
+	claudeAdaptiveThinkingFormat = "claude-adaptive"
+	claudeBudgetThinkingFormat   = "claude-budget"
+)
+
 var modelCapabilities = map[string]caps{
 	// Claude 4.6/4.7/4.8 carry a 1M context window and adaptive thinking,
 	// overriding the generic claude budget-thinking pattern.
-	"claude-opus-4.6":          {Vision: true, Reasoning: true, Search: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
-	"claude-opus-4.7":          {Vision: true, Reasoning: true, Search: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
-	"claude-opus-4-7":          {Vision: true, Reasoning: true, Search: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
-	"claude-opus-4.8":          {Vision: true, Reasoning: true, Search: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
-	"claude-opus-4-6":          {Vision: true, Reasoning: true, Search: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
-	"claude-opus-4-8":          {Vision: true, Reasoning: true, Search: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
-	"claude-opus-4.8-thinking": {Vision: true, Reasoning: true, Search: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
-	"claude-opus-4-8-thinking": {Vision: true, Reasoning: true, Search: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
-	"claude-sonnet-4.6":        {Vision: true, Reasoning: true, Search: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
-	"claude-sonnet-4-6":        {Vision: true, Reasoning: true, Search: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
+	"claude-opus-4.6":          {Vision: true, Reasoning: true, Search: true, ThinkingFormat: claudeAdaptiveThinkingFormat, ContextWindow: 1000000, MaxOutput: 128000},
+	"claude-opus-4.7":          {Vision: true, Reasoning: true, Search: true, ThinkingFormat: claudeAdaptiveThinkingFormat, ContextWindow: 1000000, MaxOutput: 128000},
+	"claude-opus-4-7":          {Vision: true, Reasoning: true, Search: true, ThinkingFormat: claudeAdaptiveThinkingFormat, ContextWindow: 1000000, MaxOutput: 128000},
+	"claude-opus-4.8":          {Vision: true, Reasoning: true, Search: true, ThinkingFormat: claudeAdaptiveThinkingFormat, ContextWindow: 1000000, MaxOutput: 128000},
+	"claude-opus-4-6":          {Vision: true, Reasoning: true, Search: true, ThinkingFormat: claudeAdaptiveThinkingFormat, ContextWindow: 1000000, MaxOutput: 128000},
+	"claude-opus-4-8":          {Vision: true, Reasoning: true, Search: true, ThinkingFormat: claudeAdaptiveThinkingFormat, ContextWindow: 1000000, MaxOutput: 128000},
+	"claude-opus-4.8-thinking": {Vision: true, Reasoning: true, Search: true, ThinkingFormat: claudeAdaptiveThinkingFormat, ContextWindow: 1000000, MaxOutput: 128000},
+	"claude-opus-4-8-thinking": {Vision: true, Reasoning: true, Search: true, ThinkingFormat: claudeAdaptiveThinkingFormat, ContextWindow: 1000000, MaxOutput: 128000},
+	"claude-sonnet-4.6":        {Vision: true, Reasoning: true, Search: true, ThinkingFormat: claudeAdaptiveThinkingFormat, ContextWindow: 1000000, MaxOutput: 128000},
+	"claude-sonnet-4-6":        {Vision: true, Reasoning: true, Search: true, ThinkingFormat: claudeAdaptiveThinkingFormat, ContextWindow: 1000000, MaxOutput: 128000},
 
 	// Image-generation variant (no tool calling).
 	"gpt-image-1": {ImageOutput: true, NoTools: true},
@@ -108,18 +114,18 @@ var providerCapabilities = map[string]map[string]caps{
 // matching pattern wins.
 var patternCapabilities = []patternCaps{
 	// Claude — 4.6+ uses adaptive thinking; older/haiku use budget thinking.
-	{"*claude*opus-4.6*", caps{Vision: true, Reasoning: true, Search: true, ThinkingFormat: "claude-adaptive"}},
-	{"*claude*opus-4.7*", caps{Vision: true, Reasoning: true, Search: true, ThinkingFormat: "claude-adaptive"}},
-	{"*claude*opus-4.8*", caps{Vision: true, Reasoning: true, Search: true, ThinkingFormat: "claude-adaptive"}},
-	{"*claude*sonnet-4.6*", caps{Vision: true, Reasoning: true, Search: true, ThinkingFormat: "claude-adaptive"}},
-	{"*claude*sonnet-4.7*", caps{Vision: true, Reasoning: true, Search: true, ThinkingFormat: "claude-adaptive"}},
-	{"*claude*haiku*", caps{Vision: true, Reasoning: true, Search: true, ThinkingFormat: "claude-budget"}},
-	{"*claude*opus*", caps{Vision: true, Reasoning: true, Search: true, ThinkingFormat: "claude-budget"}},
-	{"*claude*sonnet*", caps{Vision: true, Reasoning: true, Search: true, ThinkingFormat: "claude-budget"}},
-	{"*claude*fable*", caps{Vision: true, Reasoning: true, Search: true, ThinkingFormat: "claude-budget", ContextWindow: 1000000, MaxOutput: 128000}},
-	{"*claude*mythos*", caps{Vision: true, Reasoning: true, Search: true, ThinkingFormat: "claude-budget", ContextWindow: 1000000, MaxOutput: 128000}},
+	{"*claude*opus-4.6*", caps{Vision: true, Reasoning: true, Search: true, ThinkingFormat: claudeAdaptiveThinkingFormat}},
+	{"*claude*opus-4.7*", caps{Vision: true, Reasoning: true, Search: true, ThinkingFormat: claudeAdaptiveThinkingFormat}},
+	{"*claude*opus-4.8*", caps{Vision: true, Reasoning: true, Search: true, ThinkingFormat: claudeAdaptiveThinkingFormat}},
+	{"*claude*sonnet-4.6*", caps{Vision: true, Reasoning: true, Search: true, ThinkingFormat: claudeAdaptiveThinkingFormat}},
+	{"*claude*sonnet-4.7*", caps{Vision: true, Reasoning: true, Search: true, ThinkingFormat: claudeAdaptiveThinkingFormat}},
+	{"*claude*haiku*", caps{Vision: true, Reasoning: true, Search: true, ThinkingFormat: claudeBudgetThinkingFormat}},
+	{"*claude*opus*", caps{Vision: true, Reasoning: true, Search: true, ThinkingFormat: claudeBudgetThinkingFormat}},
+	{"*claude*sonnet*", caps{Vision: true, Reasoning: true, Search: true, ThinkingFormat: claudeBudgetThinkingFormat}},
+	{"*claude*fable*", caps{Vision: true, Reasoning: true, Search: true, ThinkingFormat: claudeBudgetThinkingFormat, ContextWindow: 1000000, MaxOutput: 128000}},
+	{"*claude*mythos*", caps{Vision: true, Reasoning: true, Search: true, ThinkingFormat: claudeBudgetThinkingFormat, ContextWindow: 1000000, MaxOutput: 128000}},
 	{"*claude-3*", caps{Vision: true}},
-	{"*claude*", caps{Vision: true, Reasoning: true, Search: true, ThinkingFormat: "claude-budget"}},
+	{"*claude*", caps{Vision: true, Reasoning: true, Search: true, ThinkingFormat: claudeBudgetThinkingFormat}},
 
 	// Gemini — 2.0+ is multimodal with google_search grounding and 1M context.
 	{"*gemini*image*", caps{Vision: true, ImageOutput: true, ContextWindow: 1048576}},

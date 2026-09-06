@@ -129,17 +129,14 @@ func (c *Anthropic) Validate(ctx context.Context, creds core.Credentials) error 
 // non-auth HTTP response (e.g. an unknown probe model) still proves the key was
 // accepted.
 func (c *Anthropic) messagesAuthProbe(ctx context.Context, creds core.Credentials) error {
-	// Custom anthropic-compatible gateways may not expose the canonical Claude
-	// model id; probing with it can trip a 403 model_not_allowed that gets
-	// misclassified as an auth failure. When no real model is registered for
-	// this provider, skip the chat probe — the GET /models probe in Validate
-	// already confirmed the key works.
-	probeModel := firstCatalogModel(c.id)
+	// Probing with an invented model can trigger model_not_allowed before
+	// credential checks. Without a discovered model, rely on the GET /models
+	// probe instead of issuing a model-bound request.
+	probeModel := ProbeModelForCredentials(ctx, c.id, creds, &AnthropicCompatibleModelSource{
+		provider: c.id, defaultBase: c.baseURL(creds),
+	})
 	if probeModel == "" {
-		if IsCustomProviderID(c.id) {
-			return nil
-		}
-		probeModel = "claude-sonnet-4-20250514"
+		return nil
 	}
 	chatURL := joinURL(c.baseURL(creds), "messages")
 	probeBody := []byte(`{"model":"` + probeModel + `","max_tokens":1,"messages":[{"role":"user","content":"ping"}]}`)

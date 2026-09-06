@@ -13,6 +13,12 @@ import (
 	"github.com/mydisha/keirouter/backend/internal/transform"
 )
 
+const (
+	codeBuddyUserAgent   = "CLI/2.108.1 CodeBuddy/2.108.1"
+	agentRouterUserAgent = "RooCode/3.54.0"
+	kimchiUserAgent      = "kimchi/0.1.50"
+)
+
 // OpenAICompatible drives any endpoint that speaks the OpenAI Chat Completions
 // API: OpenAI itself, plus GLM, MiniMax, DeepSeek, Groq, Together, and custom
 // gateways. The provider id and default base URL are supplied at construction
@@ -21,6 +27,12 @@ type OpenAICompatible struct {
 	id          string
 	defaultBase string
 	codec       transform.OpenAICodec
+}
+
+type renderedChatRequest struct {
+	req  *core.ChatRequest
+	body []byte
+	url  string
 }
 
 // NewOpenAICompatible builds a connector for an OpenAI-compatible provider.
@@ -32,7 +44,11 @@ func (c *OpenAICompatible) ID() string            { return c.id }
 func (c *OpenAICompatible) Dialect() core.Dialect { return core.DialectOpenAI }
 
 func (c *OpenAICompatible) baseURL(creds core.Credentials) string {
-	u := c.defaultBase
+	return resolvedBaseURL(c.defaultBase, creds)
+}
+
+func resolvedBaseURL(defaultBase string, creds core.Credentials) string {
+	u := defaultBase
 	if creds.BaseURL != "" {
 		u = creds.BaseURL
 	}
@@ -45,54 +61,22 @@ func (c *OpenAICompatible) baseURL(creds core.Credentials) string {
 }
 
 func (c *OpenAICompatible) headers(creds core.Credentials) map[string]string {
-	h := map[string]string{}
+	return mergeHeaders(c.providerHeaders(creds), creds.Headers)
+}
+
+func (c *OpenAICompatible) providerHeaders(creds core.Credentials) map[string]string {
 	if c.id == "azure" {
-		switch {
-		case creds.AccessToken != "":
-			h["Authorization"] = bearer(creds.AccessToken)
-		case creds.APIKey != "":
-			h["api-key"] = creds.APIKey
-		}
-		if org := creds.Extra["organization"]; org != "" {
-			h["OpenAI-Organization"] = org
-		}
-		return mergeHeaders(h, creds.Headers)
+		return azureHeaders(creds)
 	}
 
 	// Cline requires a workos: prefix on the access token and custom headers.
 	if c.id == "cline" {
-		tok := creds.AccessToken
-		if tok == "" {
-			tok = creds.APIKey
-		}
-		if tok != "" && !strings.HasPrefix(tok, "workos:") {
-			tok = "workos:" + tok
-		}
-		h["Authorization"] = bearer(tok)
-		h["HTTP-Referer"] = "https://cline.bot"
-		h["X-Title"] = "Cline"
-		h["X-CLIENT-TYPE"] = "keirouter"
-		h["X-PLATFORM"] = "unknown"
-		h["X-IS-MULTIROOT"] = "false"
-		return mergeHeaders(h, creds.Headers)
+		return clineHeaders(creds)
 	}
 
 	// CodeBuddy requires CLI headers on every request.
 	if c.id == "codebuddy" {
-		tok := creds.AccessToken
-		if tok == "" {
-			tok = creds.APIKey
-		}
-		if tok != "" {
-			h["Authorization"] = bearer(tok)
-		}
-		h["User-Agent"] = "CLI/2.108.1 CodeBuddy/2.108.1"
-		h["X-Product"] = "SaaS"
-		h["X-IDE-Type"] = "CLI"
-		h["X-IDE-Name"] = "CLI"
-		h["X-Requested-With"] = "XMLHttpRequest"
-		h["x-codebuddy-request"] = "1"
-		return mergeHeaders(h, creds.Headers)
+		return codeBuddyHeaders(creds)
 	}
 
 	// AgentRouter restricts upstream access to a known set of CLI/IDE tools
@@ -100,45 +84,89 @@ func (c *OpenAICompatible) headers(creds core.Credentials) map[string]string {
 	// Use a Roo Code-compatible fingerprint so outbound requests pass the
 	// endpoint allowlist. Auth mirrors the default Bearer path below.
 	if c.id == "agentrouter" {
-		switch {
-		case creds.AccessToken != "":
-			h["Authorization"] = bearer(creds.AccessToken)
-		case creds.APIKey != "":
-			h["Authorization"] = bearer(creds.APIKey)
-		}
-		h["HTTP-Referer"] = "https://github.com/RooVetGit/Roo-Cline"
-		h["X-Title"] = "Roo Code"
-		h["User-Agent"] = "RooCode/3.54.0"
-		h["X-Stainless-Arch"] = "x64"
-		h["X-Stainless-Lang"] = "js"
-		h["X-Stainless-OS"] = "Windows"
-		h["X-Stainless-Package-Version"] = "5.12.2"
-		h["X-Stainless-Retry-Count"] = "0"
-		h["X-Stainless-Runtime"] = "node"
-		h["X-Stainless-Runtime-Version"] = "v24.14.0"
-		return mergeHeaders(h, creds.Headers)
+		return agentRouterHeaders(creds)
 	}
 
 	// Kimchi requires a custom User-Agent.
 	if c.id == "kimchi" {
-		tok := creds.AccessToken
-		if tok == "" {
-			tok = creds.APIKey
-		}
-		if tok != "" {
-			h["Authorization"] = bearer(tok)
-		}
-		h["User-Agent"] = "kimchi/0.1.50"
-		return mergeHeaders(h, creds.Headers)
+		return kimchiHeaders(creds)
 	}
 
-	switch {
-	case creds.AccessToken != "":
+	return authorizationHeaders(creds)
+}
+
+func azureHeaders(creds core.Credentials) map[string]string {
+	h := map[string]string{}
+	if creds.AccessToken != "" {
 		h["Authorization"] = bearer(creds.AccessToken)
-	case creds.APIKey != "":
-		h["Authorization"] = bearer(creds.APIKey)
+	} else if creds.APIKey != "" {
+		h["api-key"] = creds.APIKey
 	}
-	return mergeHeaders(h, creds.Headers)
+	if org := creds.Extra["organization"]; org != "" {
+		h["OpenAI-Organization"] = org
+	}
+	return h
+}
+
+func clineHeaders(creds core.Credentials) map[string]string {
+	token := credentialToken(creds)
+	if token != "" && !strings.HasPrefix(token, "workos:") {
+		token = "workos:" + token
+	}
+	return map[string]string{
+		"Authorization":  bearer(token),
+		"HTTP-Referer":   "https://cline.bot",
+		"X-Title":        "Cline",
+		"X-CLIENT-TYPE":  "keirouter",
+		"X-PLATFORM":     "unknown",
+		"X-IS-MULTIROOT": "false",
+	}
+}
+
+func codeBuddyHeaders(creds core.Credentials) map[string]string {
+	h := authorizationHeaders(creds)
+	h["User-Agent"] = codeBuddyUserAgent
+	h["X-Product"] = "SaaS"
+	h["X-IDE-Type"] = "CLI"
+	h["X-IDE-Name"] = "CLI"
+	h["X-Requested-With"] = "XMLHttpRequest"
+	h["x-codebuddy-request"] = "1"
+	return h
+}
+
+func agentRouterHeaders(creds core.Credentials) map[string]string {
+	h := authorizationHeaders(creds)
+	h["HTTP-Referer"] = "https://github.com/RooVetGit/Roo-Cline"
+	h["X-Title"] = "Roo Code"
+	h["User-Agent"] = agentRouterUserAgent
+	h["X-Stainless-Arch"] = "x64"
+	h["X-Stainless-Lang"] = "js"
+	h["X-Stainless-OS"] = "Windows"
+	h["X-Stainless-Package-Version"] = "5.12.2"
+	h["X-Stainless-Retry-Count"] = "0"
+	h["X-Stainless-Runtime"] = "node"
+	h["X-Stainless-Runtime-Version"] = "v24.14.0"
+	return h
+}
+
+func kimchiHeaders(creds core.Credentials) map[string]string {
+	h := authorizationHeaders(creds)
+	h["User-Agent"] = kimchiUserAgent
+	return h
+}
+
+func authorizationHeaders(creds core.Credentials) map[string]string {
+	if token := credentialToken(creds); token != "" {
+		return map[string]string{"Authorization": bearer(token)}
+	}
+	return map[string]string{}
+}
+
+func credentialToken(creds core.Credentials) string {
+	if creds.AccessToken != "" {
+		return creds.AccessToken
+	}
+	return creds.APIKey
 }
 
 func (c *OpenAICompatible) chatCompletionsURL(creds core.Credentials, model string) string {
@@ -202,61 +230,87 @@ func isStreamRequiredError(err error) bool {
 // drainStreamToResponse consumes a stream channel and folds the chunks into a
 // single ChatResponse. Used by Chat when the provider requires streaming.
 func drainStreamToResponse(stream <-chan core.StreamChunk, model string) (*core.ChatResponse, error) {
-	msg := core.Message{Role: core.RoleAssistant}
-	var text, thinking string
-	toolCalls := map[string]*core.ToolCall{}
-	var toolOrder []string
-	finish := core.FinishStop
-	var usage core.Usage
-
+	accumulator := streamResponseAccumulator{
+		toolCalls: map[string]*core.ToolCall{},
+		finish:    core.FinishStop,
+	}
 	for ch := range stream {
-		switch ch.Type {
-		case core.ChunkText:
-			text += ch.Delta
-		case core.ChunkThinking:
-			thinking += ch.Delta
-		case core.ChunkToolCall:
-			if ch.ToolCall != nil {
-				existing, ok := toolCalls[ch.ToolCall.ID]
-				if !ok {
-					tc := *ch.ToolCall
-					toolCalls[ch.ToolCall.ID] = &tc
-					toolOrder = append(toolOrder, ch.ToolCall.ID)
-				} else if len(ch.ToolCall.Arguments) > 0 {
-					existing.Arguments = append(existing.Arguments, ch.ToolCall.Arguments...)
-				}
-				finish = core.FinishToolCalls
-			}
-		case core.ChunkFinish:
-			if ch.FinishReason != "" {
-				finish = ch.FinishReason
-			}
-		case core.ChunkUsage:
-			if ch.Usage != nil {
-				usage = *ch.Usage
-			}
-		case core.ChunkError:
-			if ch.Err != nil {
-				return nil, ch.Err
-			}
+		if err := accumulator.add(ch); err != nil {
+			return nil, err
 		}
 	}
+	return accumulator.response(model), nil
+}
 
-	if thinking != "" {
-		msg.Content = append(msg.Content, core.ContentPart{Type: core.PartThinking, Text: thinking})
+type streamResponseAccumulator struct {
+	text, thinking string
+	toolCalls      map[string]*core.ToolCall
+	toolOrder      []string
+	finish         core.FinishReason
+	usage          core.Usage
+}
+
+func (a *streamResponseAccumulator) add(ch core.StreamChunk) error {
+	if ch.Type == core.ChunkError {
+		return ch.Err
 	}
-	if text != "" {
-		msg.Content = append(msg.Content, core.ContentPart{Type: core.PartText, Text: text})
+	switch ch.Type {
+	case core.ChunkText:
+		a.text += ch.Delta
+	case core.ChunkThinking:
+		a.thinking += ch.Delta
+	default:
+		a.addMetadata(ch)
 	}
-	for _, id := range toolOrder {
-		tc := toolCalls[id]
+	return nil
+}
+
+func (a *streamResponseAccumulator) addMetadata(ch core.StreamChunk) {
+	switch ch.Type {
+	case core.ChunkToolCall:
+		a.addToolCall(ch.ToolCall)
+	case core.ChunkFinish:
+		if ch.FinishReason != "" {
+			a.finish = ch.FinishReason
+		}
+	case core.ChunkUsage:
+		if ch.Usage != nil {
+			a.usage = *ch.Usage
+		}
+	}
+}
+
+func (a *streamResponseAccumulator) addToolCall(call *core.ToolCall) {
+	if call == nil {
+		return
+	}
+	existing, ok := a.toolCalls[call.ID]
+	if !ok {
+		copy := *call
+		a.toolCalls[call.ID] = &copy
+		a.toolOrder = append(a.toolOrder, call.ID)
+	} else if len(call.Arguments) > 0 {
+		existing.Arguments = append(existing.Arguments, call.Arguments...)
+	}
+	a.finish = core.FinishToolCalls
+}
+
+func (a *streamResponseAccumulator) response(model string) *core.ChatResponse {
+	msg := core.Message{Role: core.RoleAssistant}
+	if a.thinking != "" {
+		msg.Content = append(msg.Content, core.ContentPart{Type: core.PartThinking, Text: a.thinking})
+	}
+	if a.text != "" {
+		msg.Content = append(msg.Content, core.ContentPart{Type: core.PartText, Text: a.text})
+	}
+	for _, id := range a.toolOrder {
+		tc := a.toolCalls[id]
 		if len(tc.Arguments) == 0 {
 			tc.Arguments = json.RawMessage("{}")
 		}
 		msg.Content = append(msg.Content, core.ContentPart{Type: core.PartToolCall, ToolCall: tc})
 	}
-
-	return &core.ChatResponse{Model: model, Message: msg, FinishReason: finish, Usage: usage}, nil
+	return &core.ChatResponse{Model: model, Message: msg, FinishReason: a.finish, Usage: a.usage}
 }
 
 func (c *OpenAICompatible) Chat(ctx context.Context, req *core.ChatRequest, creds core.Credentials) (*core.ChatResponse, error) {
@@ -267,11 +321,7 @@ func (c *OpenAICompatible) Chat(ctx context.Context, req *core.ChatRequest, cred
 	// streaming call may fail with this error — we detect it and retry with
 	// streaming transparently.
 	if providerRequiresStreaming(c.id) {
-		stream, err := c.Stream(ctx, req, creds, core.StreamConfig{})
-		if err != nil {
-			return nil, err
-		}
-		return drainStreamToResponse(stream, req.Model)
+		return c.chatFromStream(ctx, req, creds)
 	}
 
 	req.Stream = false
@@ -280,62 +330,64 @@ func (c *OpenAICompatible) Chat(ctx context.Context, req *core.ChatRequest, cred
 		return nil, &core.ProviderError{Kind: core.ErrInternal, Provider: c.id, Model: req.Model, Message: err.Error(), Cause: err}
 	}
 
-	url := c.chatCompletionsURL(creds, req.Model)
-
-	// Use streaming JSON decode when the codec supports it — avoids buffering
-	// the entire response body into a []byte before parsing.
-	if sc, ok := interface{}(c.codec).(transform.StreamingResponseCodec); ok {
-		_, respBody, decErr := doJSONDecode(ctx, c.id, req.Model, url, body, c.headers(creds))
-		if decErr != nil {
-			// Auto-retry with streaming if the provider requires it.
-			if isStreamRequiredError(decErr) {
-				stream, sErr := c.Stream(ctx, req, creds, core.StreamConfig{})
-				if sErr != nil {
-					return nil, sErr
-				}
-				return drainStreamToResponse(stream, req.Model)
-			}
-			return nil, decErr
-		}
-		defer respBody.Close()
-		resp, perr := sc.ParseResponseFrom(respBody, req.Model)
-		if perr != nil {
-			return nil, &core.ProviderError{Kind: core.ErrUpstream, Provider: c.id, Model: req.Model, Message: perr.Error(), Cause: perr}
-		}
-		return resp, nil
+	rendered := renderedChatRequest{
+		req:  req,
+		body: body,
+		url:  c.chatCompletionsURL(creds, req.Model),
 	}
+	if sc, ok := interface{}(c.codec).(transform.StreamingResponseCodec); ok {
+		return c.chatFromStreamingResponse(ctx, creds, rendered, sc)
+	}
+	return c.chatFromBufferedResponse(ctx, creds, rendered)
+}
 
-	// Fallback: buffer the entire response body.
-	respBody, err := doJSON(ctx, c.id, req.Model, url, body, c.headers(creds))
+func (c *OpenAICompatible) chatFromStream(ctx context.Context, req *core.ChatRequest, creds core.Credentials) (*core.ChatResponse, error) {
+	stream, err := c.Stream(ctx, req, creds, core.StreamConfig{})
 	if err != nil {
-		// Auto-retry with streaming if the provider requires it.
-		if isStreamRequiredError(err) {
-			stream, sErr := c.Stream(ctx, req, creds, core.StreamConfig{})
-			if sErr != nil {
-				return nil, sErr
-			}
-			return drainStreamToResponse(stream, req.Model)
-		}
 		return nil, err
 	}
+	return drainStreamToResponse(stream, req.Model)
+}
 
-	resp, err := c.codec.ParseResponse(respBody, req.Model)
+// Use streaming JSON decode when the codec supports it — avoids buffering
+// the entire response body into a []byte before parsing.
+func (c *OpenAICompatible) chatFromStreamingResponse(ctx context.Context, creds core.Credentials, rendered renderedChatRequest, codec transform.StreamingResponseCodec) (*core.ChatResponse, error) {
+	_, respBody, err := doJSONDecode(ctx, c.id, rendered.req.Model, rendered.url, rendered.body, c.headers(creds))
 	if err != nil {
-		return nil, &core.ProviderError{Kind: core.ErrUpstream, Provider: c.id, Model: req.Model, Message: err.Error(), Cause: err}
+		return c.chatWithStreamFallback(ctx, rendered.req, creds, err)
+	}
+	defer respBody.Close()
+	resp, err := codec.ParseResponseFrom(respBody, rendered.req.Model)
+	if err != nil {
+		return nil, &core.ProviderError{Kind: core.ErrUpstream, Provider: c.id, Model: rendered.req.Model, Message: err.Error(), Cause: err}
 	}
 	return resp, nil
+}
+
+func (c *OpenAICompatible) chatFromBufferedResponse(ctx context.Context, creds core.Credentials, rendered renderedChatRequest) (*core.ChatResponse, error) {
+	respBody, err := doJSON(ctx, c.id, rendered.req.Model, rendered.url, rendered.body, c.headers(creds))
+	if err != nil {
+		return c.chatWithStreamFallback(ctx, rendered.req, creds, err)
+	}
+	resp, err := c.codec.ParseResponse(respBody, rendered.req.Model)
+	if err != nil {
+		return nil, &core.ProviderError{Kind: core.ErrUpstream, Provider: c.id, Model: rendered.req.Model, Message: err.Error(), Cause: err}
+	}
+	return resp, nil
+}
+
+func (c *OpenAICompatible) chatWithStreamFallback(ctx context.Context, req *core.ChatRequest, creds core.Credentials, err error) (*core.ChatResponse, error) {
+	if !isStreamRequiredError(err) {
+		return nil, err
+	}
+	return c.chatFromStream(ctx, req, creds)
 }
 
 // Validate probes the upstream /models endpoint to confirm the credentials are
 // accepted. Returns nil on success.
 func (c *OpenAICompatible) Validate(ctx context.Context, creds core.Credentials) error {
 	if c.id == "azure" {
-		body := []byte(`{"messages":[{"role":"user","content":"ping"}],"max_tokens":1}`)
-		err := validateProbe(ctx, c.id, c.chatCompletionsURL(creds, "validate"), body, c.headers(creds))
-		if err != nil {
-			return fmt.Errorf("validation failed for %s: %w", c.id, err)
-		}
-		return nil
+		return c.validateAzure(ctx, creds)
 	}
 
 	url := joinURL(c.baseURL(creds), "models")
@@ -345,36 +397,48 @@ func (c *OpenAICompatible) Validate(ctx context.Context, creds core.Credentials)
 	// falling through to the chat probe, which is skipped for custom providers
 	// and would otherwise report a false-positive success.
 	if isNonJSONResponseError(err) {
-		return fmt.Errorf("validation failed for %s: %w", c.id, err)
+		return c.validationError(err)
 	}
 	if err == nil {
-		// GET /models reached the upstream. For no-auth accounts (e.g. a local
-		// gateway) reachability is all we can verify. For strict providers the
-		// /models endpoint itself requires the key, so a 200 proves it is valid.
-		// For any other keyed account a 200 is NOT proof — many OpenAI-compatible
-		// providers list models without checking auth — so confirm the key with
-		// an authenticated chat probe before reporting success.
-		hasKey := strings.TrimSpace(creds.APIKey) != "" || strings.TrimSpace(creds.AccessToken) != ""
-		if !hasKey || strictModelsValidation(c.id) {
-			return nil
-		}
-		if perr := c.chatAuthProbe(ctx, creds); perr != nil {
-			return fmt.Errorf("validation failed for %s: %w", c.id, perr)
-		}
+		return c.validateModelsSuccess(ctx, creds)
+	}
+	return c.validateModelsError(ctx, creds, err)
+}
+
+func (c *OpenAICompatible) validateAzure(ctx context.Context, creds core.Credentials) error {
+	body := []byte(`{"messages":[{"role":"user","content":"ping"}],"max_tokens":1}`)
+	err := validateProbe(ctx, validationProbe{c.id, c.chatCompletionsURL(creds, "validate"), body, c.headers(creds)})
+	if err != nil {
+		return c.validationError(err)
+	}
+	return nil
+}
+
+func (c *OpenAICompatible) validateModelsSuccess(ctx context.Context, creds core.Credentials) error {
+	// GET /models reaches local and strict providers conclusively. Other keyed
+	// providers may expose models publicly, so verify credentials with chat.
+	if !hasCredentials(creds) || strictModelsValidation(c.id) {
 		return nil
 	}
+	if err := c.chatAuthProbe(ctx, creds); err != nil {
+		return c.validationError(err)
+	}
+	return nil
+}
+
+func (c *OpenAICompatible) validateModelsError(ctx context.Context, creds core.Credentials, err error) error {
 	if c.id == "xai" {
 		pe := core.AsProviderError(err)
 		if pe.StatusCode == http.StatusForbidden {
 			return nil
 		}
-		return fmt.Errorf("validation failed for %s: %w", c.id, err)
+		return c.validationError(err)
 	}
 	if strictModelsValidation(c.id) {
-		return fmt.Errorf("validation failed for %s: %w", c.id, err)
+		return c.validationError(err)
 	}
 	if validationAuthError(err) || !validationReachedUpstream(err) {
-		return fmt.Errorf("validation failed for %s: %w", c.id, err)
+		return c.validationError(err)
 	}
 
 	// Many OpenAI-compatible providers either omit /models or reject unknown
@@ -382,9 +446,17 @@ func (c *OpenAICompatible) Validate(ctx context.Context, creds core.Credentials)
 	// to a minimal chat request and treat any non-auth HTTP response as proof
 	// that the connection reached the provider.
 	if err := c.chatAuthProbe(ctx, creds); err != nil {
-		return fmt.Errorf("validation failed for %s: %w", c.id, err)
+		return c.validationError(err)
 	}
 	return nil
+}
+
+func (c *OpenAICompatible) validationError(err error) error {
+	return fmt.Errorf("validation failed for %s: %w", c.id, err)
+}
+
+func hasCredentials(creds core.Credentials) bool {
+	return strings.TrimSpace(creds.APIKey) != "" || strings.TrimSpace(creds.AccessToken) != ""
 }
 
 // chatAuthProbe issues a minimal, near-zero-cost chat request (max_tokens=1) to
@@ -393,18 +465,14 @@ func (c *OpenAICompatible) Validate(ctx context.Context, creds core.Credentials)
 // that never reached the provider counts as a failure. A non-auth HTTP response
 // (e.g. a 400/404 for an unknown probe model) still proves the key was accepted.
 func (c *OpenAICompatible) chatAuthProbe(ctx context.Context, creds core.Credentials) error {
-	probeModel := firstCatalogModel(c.id)
-	// Custom/dynamic providers may have no catalog models until the user imports
-	// them. Sending a synthetic "test" model id to such endpoints triggers
-	// upstream403 model_not_allowed, which is misclassified as an auth failure.
-	// When no real model is known, skip the chat probe for custom providers and
-	// rely on the GET /models probe above. Built-in providers keep the "test"
-	// fallback so a bad key is still rejected when /models is publicly readable.
+	probeModel := ProbeModelForCredentials(ctx, c.id, creds, &OpenAICompatibleModelSource{
+		provider: c.id, defaultBase: c.baseURL(creds),
+	})
+	// Sending an invented model id can trigger upstream model_not_allowed before
+	// credential checks. Without a discovered model, rely on the GET /models
+	// probe instead of issuing a model-bound request.
 	if probeModel == "" {
-		if IsCustomProviderID(c.id) {
-			return nil
-		}
-		probeModel = "test"
+		return nil
 	}
 	body, _ := json.Marshal(map[string]any{
 		"model": probeModel,
@@ -414,18 +482,26 @@ func (c *OpenAICompatible) chatAuthProbe(ctx context.Context, creds core.Credent
 		"max_tokens": 1,
 		"stream":     false,
 	})
-	return validateProbe(ctx, c.id, c.chatCompletionsURL(creds, probeModel), body, c.headers(creds))
+	return validateProbe(ctx, validationProbe{c.id, c.chatCompletionsURL(creds, probeModel), body, c.headers(creds)})
 }
 
-func validateProbe(ctx context.Context, provider, endpoint string, body []byte, headers map[string]string) error {
-	_, err := doJSON(ctx, provider, "validate", endpoint, body, headers)
-	if err == nil {
-		return nil
-	}
-	if isNonJSONResponseError(err) || validationAuthError(err) || !validationReachedUpstream(err) {
+type validationProbe struct {
+	provider string
+	endpoint string
+	body     []byte
+	headers  map[string]string
+}
+
+func validateProbe(ctx context.Context, probe validationProbe) error {
+	_, err := doJSON(ctx, probe.provider, "validate", probe.endpoint, probe.body, probe.headers)
+	if probeFailureIsFatal(err) {
 		return err
 	}
 	return nil
+}
+
+func probeFailureIsFatal(err error) bool {
+	return err != nil && (isNonJSONResponseError(err) || validationAuthError(err) || !validationReachedUpstream(err))
 }
 
 func validationAuthError(err error) bool {
@@ -434,15 +510,6 @@ func validationAuthError(err error) bool {
 
 func validationReachedUpstream(err error) bool {
 	return core.AsProviderError(err).StatusCode > 0
-}
-
-func firstCatalogModel(provider string) string {
-	for _, m := range ModelsForProvider(provider) {
-		if m.Kind == core.ServiceLLM {
-			return m.ID
-		}
-	}
-	return ""
 }
 
 func strictModelsValidation(provider string) bool {
@@ -468,50 +535,49 @@ type OpenAICompatibleModelSource struct {
 
 // ListModels fetches GET /models from the upstream and returns ModelSpecs.
 func (s *OpenAICompatibleModelSource) ListModels(ctx context.Context, creds core.Credentials) ([]ModelSpec, error) {
-	base := s.defaultBase
-	if creds.BaseURL != "" {
-		base = creds.BaseURL
-	}
-	// Resolve template placeholders (e.g. cloudflare {accountId}).
-	for key, val := range creds.Extra {
-		base = strings.ReplaceAll(base, "{"+key+"}", val)
-	}
-
-	url := joinURL(base, "models")
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	url := joinURL(resolvedBaseURL(s.defaultBase, creds), "models")
+	req, err := openAIModelsRequest(ctx, url, creds)
 	if err != nil {
 		return nil, err
 	}
-	switch {
-	case creds.AccessToken != "":
-		req.Header.Set("Authorization", bearer(creds.AccessToken))
-	case creds.APIKey != "":
-		req.Header.Set("Authorization", bearer(creds.APIKey))
-	}
-	req.Header.Set("Accept", "application/json")
-
 	resp, err := sharedClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8*1024))
-		return nil, fmt.Errorf("GET /models returned %d: %s", resp.StatusCode, truncateError(body))
+		return nil, modelsStatusError(resp)
 	}
+	return decodeOpenAIModels(resp.Body)
+}
 
-	// Parse the standard OpenAI models response shape.
+func openAIModelsRequest(ctx context.Context, url string, creds core.Credentials) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	if token := credentialToken(creds); token != "" {
+		req.Header.Set("Authorization", bearer(token))
+	}
+	req.Header.Set("Accept", "application/json")
+	return req, nil
+}
+
+func modelsStatusError(resp *http.Response) error {
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8*1024))
+	return fmt.Errorf("GET /models returned %d: %s", resp.StatusCode, truncateError(body))
+}
+
+func decodeOpenAIModels(body io.Reader) ([]ModelSpec, error) {
 	var envelope struct {
 		Data []struct {
 			ID      string `json:"id"`
 			OwnedBy string `json:"owned_by"`
 		} `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+	if err := json.NewDecoder(body).Decode(&envelope); err != nil {
 		return nil, fmt.Errorf("decode /models response: %w", err)
 	}
-
 	out := make([]ModelSpec, 0, len(envelope.Data))
 	for _, entry := range envelope.Data {
 		if entry.ID == "" {
@@ -519,7 +585,7 @@ func (s *OpenAICompatibleModelSource) ListModels(ctx context.Context, creds core
 		}
 		out = append(out, ModelSpec{
 			ID:   entry.ID,
-			Name: entry.ID, // best-effort; static catalog may have a better name
+			Name: entry.ID, // best-effort; custom models may carry a better name
 			Kind: core.ServiceLLM,
 		})
 	}
@@ -545,57 +611,68 @@ func (c *OpenAICompatible) StreamRaw(ctx context.Context, req *core.ChatRequest,
 
 // Stream performs a streaming completion, emitting canonical chunks.
 func (c *OpenAICompatible) Stream(ctx context.Context, req *core.ChatRequest, creds core.Credentials, cfg core.StreamConfig) (<-chan core.StreamChunk, error) {
+	resp, err := c.openChatStream(ctx, req, creds)
+	if err != nil {
+		return nil, err
+	}
+	return c.streamResponse(ctx, req.Model, cfg, resp.Body), nil
+}
+
+func (c *OpenAICompatible) openChatStream(ctx context.Context, req *core.ChatRequest, creds core.Credentials) (*http.Response, error) {
 	req.Stream = true
 	body, err := c.codec.RenderRequestForProvider(req, c.id)
 	if err != nil {
 		return nil, &core.ProviderError{Kind: core.ErrInternal, Provider: c.id, Model: req.Model, Message: err.Error(), Cause: err}
 	}
+	return openStream(ctx, c.id, req.Model, c.chatCompletionsURL(creds, req.Model), body, c.headers(creds))
+}
 
-	url := c.chatCompletionsURL(creds, req.Model)
-	resp, err := openStream(ctx, c.id, req.Model, url, body, c.headers(creds))
-	if err != nil {
-		return nil, err
-	}
-
+func (c *OpenAICompatible) streamResponse(ctx context.Context, model string, cfg core.StreamConfig, body io.ReadCloser) <-chan core.StreamChunk {
 	out := make(chan core.StreamChunk, 16)
 	go func() {
 		defer close(out)
-		defer resp.Body.Close()
-
+		defer body.Close()
 		ttft := newTTFTTracker(cfg)
-
-		scanner := sseScanner(resp.Body)
+		scanner := sseScanner(body)
 		for scanner.Scan() {
-			select {
-			case <-ctx.Done():
+			if !c.streamSSELine(ctx, model, ttft, out, scanner.Text()) {
 				return
-			default:
-			}
-
-			payload, ok := parseSSEData(scanner.Text())
-			if !ok {
-				continue
-			}
-			chunks, perr := c.codec.ParseStreamLine([]byte(payload), req.Model)
-			if perr != nil {
-				// Skip a single malformed chunk rather than aborting the stream.
-				continue
-			}
-			for _, ch := range chunks {
-				ttft.maybeReport(ch)
-				select {
-				case out <- ch:
-				case <-ctx.Done():
-					return
-				}
 			}
 		}
 		if err := scanner.Err(); err != nil {
 			out <- core.StreamChunk{
 				Type: core.ChunkError,
-				Err:  &core.ProviderError{Kind: core.ErrTimeout, Provider: c.id, Model: req.Model, Message: err.Error(), Cause: err},
+				Err:  &core.ProviderError{Kind: core.ErrTimeout, Provider: c.id, Model: model, Message: err.Error(), Cause: err},
 			}
 		}
 	}()
-	return out, nil
+	return out
+}
+
+func (c *OpenAICompatible) streamSSELine(ctx context.Context, model string, ttft *ttftTracker, out chan<- core.StreamChunk, line string) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	payload, ok := parseSSEData(line)
+	if !ok {
+		return true
+	}
+	chunks, err := c.codec.ParseStreamLine([]byte(payload), model)
+	if err != nil {
+		// Skip a single malformed chunk rather than aborting the stream.
+		return true
+	}
+	return sendStreamChunks(ctx, ttft, out, chunks)
+}
+
+func sendStreamChunks(ctx context.Context, ttft *ttftTracker, out chan<- core.StreamChunk, chunks []core.StreamChunk) bool {
+	for _, ch := range chunks {
+		ttft.maybeReport(ch)
+		select {
+		case out <- ch:
+		case <-ctx.Done():
+			return false
+		}
+	}
+	return true
 }

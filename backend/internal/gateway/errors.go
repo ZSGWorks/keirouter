@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"fmt"
 	"log/slog"
 	"strings"
 
@@ -8,7 +9,7 @@ import (
 )
 
 // sanitizeError converts an internal error into a safe message for API responses.
-// It logs the full error server-side and returns a generic message to the client.
+// It logs only the error type and returns a generic message to the client.
 //
 // This prevents leakage of:
 // - Filesystem paths
@@ -20,9 +21,9 @@ func sanitizeError(log *slog.Logger, err error, context string) string {
 		return "an internal error occurred"
 	}
 
-	// Log the full error server-side for debugging
+	// Provider failures can include credentials, so never log their raw body here.
 	if log != nil {
-		log.Error(context, "error", err)
+		log.Error(context, "error_type", fmt.Sprintf("%T", err))
 	}
 
 	msg := err.Error()
@@ -138,4 +139,43 @@ func sanitizeUpstreamError(err error) string {
 	default:
 		return "upstream provider request failed"
 	}
+}
+
+// sanitizeProviderError logs an upstream failure and returns only a stable
+// client-facing category. Provider error bodies can include endpoint URLs and
+// credentials, so they must not be returned directly.
+func sanitizeProviderError(log *slog.Logger, err error, context string) string {
+	if log != nil {
+		log.Error(context, "error", err)
+	}
+	if providerError := core.AsProviderError(err); providerError != nil {
+		return sanitizeUpstreamError(err)
+	}
+	return sanitizeError(nil, err, context)
+}
+
+// sanitizeOAuthError preserves actionable local callback messages while
+// redacting provider responses, which may include codes, tokens, and URLs.
+func sanitizeOAuthError(log *slog.Logger, err error) string {
+	if log != nil {
+		log.Error("OAuth request failed", "error_type", fmt.Sprintf("%T", err))
+	}
+	if err == nil {
+		return "OAuth provider request failed"
+	}
+
+	message := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(message, "missing code or state parameter"):
+		return "missing code or state parameter"
+	case strings.Contains(message, "session expired or invalid"):
+		return "session expired or invalid; please restart the sign-in flow"
+	case strings.Contains(message, "provider mismatch"):
+		return "provider mismatch"
+	case strings.Contains(message, "access_denied"):
+		return "OAuth authorization was denied"
+	case strings.Contains(message, "invalid_grant"):
+		return "OAuth authorization expired or was rejected; restart the flow"
+	}
+	return "OAuth provider request failed"
 }

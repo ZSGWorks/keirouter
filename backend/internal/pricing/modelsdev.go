@@ -329,9 +329,8 @@ func providerIDForURL(provider string) string {
 	return provider
 }
 
-// modelSpecs projects a models.dev model into discovery specs. Multimodal
-// inputs fan out into additional kind-tagged specs, mirroring the static
-// media-tag pattern in connectors/models.go.
+// modelSpecs projects a models.dev model into one discovery spec. Multimodal
+// service kinds remain attached to the same provider/model identity.
 func modelSpecs(m modelsDevModel) []connectors.ModelSpec {
 	if m.ID == "" {
 		return nil
@@ -340,7 +339,7 @@ func modelSpecs(m modelsDevModel) []connectors.ModelSpec {
 	if name == "" {
 		name = m.ID
 	}
-	specs := []connectors.ModelSpec{{ID: m.ID, Name: name, Kind: core.ServiceLLM}}
+	kinds := []core.ServiceKind{core.ServiceLLM}
 	if m.Modalities != nil {
 		has := func(list []string, v string) bool {
 			for _, s := range list {
@@ -351,11 +350,11 @@ func modelSpecs(m modelsDevModel) []connectors.ModelSpec {
 			return false
 		}
 		if has(m.Modalities.Input, "image") {
-			specs = append(specs, connectors.ModelSpec{ID: m.ID, Name: name, Kind: core.ServiceImageToText})
+			kinds = append(kinds, core.ServiceImageToText)
 		}
 		if has(m.Modalities.Output, "image") {
-			specs = append(specs, connectors.ModelSpec{ID: m.ID, Name: name, Kind: core.ServiceImage})
+			kinds = append(kinds, core.ServiceImage)
 		}
 	}
-	return specs
+	return []connectors.ModelSpec{{ID: m.ID, Name: name, Kind: core.ServiceLLM, Kinds: kinds}}
 }

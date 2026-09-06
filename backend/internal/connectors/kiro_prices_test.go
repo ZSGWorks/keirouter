@@ -6,15 +6,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestKiroModelPrices_Coverage verifies that every Kiro model exposed in the
-// catalog has a matching price entry, so usage statistics can report a
-// non-zero cost rather than silently defaulting to free.
+// TestKiroModelPrices_Coverage verifies that every Kiro price entry emitted
+// by the generator carries positive input and output rates, so usage
+// statistics can report a non-zero cost rather than silently defaulting to
+// free. Iterating the generator keeps this exhaustive as new base models and
+// suffix variants are added.
 func TestKiroModelPrices_Coverage(t *testing.T) {
-	for _, mdl := range providerModels["kiro"] {
-		mp, ok := ModelPriceByProviderModel("kiro", mdl.ID)
-		require.Truef(t, ok, "missing price entry for kiro/%s", mdl.ID)
-		require.Greaterf(t, mp.InputPerM, 0.0, "input price must be > 0 for kiro/%s", mdl.ID)
-		require.Greaterf(t, mp.OutputPerM, 0.0, "output price must be > 0 for kiro/%s", mdl.ID)
+	entries := kiroModelPrices()
+	require.NotEmpty(t, entries, "kiro price table must not be empty")
+	for _, mp := range entries {
+		require.Equalf(t, "kiro", mp.Provider, "unexpected provider %q", mp.Provider)
+		require.Greaterf(t, mp.InputPerM, 0.0, "input price must be > 0 for kiro/%s", mp.Model)
+		require.Greaterf(t, mp.OutputPerM, 0.0, "output price must be > 0 for kiro/%s", mp.Model)
 	}
 }
 

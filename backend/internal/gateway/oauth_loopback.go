@@ -125,7 +125,7 @@ func (s *Server) oauthFixedLoopbackCallback(provider string, w http.ResponseWrit
 	message := ""
 	if err := s.completeOAuthCallback(r, provider); err != nil {
 		status = "error"
-		message = err.Error()
+		message = sanitizeOAuthError(nil, err)
 		s.log.Warn("oauth fixed callback failed", "provider", provider, "error", err)
 	}
 

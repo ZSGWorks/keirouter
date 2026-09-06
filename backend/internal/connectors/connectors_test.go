@@ -2,6 +2,7 @@ package connectors
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -40,11 +41,39 @@ func TestOpenAICompatible_Chat(t *testing.T) {
 	require.Equal(t, 5, resp.Usage.TotalTokens)
 }
 
+func TestOpenAICompatible_ChatRetriesWithStreamWhenRequired(t *testing.T) {
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		var body struct {
+			Stream bool `json:"stream"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		if !body.Stream {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"error":{"message":"Stream must be set to true"}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"streamed\"}}]}\n\n")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer srv.Close()
+
+	c := NewOpenAICompatible("custom", srv.URL)
+	resp, err := c.Chat(context.Background(), textReq("model", false), core.Credentials{APIKey: "key"})
+	require.NoError(t, err)
+	require.Equal(t, "streamed", resp.Message.TextContent())
+	require.Equal(t, 2, requests)
+}
+
 func TestOpenAICompatible_Stream(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		flush, _ := w.(http.Flusher)
 		lines := []string{
+			`data: not-json`,
 			`data: {"choices":[{"delta":{"role":"assistant","content":"he"}}]}`,
 			`data: {"choices":[{"delta":{"content":"llo"}}]}`,
 			`data: {"choices":[{"delta":{},"finish_reason":"stop"}]}`,
@@ -77,6 +106,57 @@ func TestOpenAICompatible_Stream(t *testing.T) {
 	}
 	require.Equal(t, "hello", text)
 	require.True(t, finished)
+}
+
+func TestDrainStreamToResponsePreservesChunkOrderingAndDefaults(t *testing.T) {
+	stream := make(chan core.StreamChunk, 6)
+	stream <- core.StreamChunk{Type: core.ChunkThinking, Delta: "reason"}
+	stream <- core.StreamChunk{Type: core.ChunkText, Delta: "answer"}
+	stream <- core.StreamChunk{Type: core.ChunkToolCall, ToolCall: &core.ToolCall{ID: "call-1", Name: "search"}}
+	stream <- core.StreamChunk{Type: core.ChunkToolCall, ToolCall: &core.ToolCall{ID: "call-1", Arguments: json.RawMessage(`{"q":"router"}`)}}
+	stream <- core.StreamChunk{Type: core.ChunkUsage, Usage: &core.Usage{PromptTokens: 2, CompletionTokens: 3, TotalTokens: 5}}
+	close(stream)
+
+	resp, err := drainStreamToResponse(stream, "model")
+	require.NoError(t, err)
+	require.Equal(t, core.FinishToolCalls, resp.FinishReason)
+	require.Equal(t, core.Usage{PromptTokens: 2, CompletionTokens: 3, TotalTokens: 5}, resp.Usage)
+	require.Equal(t, []core.ContentPart{
+		{Type: core.PartThinking, Text: "reason"},
+		{Type: core.PartText, Text: "answer"},
+		{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: "call-1", Name: "search", Arguments: json.RawMessage(`{"q":"router"}`)}},
+	}, resp.Message.Content)
+}
+
+func TestValidateProbeRejectsOnlyFatalFailures(t *testing.T) {
+	tests := []struct {
+		name    string
+		status  int
+		body    string
+		content string
+		wantErr bool
+	}{
+		{name: "reached non auth error is accepted", status: http.StatusBadRequest, body: `{"error":"unknown model"}`, content: "application/json"},
+		{name: "auth error is rejected", status: http.StatusUnauthorized, body: `{"error":"bad key"}`, content: "application/json", wantErr: true},
+		{name: "html response is rejected", status: http.StatusOK, body: "<html>frontend</html>", content: "text/html", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", tt.content)
+				w.WriteHeader(tt.status)
+				fmt.Fprint(w, tt.body)
+			}))
+			defer srv.Close()
+
+			err := validateProbe(context.Background(), validationProbe{provider: "custom", endpoint: srv.URL, body: []byte(`{}`)})
+			if tt.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
 }
 
 func TestOpenAICompatible_MapsRateLimitError(t *testing.T) {
@@ -177,7 +257,36 @@ func TestOpenAICompatible_ValidateAcceptsReachedNonAuthProbeError(t *testing.T) 
 
 	c := NewOpenAICompatible("sumopod", srv.URL)
 	require.NoError(t, c.Validate(context.Background(), core.Credentials{APIKey: "sk-test"}))
-	require.True(t, chatProbed, "validation should fall back to a chat probe")
+	require.False(t, chatProbed, "validation must not invent a model for a chat probe")
+}
+
+func TestOpenAICompatible_ValidateUsesDiscoveredProbeModel(t *testing.T) {
+	SeedLLMCatalog(t, map[string][]ModelSpec{
+		"sumopod": {llmSpec("real-model", "Real Model")},
+	})
+	var gotModel string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/models":
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"error":"models endpoint not supported"}`)
+		case "/chat/completions":
+			var body struct {
+				Model string `json:"model"`
+			}
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			gotModel = body.Model
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"error":"probe model not found"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	c := NewOpenAICompatible("sumopod", srv.URL)
+	require.NoError(t, c.Validate(context.Background(), core.Credentials{APIKey: "sk-test"}))
+	require.Equal(t, "real-model", gotModel)
 }
 
 func TestOpenAICompatible_ValidateRejectsAuthError(t *testing.T) {
@@ -262,6 +371,24 @@ func TestAnthropic_Chat(t *testing.T) {
 	require.Equal(t, "hello back", resp.Message.TextContent())
 	require.Equal(t, core.FinishStop, resp.FinishReason)
 	require.Equal(t, 7, resp.Usage.TotalTokens)
+}
+
+func TestAnthropic_MessagesAuthProbeSkipsEmptyDiscovery(t *testing.T) {
+	messageProbed := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/messages" {
+			messageProbed = true
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"data":[]}`)
+	}))
+	defer srv.Close()
+
+	c := NewAnthropic("anthropic", srv.URL)
+	require.NoError(t, c.messagesAuthProbe(context.Background(), core.Credentials{APIKey: "sk-ant"}))
+	require.False(t, messageProbed, "validation must not invent a model for a messages probe")
 }
 
 // TestAnthropic_Chat_HTMLResponse covers a custom anthropic-compatible base URL
@@ -425,6 +552,7 @@ func publicModelsServer(t *testing.T, goodKey string) (*httptest.Server, *bool) 
 
 func TestOpenAICompatible_ValidateConfirmsKeyWhenModelsIsPublic(t *testing.T) {
 	t.Run("bad key is rejected via chat probe", func(t *testing.T) {
+		SeedLLMCatalog(t, nil)
 		srv, chatProbed := publicModelsServer(t, "good-key")
 		c := NewOpenAICompatible("sumopod", srv.URL)
 		err := c.Validate(context.Background(), core.Credentials{APIKey: "bad-key"})
@@ -433,6 +561,7 @@ func TestOpenAICompatible_ValidateConfirmsKeyWhenModelsIsPublic(t *testing.T) {
 	})
 
 	t.Run("good key passes", func(t *testing.T) {
+		SeedLLMCatalog(t, nil)
 		srv, chatProbed := publicModelsServer(t, "good-key")
 		c := NewOpenAICompatible("sumopod", srv.URL)
 		require.NoError(t, c.Validate(context.Background(), core.Credentials{APIKey: "good-key"}))
@@ -469,6 +598,48 @@ func TestOpenAICompatibleModelSource_ListModelsPublicNoCreds(t *testing.T) {
 	require.Len(t, models, 1)
 	require.Equal(t, "m1", models[0].ID)
 	require.Equal(t, core.ServiceLLM, models[0].Kind)
+}
+
+func TestOpenAICompatibleModelSource_ListModelsResolvesCredentialsAndModels(t *testing.T) {
+	t.Run("uses access token and resolves base URL template", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			require.Equal(t, "/account/models", r.URL.Path)
+			require.Equal(t, "Bearer token", r.Header.Get("Authorization"))
+			require.Equal(t, "application/json", r.Header.Get("Accept"))
+			fmt.Fprint(w, `{"data":[{"id":"first"},{"id":""},{"id":"second"}]}`)
+		}))
+		defer srv.Close()
+
+		source := &OpenAICompatibleModelSource{defaultBase: srv.URL + "/{account}"}
+		models, err := source.ListModels(context.Background(), core.Credentials{
+			APIKey:      "key",
+			AccessToken: "token",
+			Extra:       map[string]string{"account": "account"},
+		})
+		require.NoError(t, err)
+		require.Equal(t, []ModelSpec{
+			{ID: "first", Name: "first", Kind: core.ServiceLLM},
+			{ID: "second", Name: "second", Kind: core.ServiceLLM},
+		}, models)
+	})
+
+	t.Run("reports upstream status and malformed JSON", func(t *testing.T) {
+		for _, response := range []struct {
+			status int
+			body   string
+		}{
+			{status: http.StatusForbidden, body: "credential rejected"},
+			{status: http.StatusOK, body: "not-json"},
+		} {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(response.status)
+				fmt.Fprint(w, response.body)
+			}))
+			_, err := (&OpenAICompatibleModelSource{defaultBase: srv.URL}).ListModels(context.Background(), core.Credentials{})
+			srv.Close()
+			require.Error(t, err)
+		}
+	})
 }
 
 func TestGetLiveModelSource_DynamicOpenAIProvider(t *testing.T) {

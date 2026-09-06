@@ -61,6 +61,7 @@ func (s *blockingLiveModelSource) ListModels(context.Context, core.Credentials) 
 }
 
 func TestListModelsOnlyShowsConnectedProviders(t *testing.T) {
+	seedDiscoveryLLMs(t)
 	gw, apiKey := newModelDiscoveryTestGateway(t, []store.Account{
 		modelDiscoveryAccount("acc-openai", "openai", false, false),
 		modelDiscoveryAccount("acc-anthropic-disabled", "anthropic", true, false),
@@ -95,7 +96,91 @@ func TestListModelsByKindOnlyShowsConnectedProviders(t *testing.T) {
 	}
 }
 
+func TestMultimodalModelAppearsOnceAcrossDiscoveryResponses(t *testing.T) {
+	connectors.ReplaceFetchedCatalog(map[string][]connectors.ModelSpec{
+		"xai": {{
+			ID: "multimodal-test", Name: "Multimodal Test", Kind: core.ServiceLLM,
+			Kinds: []core.ServiceKind{core.ServiceLLM, core.ServiceImageToText, core.ServiceImage},
+		}},
+	}, nil)
+	t.Cleanup(func() { connectors.ReplaceFetchedCatalog(nil, nil) })
+
+	gw, apiKey := newModelDiscoveryTestGateway(t, []store.Account{
+		modelDiscoveryAccount("acc-xai", "xai", false, false),
+	})
+
+	modelsResponse := getAuthedJSON(t, gw, apiKey, "/v1/models")
+	models := modelIDsFromResponse(t, modelsResponse)
+	require.Equal(t, 1, countModelID(models, "xai/multimodal-test"))
+	require.Contains(t, modelStringFieldFromResponse(t, modelsResponse, "xai/multimodal-test", "input_modalities"), "image")
+	require.Contains(t, modelStringFieldFromResponse(t, modelsResponse, "xai/multimodal-test", "output_modalities"), "image")
+	llmModels := modelIDsFromResponse(t, getAuthedJSON(t, gw, apiKey, "/v1/models/llm"))
+	require.Equal(t, 1, countModelID(llmModels, "xai/multimodal-test"))
+	imageResponse := getAuthedJSON(t, gw, apiKey, "/v1/models/image_to_text")
+	imageModels := modelIDsFromResponse(t, imageResponse)
+	require.Equal(t, 1, countModelID(imageModels, "xai/multimodal-test"))
+	require.Equal(t, "image_to_text", modelKindFromResponse(t, imageResponse, "xai/multimodal-test"))
+	imageOutputModels := modelIDsFromResponse(t, getAuthedJSON(t, gw, apiKey, "/v1/models/image"))
+	require.Equal(t, 1, countModelID(imageOutputModels, "xai/multimodal-test"))
+
+	info := getAuthedJSON(t, gw, apiKey, "/v1/models/info?id=xai/multimodal-test")
+	require.Equal(t, "llm", info["kind"])
+	require.ElementsMatch(t, []any{"llm", "image_to_text", "image"}, info["kinds"])
+}
+
+func modelKindFromResponse(t *testing.T, body map[string]any, want string) string {
+	t.Helper()
+	items, ok := body["data"].([]any)
+	require.True(t, ok)
+	for _, item := range items {
+		model, ok := item.(map[string]any)
+		require.True(t, ok)
+		if model["id"] == want {
+			kind, ok := model["kind"].(string)
+			require.True(t, ok)
+			return kind
+		}
+	}
+	t.Fatalf("model %q not found", want)
+	return ""
+}
+
+func modelStringFieldFromResponse(t *testing.T, body map[string]any, want, field string) []string {
+	t.Helper()
+	items, ok := body["data"].([]any)
+	require.True(t, ok)
+	for _, item := range items {
+		model, ok := item.(map[string]any)
+		require.True(t, ok)
+		if model["id"] != want {
+			continue
+		}
+		values, ok := model[field].([]any)
+		require.True(t, ok)
+		out := make([]string, 0, len(values))
+		for _, value := range values {
+			name, ok := value.(string)
+			require.True(t, ok)
+			out = append(out, name)
+		}
+		return out
+	}
+	t.Fatalf("model %q not found", want)
+	return nil
+}
+
+func countModelID(models []string, want string) int {
+	count := 0
+	for _, model := range models {
+		if model == want {
+			count++
+		}
+	}
+	return count
+}
+
 func TestModelInfoOnlyShowsConnectedProviders(t *testing.T) {
+	seedDiscoveryLLMs(t)
 	gw, apiKey := newModelDiscoveryTestGateway(t, []store.Account{
 		modelDiscoveryAccount("acc-openai", "openai", false, false),
 	})
@@ -134,6 +219,7 @@ func TestListModelsStillShowsChains(t *testing.T) {
 }
 
 func TestListModelsHandlesLiveOllamaDiscovery(t *testing.T) {
+	seedDiscoveryLLMs(t)
 	tests := []struct {
 		name       string
 		source     connectors.LiveModelSource
@@ -152,7 +238,7 @@ func TestListModelsHandlesLiveOllamaDiscovery(t *testing.T) {
 			},
 		},
 		{
-			name:   "keeps static models after live failure",
+			name:   "keeps models.dev models after live failure",
 			source: failingLiveModelSource{},
 			expect: modelPresenceExpectation{
 				paths: []string{"/v1/models"},
@@ -284,6 +370,27 @@ func waitForLiveModelFetch(t *testing.T, done <-chan struct{}) {
 	case <-time.After(time.Second):
 		t.Fatal("live model probes did not finish")
 	}
+}
+
+// seedDiscoveryLLMs fixtures dynamic LLM discovery (models.dev snapshot) for
+// the model listing tests now that there is no hardcoded LLM catalog.
+func seedDiscoveryLLMs(t *testing.T) {
+	t.Helper()
+	connectors.ReplaceFetchedCatalog(map[string][]connectors.ModelSpec{
+		"openai": {
+			{ID: "gpt-4o", Name: "GPT-4o", Kind: core.ServiceLLM},
+		},
+		"anthropic": {
+			{ID: "claude-sonnet-4-20250514", Name: "Claude Sonnet 4", Kind: core.ServiceLLM},
+		},
+		"gemini": {
+			{ID: "gemini-2.5-pro", Name: "Gemini 2.5 Pro", Kind: core.ServiceLLM},
+		},
+		"ollama-local": {
+			{ID: "llama3.2", Name: "Llama 3.2", Kind: core.ServiceLLM},
+		},
+	}, nil)
+	t.Cleanup(func() { connectors.ReplaceFetchedCatalog(nil, nil) })
 }
 
 func newModelDiscoveryTestGateway(t *testing.T, accounts []store.Account) (*Server, string) {

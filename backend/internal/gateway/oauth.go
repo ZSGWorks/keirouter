@@ -162,14 +162,14 @@ func (s *Server) oauthExchange(w http.ResponseWriter, r *http.Request) {
 		tokens, err = cfg.ExchangeCode(r.Context(), body.Code, sess.RedirectURI, sess.Verifier)
 	}
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		writeError(w, http.StatusBadGateway, sanitizeOAuthError(s.log, err))
 		return
 	}
 	s.oauthSessions.Delete(body.State)
 
 	id, perr := s.persistOAuthAccount(r, provider, body.Label, tokens)
 	if perr != nil {
-		writeError(w, http.StatusInternalServerError, perr.Error())
+		writeError(w, http.StatusInternalServerError, sanitizeOAuthError(s.log, perr))
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"id": id, "provider": provider, "email": tokens.Email})
@@ -209,7 +209,7 @@ func recordOAuthResult(state, provider string, err error) {
 	entry := oauthResultEntry{Provider: provider, Status: "success", At: time.Now()}
 	if err != nil {
 		entry.Status = "error"
-		entry.Message = err.Error()
+		entry.Message = sanitizeOAuthError(nil, err)
 	}
 	oauthResults.m[state] = entry
 }
@@ -277,7 +277,7 @@ func (s *Server) oauthCallback(w http.ResponseWriter, r *http.Request) {
 
 	if err := s.completeOAuthCallback(r, provider); err != nil {
 		s.log.Warn("oauth callback failed", "provider", provider, "error", err)
-		writeResult("error", err.Error())
+		writeResult("error", sanitizeOAuthError(nil, err))
 		return
 	}
 
@@ -305,7 +305,7 @@ func (s *Server) oauthDeviceCode(w http.ResponseWriter, r *http.Request) {
 	if cfg.DeviceCodePKCE {
 		pkce, perr := oauth.GeneratePKCE(cfg.PKCEVerifierBytes)
 		if perr != nil {
-			writeError(w, http.StatusInternalServerError, "failed to generate PKCE: "+perr.Error())
+			writeError(w, http.StatusInternalServerError, sanitizeOAuthError(s.log, perr))
 			return
 		}
 		challenge = pkce.Challenge
@@ -344,7 +344,7 @@ func (s *Server) oauthDeviceCode(w http.ResponseWriter, r *http.Request) {
 
 	dc, err := cfg.RequestDeviceCode(r.Context(), challenge)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		writeError(w, http.StatusBadGateway, sanitizeOAuthError(s.log, err))
 		return
 	}
 
@@ -457,7 +457,7 @@ func (s *Server) oauthPoll(w http.ResponseWriter, r *http.Request) {
 	result := cfg.PollDeviceToken(r.Context(), body.DeviceCode, sess.Verifier)
 	if result.Err != nil {
 		s.oauthSessions.Delete(body.DeviceCode)
-		writeError(w, http.StatusBadGateway, result.Err.Error())
+		writeError(w, http.StatusBadGateway, sanitizeOAuthError(s.log, result.Err))
 		return
 	}
 	if result.Pending {
@@ -468,7 +468,7 @@ func (s *Server) oauthPoll(w http.ResponseWriter, r *http.Request) {
 	s.oauthSessions.Delete(body.DeviceCode)
 	id, perr := s.persistOAuthAccount(r, provider, body.Label, result.Tokens)
 	if perr != nil {
-		writeError(w, http.StatusInternalServerError, perr.Error())
+		writeError(w, http.StatusInternalServerError, sanitizeOAuthError(s.log, perr))
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "complete", "id": id, "provider": provider})

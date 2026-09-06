@@ -111,7 +111,7 @@ func (s *Server) mountAdmin(r chi.Router) {
 	r.Post("/settings/headroom-test", s.adminTestHeadroom)
 	r.Get("/settings/access", s.adminGetAccessSettings)
 	r.Post("/settings/access", s.adminUpdateAccessSettings)
-	r.Get("/settings/database", s.adminExportDatabase)
+	r.Post("/settings/database/export", s.adminExportDatabase)
 	r.Post("/settings/database", s.adminImportDatabase)
 	r.Post("/settings/database/import-foreign", s.adminImportForeignConfig)
 	r.Get("/settings/sqlite", s.adminSQLiteStatus)
@@ -254,9 +254,179 @@ func webProvider(id string) bool {
 	}
 }
 
+type providerModelPricing struct {
+	InputPerM            float64 `json:"input_per_m"`
+	OutputPerM           float64 `json:"output_per_m"`
+	CachedInputPerM      float64 `json:"cached_input_per_m"`
+	CacheWritePerM       float64 `json:"cache_write_per_m"`
+	ReasoningPerM        float64 `json:"reasoning_per_m"`
+	LongContextThreshold int     `json:"long_context_threshold"`
+	LongInputPerM        float64 `json:"long_input_per_m"`
+	LongOutputPerM       float64 `json:"long_output_per_m"`
+	LongCachedInputPerM  float64 `json:"long_cached_input_per_m"`
+	LongCacheWritePerM   float64 `json:"long_cache_write_per_m"`
+	Source               string  `json:"source"`
+	SourceURL            string  `json:"source_url"`
+	Estimated            bool    `json:"estimated"`
+	ExplicitFree         bool    `json:"explicit_free"`
+}
+
+type providerModelInfo struct {
+	ID               string                      `json:"id"`
+	Name             string                      `json:"name"`
+	Kind             string                      `json:"kind"`
+	Kinds            []string                    `json:"kinds,omitempty"`
+	Capabilities     modelCapabilities           `json:"capabilities"`
+	CapabilitySource capability.CapabilitySource `json:"capability_source"`
+	Custom           bool                        `json:"custom,omitempty"`
+	DBID             string                      `json:"db_id,omitempty"`
+	Discovered       bool                        `json:"discovered,omitempty"`
+	Pricing          *providerModelPricing       `json:"pricing,omitempty"`
+}
+
+type providerModelResponseOptions struct {
+	ProviderID string
+	KindFilter core.ServiceKind
+	Price      connectors.ModelPrice
+	PriceOK    bool
+	Discovered bool
+}
+
+func providerModelPrice(price connectors.ModelPrice, ok bool) *providerModelPricing {
+	if !ok {
+		return nil
+	}
+	if price.Source == "" {
+		price.Source = "provider_catalog"
+	}
+	return &providerModelPricing{
+		InputPerM: price.InputPerM, OutputPerM: price.OutputPerM,
+		CachedInputPerM: price.CachedInputPerM, CacheWritePerM: price.CacheWritePerM,
+		ReasoningPerM: price.ReasoningPerM, LongContextThreshold: price.LongContextThreshold,
+		LongInputPerM: price.LongInputPerM, LongOutputPerM: price.LongOutputPerM,
+		LongCachedInputPerM: price.LongCachedInputPerM, LongCacheWritePerM: price.LongCacheWritePerM,
+		Source: price.Source, SourceURL: price.SourceURL, Estimated: price.Estimated, ExplicitFree: price.ExplicitFree,
+	}
+}
+
+func providerModelKind(kind core.ServiceKind) core.ServiceKind {
+	if kind == "" {
+		return core.ServiceLLM
+	}
+	return kind
+}
+
+func providerModelResponseKind(model connectors.ModelSpec, kindFilter core.ServiceKind) core.ServiceKind {
+	if kindFilter != "" {
+		return kindFilter
+	}
+	return providerModelKind(model.Kind)
+}
+
+func providerModelInfoFor(model connectors.ModelSpec, options providerModelResponseOptions) providerModelInfo {
+	caps, source := capabilityPayloadForModel(options.ProviderID, model, options.KindFilter)
+	return providerModelInfo{
+		ID: model.ID, Name: model.Name, Kind: string(providerModelResponseKind(model, options.KindFilter)),
+		Kinds: modelKindNames(model), Capabilities: caps, CapabilitySource: source,
+		Discovered: options.Discovered, Pricing: providerModelPrice(options.Price, options.PriceOK),
+	}
+}
+
+func (s *Server) providerCustomModels(ctx context.Context, providerID string) map[string]store.CustomModel {
+	customByID := map[string]store.CustomModel{}
+	if cms, err := s.db.CustomProviders().ListModelsByProvider(ctx, providerID); err == nil {
+		for _, cm := range cms {
+			customByID[cm.ModelID] = cm
+		}
+	}
+	return customByID
+}
+
+func (s *Server) catalogProviderModels(ctx context.Context, providerID string, kindFilter core.ServiceKind) ([]providerModelInfo, map[string]bool) {
+	customByID := s.providerCustomModels(ctx, providerID)
+	static, staticPrices := connectors.ModelsAndDisplayPricesForProvider(providerID)
+	seen := map[string]bool{}
+	out := make([]providerModelInfo, 0, len(static))
+	for _, m := range static {
+		if kindFilter != "" && !m.SupportsKind(kindFilter) {
+			continue
+		}
+		price, ok := staticPrices[m.ID]
+		mi := providerModelInfoFor(m, providerModelResponseOptions{
+			ProviderID: providerID, KindFilter: kindFilter, Price: price, PriceOK: ok,
+		})
+		if cm, ok := customByID[m.ID]; ok {
+			mi.Custom = true
+			mi.DBID = cm.ID
+		}
+		out = append(out, mi)
+		seen[m.ID] = true
+	}
+	return out, seen
+}
+
+func (s *Server) appendLiveProviderModels(ctx context.Context, providerID string, kindFilter core.ServiceKind, source connectors.LiveModelSource, creds core.Credentials, out *[]providerModelInfo, seen map[string]bool) bool {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	models, err := source.ListModels(ctx, creds)
+	if err != nil || len(models) == 0 {
+		return false
+	}
+	added := false
+	for _, model := range models {
+		if kindFilter != "" && !model.SupportsKind(kindFilter) {
+			continue
+		}
+		if seen[model.ID] {
+			continue
+		}
+		price, ok := connectors.ModelDisplayPriceByProviderModel(providerID, model.ID)
+		*out = append(*out, providerModelInfoFor(model, providerModelResponseOptions{
+			ProviderID: providerID, KindFilter: kindFilter, Price: price, PriceOK: ok, Discovered: true,
+		}))
+		seen[model.ID] = true
+		added = true
+	}
+	return added
+}
+
+func (s *Server) discoverProviderModels(ctx context.Context, providerID string, kindFilter core.ServiceKind, out *[]providerModelInfo, seen map[string]bool) {
+	source := connectors.GetLiveModelSource(providerID)
+	if source == nil {
+		return
+	}
+	if !s.discoverProviderModelsWithCredentials(ctx, providerID, kindFilter, source, out, seen) && len(*out) == 0 {
+		s.appendLiveProviderModels(ctx, providerID, kindFilter, source, core.Credentials{}, out, seen)
+	}
+}
+
+func (s *Server) discoverProviderModelsWithCredentials(ctx context.Context, providerID string, kindFilter core.ServiceKind, source connectors.LiveModelSource, out *[]providerModelInfo, seen map[string]bool) bool {
+	if s.accounts == nil || s.vault == nil {
+		return false
+	}
+	accounts, err := s.accounts.ListByProvider(ctx, adminTenant, providerID)
+	if err != nil {
+		return false
+	}
+	for _, account := range accounts {
+		if account.Disabled {
+			continue
+		}
+		creds, err := s.vault.Open(account)
+		if err != nil {
+			continue
+		}
+		if s.appendLiveProviderModels(ctx, providerID, kindFilter, source, creds, out, seen) {
+			return true
+		}
+	}
+	return false
+}
+
 // adminProviderModels returns the model list for a specific provider. It
-// includes static catalog models and, when a connected account exists, live
-// models from the upstream (e.g. Kiro's ListAvailableModels).
+// includes hardcoded non-LLM models plus dynamically discovered LLM models
+// (models.dev snapshot and custom models) and, when a connected account
+// exists, live models from the upstream (e.g. Kiro's ListAvailableModels).
 func (s *Server) adminProviderModels(w http.ResponseWriter, r *http.Request) {
 	providerID := chi.URLParam(r, "id")
 	if _, ok := connectors.SpecByID(providerID); !ok {
@@ -269,143 +439,8 @@ func (s *Server) adminProviderModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	type modelPricing struct {
-		InputPerM            float64 `json:"input_per_m"`
-		OutputPerM           float64 `json:"output_per_m"`
-		CachedInputPerM      float64 `json:"cached_input_per_m"`
-		CacheWritePerM       float64 `json:"cache_write_per_m"`
-		ReasoningPerM        float64 `json:"reasoning_per_m"`
-		LongContextThreshold int     `json:"long_context_threshold"`
-		LongInputPerM        float64 `json:"long_input_per_m"`
-		LongOutputPerM       float64 `json:"long_output_per_m"`
-		LongCachedInputPerM  float64 `json:"long_cached_input_per_m"`
-		LongCacheWritePerM   float64 `json:"long_cache_write_per_m"`
-		Source               string  `json:"source"`
-		SourceURL            string  `json:"source_url"`
-		Estimated            bool    `json:"estimated"`
-		ExplicitFree         bool    `json:"explicit_free"`
-	}
-	modelPrice := func(price connectors.ModelPrice, ok bool) *modelPricing {
-		if !ok {
-			return nil
-		}
-		if price.Source == "" {
-			price.Source = "provider_catalog"
-		}
-		return &modelPricing{
-			InputPerM: price.InputPerM, OutputPerM: price.OutputPerM,
-			CachedInputPerM: price.CachedInputPerM, CacheWritePerM: price.CacheWritePerM,
-			ReasoningPerM: price.ReasoningPerM, LongContextThreshold: price.LongContextThreshold,
-			LongInputPerM: price.LongInputPerM, LongOutputPerM: price.LongOutputPerM,
-			LongCachedInputPerM: price.LongCachedInputPerM, LongCacheWritePerM: price.LongCacheWritePerM,
-			Source: price.Source, SourceURL: price.SourceURL, Estimated: price.Estimated, ExplicitFree: price.ExplicitFree,
-		}
-	}
-	type modelInfo struct {
-		ID               string                      `json:"id"`
-		Name             string                      `json:"name"`
-		Kind             string                      `json:"kind"`
-		Capabilities     modelCapabilities           `json:"capabilities"`
-		CapabilitySource capability.CapabilitySource `json:"capability_source"`
-		Custom           bool                        `json:"custom,omitempty"`
-		DBID             string                      `json:"db_id,omitempty"`
-		Discovered       bool                        `json:"discovered,omitempty"`
-		Pricing          *modelPricing               `json:"pricing,omitempty"`
-	}
-	modelKind := func(kind core.ServiceKind) core.ServiceKind {
-		if kind == "" {
-			return core.ServiceLLM
-		}
-		return kind
-	}
-
-	// User-registered custom models for this provider (db-backed). These are
-	// tracked separately so the dashboard can render an editable section.
-	customByID := map[string]store.CustomModel{}
-	if cms, cerr := s.db.CustomProviders().ListModelsByProvider(r.Context(), providerID); cerr == nil {
-		for _, cm := range cms {
-			customByID[cm.ModelID] = cm
-		}
-	}
-
-	// Read fetched models and prices from one snapshot so a refresh cannot pair
-	// a stale model list with a newer price list.
-	static, staticPrices := connectors.ModelsAndDisplayPricesForProvider(providerID)
-	seen := map[string]bool{}
-	out := make([]modelInfo, 0, len(static))
-	for _, m := range static {
-		kind := modelKind(m.Kind)
-		if kindFilter != "" && kind != kindFilter {
-			continue
-		}
-		caps, source := capabilityPayload(providerID, m.ID, kind)
-		price, ok := staticPrices[m.ID]
-		mi := modelInfo{ID: m.ID, Name: m.Name, Kind: string(kind), Capabilities: caps, CapabilitySource: source, Pricing: modelPrice(price, ok)}
-		if cm, ok := customByID[m.ID]; ok {
-			mi.Custom = true
-			mi.DBID = cm.ID
-		}
-		out = append(out, mi)
-		seen[m.ID] = true
-	}
-
-	// Live model discovery (best-effort). A connected account's credentials are
-	// preferred since most upstreams gate /models behind auth. When no account
-	// yields models and nothing else is in the catalog, fall back to an
-	// unauthenticated fetch so providers whose /models endpoint is public (e.g.
-	// sumopod) still populate before an account is connected.
-	if src := connectors.GetLiveModelSource(providerID); src != nil {
-		appendLive := func(creds core.Credentials) bool {
-			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-			models, merr := src.ListModels(ctx, creds)
-			cancel()
-			if merr != nil || len(models) == 0 {
-				return false
-			}
-			added := false
-			for _, lm := range models {
-				kind := modelKind(lm.Kind)
-				if kindFilter != "" && kind != kindFilter {
-					continue
-				}
-				if seen[lm.ID] {
-					continue
-				}
-				caps, source := capabilityPayload(providerID, lm.ID, kind)
-				price, ok := connectors.ModelDisplayPriceByProviderModel(providerID, lm.ID)
-				out = append(out, modelInfo{ID: lm.ID, Name: lm.Name, Kind: string(kind), Capabilities: caps, CapabilitySource: source, Discovered: true, Pricing: modelPrice(price, ok)})
-				seen[lm.ID] = true
-				added = true
-			}
-			return added
-		}
-
-		discovered := false
-		if s.accounts != nil && s.vault != nil {
-			if accs, err := s.accounts.ListByProvider(r.Context(), adminTenant, providerID); err == nil {
-				for _, acc := range accs {
-					if acc.Disabled {
-						continue
-					}
-					creds, oerr := s.vault.Open(acc)
-					if oerr != nil {
-						continue
-					}
-					if appendLive(creds) {
-						discovered = true
-						break // only use first valid account
-					}
-				}
-			}
-		}
-
-		// Public fallback: only when we have nothing else to show, to avoid an
-		// extra upstream round-trip for providers that already have models.
-		if !discovered && len(out) == 0 {
-			appendLive(core.Credentials{})
-		}
-	}
-
+	out, seen := s.catalogProviderModels(r.Context(), providerID, kindFilter)
+	s.discoverProviderModels(r.Context(), providerID, kindFilter, &out, seen)
 	writeJSON(w, http.StatusOK, map[string]any{"models": out})
 }
 
@@ -1130,7 +1165,7 @@ func (s *Server) adminValidateKey(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if verr := s.validateAccountCredentials(r.Context(), acc); verr != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"status": "error", "message": verr.Error()})
+		writeJSON(w, http.StatusOK, map[string]any{"status": "error", "message": sanitizeProviderError(s.log, verr, "credential validation failed")})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
@@ -1206,7 +1241,7 @@ func (s *Server) adminTestAccount(w http.ResponseWriter, r *http.Request) {
 			"provider": acc.Provider,
 			"label":    acc.Label,
 			"status":   "error",
-			"message":  verr.Error(),
+			"message":  sanitizeProviderError(s.log, verr, "account validation failed"),
 		})
 		return
 	}
@@ -1269,7 +1304,7 @@ func (s *Server) adminAccountQuota(w http.ResponseWriter, r *http.Request) {
 
 	quota, qerr := qs.FetchQuota(ctx, creds)
 	if qerr != nil {
-		writeError(w, http.StatusBadGateway, qerr.Error())
+		writeError(w, http.StatusBadGateway, sanitizeProviderError(s.log, qerr, "quota request failed"))
 		return
 	}
 
@@ -1288,7 +1323,7 @@ func (s *Server) adminAccountQuota(w http.ResponseWriter, r *http.Request) {
 		"provider":  acc.Provider,
 		"supported": true,
 		"plan_name": quota.PlanName,
-		"message":   quota.Message,
+		"message":   "Quota information retrieved from upstream provider.",
 		"quotas":    quotas,
 	})
 }
@@ -1326,7 +1361,7 @@ func (s *Server) adminCodexResetCredits(w http.ResponseWriter, r *http.Request) 
 
 	result, ferr := fetchCodexResetCredits(ctx, creds.AccessToken, creds.Extra)
 	if ferr != nil {
-		writeError(w, http.StatusBadGateway, ferr.Error())
+		writeError(w, http.StatusBadGateway, sanitizeProviderError(s.log, ferr, "Codex reset credits request failed"))
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -1378,7 +1413,7 @@ func (s *Server) adminCodexConsumeCredit(w http.ResponseWriter, r *http.Request)
 
 	result, cerr := consumeCodexResetCredit(ctx, creds.AccessToken, creds.Extra, body.RedeemRequestID, body.CreditID)
 	if cerr != nil {
-		writeError(w, http.StatusBadGateway, cerr.Error())
+		writeError(w, http.StatusBadGateway, sanitizeProviderError(s.log, cerr, "Codex reset credit request failed"))
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -1501,7 +1536,7 @@ func (s *Server) adminCodexUsageDetails(w http.ResponseWriter, r *http.Request) 
 	} else {
 		result.Error = "Failed to fetch usage data"
 		if usageErr != nil {
-			result.Error = usageErr.Error()
+			result.Error = sanitizeProviderError(s.log, usageErr, "Codex usage request failed")
 		}
 	}
 
@@ -1515,9 +1550,6 @@ func (s *Server) adminCodexUsageDetails(w http.ResponseWriter, r *http.Request) 
 			result.Error += "; Failed to fetch reset credits"
 		} else {
 			result.Error = "Failed to fetch reset credits"
-		}
-		if resetErr != nil {
-			result.Error += ": " + resetErr.Error()
 		}
 	}
 
@@ -2235,9 +2267,22 @@ func (s *Server) adminCreatePlan(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+type planUpdateRequest struct {
+	Name             *string  `json:"name"`
+	Description      *string  `json:"description"`
+	LimitUSD         *float64 `json:"limit_usd"`
+	LimitTokens      *int64   `json:"limit_tokens"`
+	RPMLimit         *int64   `json:"rpm_limit"`
+	TPMLimit         *int64   `json:"tpm_limit"`
+	ConcurrencyLimit *int64   `json:"concurrency_limit"`
+	Period           *string  `json:"period"`
+	AlertPct         *int     `json:"alert_pct"`
+	HardCutoff       *bool    `json:"hard_cutoff"`
+	AllowedModels    []string `json:"allowed_models"`
+}
+
 func (s *Server) adminUpdatePlan(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	existing, err := s.db.Plans().Get(r.Context(), id)
+	existing, err := s.db.Plans().Get(r.Context(), chi.URLParam(r, "id"))
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "plan not found")
@@ -2247,88 +2292,13 @@ func (s *Server) adminUpdatePlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var body struct {
-		Name             *string  `json:"name"`
-		Description      *string  `json:"description"`
-		LimitUSD         *float64 `json:"limit_usd"`
-		LimitTokens      *int64   `json:"limit_tokens"`
-		RPMLimit         *int64   `json:"rpm_limit"`
-		TPMLimit         *int64   `json:"tpm_limit"`
-		ConcurrencyLimit *int64   `json:"concurrency_limit"`
-		Period           *string  `json:"period"`
-		AlertPct         *int     `json:"alert_pct"`
-		HardCutoff       *bool    `json:"hard_cutoff"`
-		AllowedModels    []string `json:"allowed_models"`
-	}
+	var body planUpdateRequest
 	if !decodeJSON(w, r, &body) {
 		return
 	}
-
-	if body.Name != nil {
-		if *body.Name == "" {
-			writeError(w, http.StatusBadRequest, "name cannot be empty")
-			return
-		}
-		existing.Name = *body.Name
-	}
-	if body.Description != nil {
-		existing.Description = *body.Description
-	}
-	if body.LimitUSD != nil {
-		if *body.LimitUSD < 0 {
-			writeError(w, http.StatusBadRequest, "limit_usd must not be negative")
-			return
-		}
-		existing.LimitMicros = int64(*body.LimitUSD * 1_000_000)
-	}
-	if body.LimitTokens != nil {
-		if *body.LimitTokens < 0 {
-			writeError(w, http.StatusBadRequest, "limit_tokens must not be negative")
-			return
-		}
-		existing.LimitTokens = *body.LimitTokens
-	}
-	if body.RPMLimit != nil {
-		if *body.RPMLimit < 0 {
-			writeError(w, http.StatusBadRequest, "rpm_limit must not be negative")
-			return
-		}
-		existing.RPMLimit = *body.RPMLimit
-	}
-	if body.TPMLimit != nil {
-		if *body.TPMLimit < 0 {
-			writeError(w, http.StatusBadRequest, "tpm_limit must not be negative")
-			return
-		}
-		existing.TPMLimit = *body.TPMLimit
-	}
-	if body.ConcurrencyLimit != nil {
-		if *body.ConcurrencyLimit < 0 {
-			writeError(w, http.StatusBadRequest, "concurrency_limit must not be negative")
-			return
-		}
-		existing.ConcurrencyLimit = *body.ConcurrencyLimit
-	}
-	if body.Period != nil {
-		period, ok := normalizeBudgetPeriod(*body.Period)
-		if !ok {
-			writeError(w, http.StatusBadRequest, "invalid period")
-			return
-		}
-		existing.Period = period
-	}
-	if body.AlertPct != nil {
-		if *body.AlertPct < 1 || *body.AlertPct > 100 {
-			writeError(w, http.StatusBadRequest, "alert_pct must be between 1 and 100")
-			return
-		}
-		existing.AlertPct = *body.AlertPct
-	}
-	if body.HardCutoff != nil {
-		existing.HardCutoff = *body.HardCutoff
-	}
-	if body.AllowedModels != nil {
-		existing.AllowedModels = store.SetPlanAllowedModels(body.AllowedModels)
+	if message := applyPlanUpdate(&existing, body); message != "" {
+		writeError(w, http.StatusBadRequest, message)
+		return
 	}
 	existing.UpdatedAt = time.Now()
 
@@ -2343,6 +2313,84 @@ func (s *Server) adminUpdatePlan(w http.ResponseWriter, r *http.Request) {
 		"period": existing.Period, "alert_pct": existing.AlertPct, "hard_cutoff": existing.HardCutoff,
 		"allowed_models": store.GetPlanAllowedModels(existing),
 	})
+}
+
+func applyPlanUpdate(existing *store.Plan, body planUpdateRequest) string {
+	if message := validatePlanUpdate(body); message != "" {
+		return message
+	}
+	applyPlanUpdateFields(existing, body)
+	return ""
+}
+
+// validatePlanUpdate returns the first invalid-field error message, or "" when
+// every present field passes. Validation is separate from mutation so each pass
+// stays small.
+func validatePlanUpdate(body planUpdateRequest) string {
+	if body.Name != nil && *body.Name == "" {
+		return "name cannot be empty"
+	}
+	for _, invalid := range []struct {
+		value *int64
+		field string
+	}{
+		{body.LimitTokens, "limit_tokens"},
+		{body.RPMLimit, "rpm_limit"},
+		{body.TPMLimit, "tpm_limit"},
+		{body.ConcurrencyLimit, "concurrency_limit"},
+	} {
+		if invalid.value != nil && *invalid.value < 0 {
+			return fmt.Sprintf("%s must not be negative", invalid.field)
+		}
+	}
+	if body.LimitUSD != nil && *body.LimitUSD < 0 {
+		return "limit_usd must not be negative"
+	}
+	if body.Period != nil {
+		if _, ok := normalizeBudgetPeriod(*body.Period); !ok {
+			return "invalid period"
+		}
+	}
+	if body.AlertPct != nil && (*body.AlertPct < 1 || *body.AlertPct > 100) {
+		return "alert_pct must be between 1 and 100"
+	}
+	return ""
+}
+
+func applyPlanUpdateFields(existing *store.Plan, body planUpdateRequest) {
+	if body.Name != nil {
+		existing.Name = *body.Name
+	}
+	if body.Description != nil {
+		existing.Description = *body.Description
+	}
+	if body.LimitUSD != nil {
+		existing.LimitMicros = int64(*body.LimitUSD * 1_000_000)
+	}
+	if body.LimitTokens != nil {
+		existing.LimitTokens = *body.LimitTokens
+	}
+	if body.RPMLimit != nil {
+		existing.RPMLimit = *body.RPMLimit
+	}
+	if body.TPMLimit != nil {
+		existing.TPMLimit = *body.TPMLimit
+	}
+	if body.ConcurrencyLimit != nil {
+		existing.ConcurrencyLimit = *body.ConcurrencyLimit
+	}
+	if body.Period != nil {
+		existing.Period, _ = normalizeBudgetPeriod(*body.Period)
+	}
+	if body.AlertPct != nil {
+		existing.AlertPct = *body.AlertPct
+	}
+	if body.HardCutoff != nil {
+		existing.HardCutoff = *body.HardCutoff
+	}
+	if body.AllowedModels != nil {
+		existing.AllowedModels = store.SetPlanAllowedModels(body.AllowedModels)
+	}
 }
 
 func (s *Server) adminDeletePlan(w http.ResponseWriter, r *http.Request) {
@@ -2908,11 +2956,33 @@ func (s *Server) adminExportDatabase(w http.ResponseWriter, r *http.Request) {
 	// Optional passphrase enables a portable backup: each sealed credential is
 	// re-keyed from the local master key to a passphrase-derived key, so the
 	// backup can be restored on a machine with a different master key.
-	passphrase := strings.TrimSpace(r.URL.Query().Get("passphrase"))
+	passphrase, ok := decodeDatabaseExportPassphrase(w, r)
+	if !ok {
+		return
+	}
 	portable := passphrase != ""
 	export["portable"] = portable
 
-	// Export providers (accounts) — includes encrypted credentials.
+	accountsOut, ok := s.exportAccounts(ctx, w, passphrase, portable)
+	if !ok {
+		return
+	}
+	export["accounts"] = accountsOut
+	export["chains"] = exportChainEntries(s, ctx)
+	export["keys"] = exportKeys(s, ctx)
+	export["budgets"] = exportBudgets(s, ctx)
+	export["proxy_pools"] = exportProxyPools(s, ctx)
+	export["endpoint_settings"] = s.loadEndpointSettings(ctx)
+	export["access_settings"] = s.loadAccessSettings(ctx)
+	export["aliases"] = exportAliases(s, ctx)
+
+	writeJSON(w, http.StatusOK, export)
+}
+
+// exportAccounts serializes account credentials, re-keying secrets to the
+// passphrase-derived key when exporting a portable backup. It writes the error
+// response itself and reports whether the export may continue.
+func (s *Server) exportAccounts(ctx context.Context, w http.ResponseWriter, passphrase string, portable bool) ([]map[string]any, bool) {
 	accs, _ := s.accounts.ListByTenant(ctx, adminTenant)
 	accountsOut := make([]map[string]any, 0, len(accs))
 	for _, a := range accs {
@@ -2926,84 +2996,97 @@ func (s *Server) adminExportDatabase(w http.ResponseWriter, r *http.Request) {
 			if err := s.exportPortableSecrets(out, a, passphrase); err != nil {
 				s.consoleLog.Log("ERROR", fmt.Sprintf("Portable export failed for account %s", a.ID), err.Error())
 				writeError(w, http.StatusInternalServerError, "portable export failed: cannot re-key account "+a.ID+" (master key mismatch?)")
-				return
+				return nil, false
 			}
 		} else {
-			if a.SecretWrappedDEK != "" {
-				out["secret_wrapped_dek"] = a.SecretWrappedDEK
-				out["secret_ciphertext"] = a.SecretCiphertext
-			}
-			if a.TokenWrappedDEK != "" {
-				out["token_wrapped_dek"] = a.TokenWrappedDEK
-				out["token_ciphertext"] = a.TokenCiphertext
-			}
-			if a.RefreshWrappedDEK != "" {
-				out["refresh_wrapped_dek"] = a.RefreshWrappedDEK
-				out["refresh_ciphertext"] = a.RefreshCiphertext
-			}
+			appendWrappedAccountSecrets(out, a)
 		}
 		if a.TokenExpiresAt != nil {
 			out["token_expires_at"] = a.TokenExpiresAt
 		}
 		accountsOut = append(accountsOut, out)
 	}
-	export["accounts"] = accountsOut
+	return accountsOut, true
+}
 
-	// Export chains.
+// appendWrappedAccountSecrets copies locally-sealed credential ciphertexts into
+// the export entry when the backup is not portable.
+func appendWrappedAccountSecrets(out map[string]any, a store.Account) {
+	if a.SecretWrappedDEK != "" {
+		out["secret_wrapped_dek"] = a.SecretWrappedDEK
+		out["secret_ciphertext"] = a.SecretCiphertext
+	}
+	if a.TokenWrappedDEK != "" {
+		out["token_wrapped_dek"] = a.TokenWrappedDEK
+		out["token_ciphertext"] = a.TokenCiphertext
+	}
+	if a.RefreshWrappedDEK != "" {
+		out["refresh_wrapped_dek"] = a.RefreshWrappedDEK
+		out["refresh_ciphertext"] = a.RefreshCiphertext
+	}
+}
+
+// exportTableEntries is the shared shape for flat table exports: list, project
+// each row into a map, and return the slice for the export payload.
+func exportTableEntries[T any](rows []T, project func(T) map[string]any) []map[string]any {
+	out := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, project(row))
+	}
+	return out
+}
+
+func exportChainEntries(s *Server, ctx context.Context) []map[string]any {
 	chains, _ := s.chains.ListByTenant(ctx, adminTenant)
-	chainsOut := make([]map[string]any, 0, len(chains))
-	for _, c := range chains {
-		chainsOut = append(chainsOut, chainExportEntry(c))
-	}
-	export["chains"] = chainsOut
+	return exportTableEntries(chains, chainExportEntry)
+}
 
-	// Export API keys (names only, not hashes).
+func exportKeys(s *Server, ctx context.Context) []map[string]any {
 	keys, _ := s.identity.List(ctx, adminTenant)
-	keysOut := make([]map[string]any, 0, len(keys))
-	for _, k := range keys {
-		keysOut = append(keysOut, map[string]any{
-			"name": k.Name, "disabled": k.Disabled,
-		})
-	}
-	export["keys"] = keysOut
+	return exportTableEntries(keys, func(k store.APIKey) map[string]any {
+		return map[string]any{"name": k.Name, "disabled": k.Disabled}
+	})
+}
 
-	// Export budgets.
+func exportBudgets(s *Server, ctx context.Context) []map[string]any {
 	budgets, _ := s.budgets.ListByTenant(ctx, adminTenant)
-	budgetsOut := make([]map[string]any, 0, len(budgets))
-	for _, b := range budgets {
-		budgetsOut = append(budgetsOut, map[string]any{
+	return exportTableEntries(budgets, func(b store.Budget) map[string]any {
+		return map[string]any{
 			"scope_kind": b.ScopeKind, "scope_id": b.ScopeID,
 			"limit_micros": b.LimitMicros, "period": b.Period,
 			"alert_pct": b.AlertPct, "hard_cutoff": b.HardCutoff,
-		})
-	}
-	export["budgets"] = budgetsOut
+		}
+	})
+}
 
-	// Export proxy pools.
+func exportProxyPools(s *Server, ctx context.Context) []map[string]any {
 	pools, _ := s.pools.List(ctx)
-	poolsOut := make([]map[string]any, 0, len(pools))
-	for _, p := range pools {
-		poolsOut = append(poolsOut, map[string]any{
+	return exportTableEntries(pools, func(p store.ProxyPool) map[string]any {
+		return map[string]any{
 			"id": p.ID, "name": p.Name, "type": p.Type,
 			"proxy_url": p.ProxyURL, "no_proxy": p.NoProxy,
 			"strict": p.Strict, "is_active": p.IsActive,
-		})
-	}
-	export["proxy_pools"] = poolsOut
+		}
+	})
+}
 
-	// Export settings.
-	export["endpoint_settings"] = s.loadEndpointSettings(ctx)
-	export["access_settings"] = s.loadAccessSettings(ctx)
-
-	// Export aliases.
+func exportAliases(s *Server, ctx context.Context) map[string]string {
 	aliases, _ := s.aliases.List(ctx)
 	aliasMap := map[string]string{}
 	for _, a := range aliases {
 		aliasMap[a.Alias] = a.Target
 	}
-	export["aliases"] = aliasMap
+	return aliasMap
+}
 
-	writeJSON(w, http.StatusOK, export)
+func decodeDatabaseExportPassphrase(w http.ResponseWriter, r *http.Request) (string, bool) {
+	var req struct {
+		Passphrase string `json:"passphrase"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return "", false
+	}
+	return strings.TrimSpace(req.Passphrase), true
 }
 
 func (s *Server) adminImportDatabase(w http.ResponseWriter, r *http.Request) {
@@ -3216,8 +3299,12 @@ func (s *Server) adminTestProxy(w http.ResponseWriter, r *http.Request) {
 	// infrastructure, so SSRF restrictions (which guard outbound target URLs)
 	// do not apply here. Localhost proxies (Clash, V2Ray, etc.) are expected.
 	parsed, err := url.Parse(body.ProxyURL)
-	if err != nil || parsed.Host == "" {
+	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": "invalid proxy URL: " + err.Error()})
+		return
+	}
+	if parsed.Host == "" {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": "invalid proxy URL: host is required"})
 		return
 	}
 	scheme := strings.ToLower(parsed.Scheme)

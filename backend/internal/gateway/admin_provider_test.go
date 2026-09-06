@@ -7,11 +7,15 @@ import (
 	"testing"
 
 	"github.com/mydisha/keirouter/backend/internal/connectors"
+	"github.com/mydisha/keirouter/backend/internal/core"
 	"github.com/mydisha/keirouter/backend/internal/store"
 	"github.com/stretchr/testify/require"
 )
 
 func TestProviderModelsIncludesResolvedPricing(t *testing.T) {
+	// openai/gpt-4o resolves from dynamic discovery (models.dev snapshot
+	// fixture); its price still comes from the provider catalog.
+	seedDiscoveryLLMs(t)
 	s, _ := newCustomProviderTestServer(t)
 	rec := httptest.NewRecorder()
 	s.adminProviderModels(rec, withChiID(http.MethodGet, "/providers/openai/models", "openai"))
@@ -45,6 +49,37 @@ func TestProviderModelsIncludesResolvedPricing(t *testing.T) {
 		}
 	}
 	t.Fatal("openai/gpt-4o missing from provider model response")
+}
+
+func TestProviderModelsMergesMultimodalCatalogEntries(t *testing.T) {
+	connectors.ReplaceFetchedCatalog(map[string][]connectors.ModelSpec{
+		"openai": {{
+			ID: "multimodal-test", Name: "Multimodal Test", Kind: core.ServiceLLM,
+			Kinds: []core.ServiceKind{core.ServiceLLM, core.ServiceImageToText},
+		}},
+	}, nil)
+	t.Cleanup(func() { connectors.ReplaceFetchedCatalog(nil, nil) })
+
+	s, _ := newCustomProviderTestServer(t)
+	rec := httptest.NewRecorder()
+	s.adminProviderModels(rec, withChiID(http.MethodGet, "/providers/openai/models", "openai"))
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var response struct {
+		Models []struct {
+			ID    string   `json:"id"`
+			Kinds []string `json:"kinds"`
+		} `json:"models"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &response))
+	var matches int
+	for _, model := range response.Models {
+		if model.ID == "multimodal-test" {
+			matches++
+			require.ElementsMatch(t, []string{"llm", "image_to_text"}, model.Kinds)
+		}
+	}
+	require.Equal(t, 1, matches)
 }
 
 func TestProviderAccountMetadataSpecialProviders(t *testing.T) {

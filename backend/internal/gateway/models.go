@@ -23,6 +23,7 @@ type modelEntry struct {
 	OwnedBy          string                      `json:"owned_by"`
 	Provider         string                      `json:"provider,omitempty"`
 	Kind             string                      `json:"kind,omitempty"`
+	Kinds            []string                    `json:"kinds,omitempty"`
 	Name             string                      `json:"name,omitempty"`
 	Dimensions       int                         `json:"dimensions,omitempty"`
 	Capabilities     *modelCapabilities          `json:"capabilities,omitempty"`
@@ -163,18 +164,27 @@ func appendCatalogModels(data []modelEntry, seen map[string]struct{}, usableProv
 			continue
 		}
 		model := providerModel.Model
-		caps, source := capabilityPayload(providerModel.Provider, model.ID, model.Kind)
+		serviceKind := model.Kind
+		if kind != "" {
+			serviceKind = kind
+		}
+		metadataKind := kind
+		if metadataKind == core.ServiceLLM {
+			metadataKind = ""
+		}
+		caps, source := capabilityPayloadForModel(providerModel.Provider, model, metadataKind)
 		entry := modelEntry{
 			ID:           providerModel.Provider + "/" + model.ID,
 			Object:       "model",
 			OwnedBy:      providerModel.Provider,
 			Provider:     providerModel.Provider,
-			Kind:         string(model.Kind),
+			Kind:         string(serviceKind),
+			Kinds:        modelKindNames(model),
 			Name:         model.Name,
 			Dimensions:   model.Dimensions,
 			Capabilities: &caps, CapabilitySource: source,
 		}
-		applyModalityArrays(&entry, providerModel.Provider, model.ID, model.Kind)
+		applyModelModalityArrays(&entry, providerModel.Provider, model, metadataKind)
 		data = appendModelEntry(data, seen, entry)
 	}
 	return data
@@ -194,25 +204,49 @@ func applyModalityArrays(entry *modelEntry, provider, model string, kind core.Se
 func appendLiveModels(data []modelEntry, seen map[string]struct{}, liveModels map[string][]connectors.ModelSpec, kind core.ServiceKind) []modelEntry {
 	for provider, models := range liveModels {
 		for _, model := range models {
-			if kind != "" && model.Kind != kind {
+			if kind != "" && !model.SupportsKind(kind) {
 				continue
 			}
-			caps, source := capabilityPayload(provider, model.ID, model.Kind)
+			serviceKind := model.Kind
+			if kind != "" {
+				serviceKind = kind
+			}
+			metadataKind := kind
+			if metadataKind == core.ServiceLLM {
+				metadataKind = ""
+			}
+			caps, source := capabilityPayloadForModel(provider, model, metadataKind)
 			entry := modelEntry{
 				ID:           provider + "/" + model.ID,
 				Object:       "model",
 				OwnedBy:      provider,
 				Provider:     provider,
-				Kind:         string(model.Kind),
+				Kind:         string(serviceKind),
+				Kinds:        modelKindNames(model),
 				Name:         model.Name,
 				Dimensions:   model.Dimensions,
 				Capabilities: &caps, CapabilitySource: source,
 			}
-			applyModalityArrays(&entry, provider, model.ID, model.Kind)
+			applyModelModalityArrays(&entry, provider, model, metadataKind)
 			data = appendModelEntry(data, seen, entry)
 		}
 	}
 	return data
+}
+
+func applyModelModalityArrays(entry *modelEntry, provider string, model connectors.ModelSpec, requestedKind core.ServiceKind) {
+	p, _ := capabilityProfileForModel(provider, model, requestedKind)
+	entry.InputModalities = inputModalitiesFromProfile(p)
+	entry.OutputModalities = outputModalitiesFromProfile(p)
+}
+
+func modelKindNames(model connectors.ModelSpec) []string {
+	kinds := model.SupportedKinds()
+	out := make([]string, len(kinds))
+	for i, kind := range kinds {
+		out[i] = string(kind)
+	}
+	return out
 }
 
 // handleListModelsByKind serves GET /v1/models/{kind}: it lists every model of
@@ -388,6 +422,7 @@ func (s *Server) handleModelInfo(w http.ResponseWriter, r *http.Request) {
 		"model":      spec.ID,
 		"name":       spec.Name,
 		"kind":       string(spec.Kind),
+		"kinds":      modelKindNames(spec),
 		"dimensions": spec.Dimensions,
 	})
 }
