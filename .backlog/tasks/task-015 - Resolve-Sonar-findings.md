@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@opencode'
 created_date: '2026-09-06 10:01'
-updated_date: '2026-09-06 10:26'
+updated_date: '2026-09-06 10:31'
 labels: []
 dependencies: []
 modified_files:
@@ -65,6 +65,8 @@ Focused Anthropic transform unit: limit changes to backend/internal/transform/an
 Focused provider-model unit: refactor only `backend/internal/gateway/admin.go` `adminProviderModels` and relevant gateway tests. Extract response-model construction, catalog assembly, and credential/public live-discovery helpers while preserving static catalog then live then custom model ordering, custom/database markers, kind filtering/response kind, price/capability payload fields, credential iteration, and public fallback conditions. Run gofmt and `go test ./backend/internal/gateway -count=1`.
 
 6. Focused app startup unit: extract ordered database bootstrap, cache, persisted endpoint settings, and guardrail setup helpers from Build. Preserve every constructor dependency, migration/tenant/cooldown sequence, cleanup ownership, and returned App fields. Run gofmt and go test ./backend/internal/app -count=1.
+
+Focused export-passphrase security unit: replace the GET `/settings/database?passphrase=...` contract with POST JSON `{passphrase}`. Decode only this field server-side, preserve portable-export behavior and response payload/download flow, update frontend `api.exportDatabase`, and add focused gateway regression coverage proving body passphrase enables portable export while query passphrase is ignored. Run gofmt, focused gateway tests, and frontend typecheck.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
@@ -89,4 +91,6 @@ Research: Build has Code Health cyclomatic complexity 34. Scoped minimal refacto
 Focused `adminProviderModels` refactor complete. Extracted pricing/response construction, custom-model lookup, catalog assembly, authenticated discovery, and public fallback helpers. Preserved validation, static catalog ordering, custom/database markers, live append behavior, credential iteration, public fallback gate, and response `kind`/`kinds` payloads. Existing focused provider-model pricing and multimodal-kind tests cover preserved response fields; verified `gofmt`, `go test ./backend/internal/gateway -count=1`, `git diff --check`, IDE compile, and error lint. Code Health improved from 2.18 to 2.25; remaining warnings are unrelated legacy methods/module size. No commit created.
 
 Focused app startup unit complete. Extracted openDatabase, buildSemanticCache, configureEndpointSettings, and buildGuardrails lifecycle helpers from Build. Preserved database open → migrate → default tenant → cooldown cleanup ordering; cache/endpoint/guardrail constructor order; retention ownership; and every returned App field. Verified gofmt, go test ./backend/internal/app -count=1, git diff --check, and IDE error lint. Code Health: app.go 7.13 → 7.50; Build cyclomatic complexity 34 → 13. No commit created.
+
+Focused export-passphrase security unit complete. Replaced GET `/settings/database?passphrase=...` with POST `/settings/database/export` and JSON `{passphrase}`; retained POST `/settings/database` import. The frontend download flow now posts body data, so passphrases cannot appear in request URLs. Added gateway regression coverage proving only JSON-body passphrases are used and unknown fields fail. Verified `gofmt`, `go test ./backend/internal/gateway -count=1`, `npm run typecheck` in `frontend`, IDE error lint, IDE targeted build, and `git diff --check`. No commit created.
 <!-- SECTION:NOTES:END -->
