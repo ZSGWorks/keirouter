@@ -2316,56 +2316,73 @@ func (s *Server) adminUpdatePlan(w http.ResponseWriter, r *http.Request) {
 }
 
 func applyPlanUpdate(existing *store.Plan, body planUpdateRequest) string {
-	if body.Name != nil {
-		if *body.Name == "" {
-			return "name cannot be empty"
+	if message := validatePlanUpdate(body); message != "" {
+		return message
+	}
+	applyPlanUpdateFields(existing, body)
+	return ""
+}
+
+// validatePlanUpdate returns the first invalid-field error message, or "" when
+// every present field passes. Validation is separate from mutation so each pass
+// stays small.
+func validatePlanUpdate(body planUpdateRequest) string {
+	if body.Name != nil && *body.Name == "" {
+		return "name cannot be empty"
+	}
+	for _, invalid := range []struct {
+		value *int64
+		field string
+	}{
+		{body.LimitTokens, "limit_tokens"},
+		{body.RPMLimit, "rpm_limit"},
+		{body.TPMLimit, "tpm_limit"},
+		{body.ConcurrencyLimit, "concurrency_limit"},
+	} {
+		if invalid.value != nil && *invalid.value < 0 {
+			return fmt.Sprintf("%s must not be negative", invalid.field)
 		}
+	}
+	if body.LimitUSD != nil && *body.LimitUSD < 0 {
+		return "limit_usd must not be negative"
+	}
+	if body.Period != nil {
+		if _, ok := normalizeBudgetPeriod(*body.Period); !ok {
+			return "invalid period"
+		}
+	}
+	if body.AlertPct != nil && (*body.AlertPct < 1 || *body.AlertPct > 100) {
+		return "alert_pct must be between 1 and 100"
+	}
+	return ""
+}
+
+func applyPlanUpdateFields(existing *store.Plan, body planUpdateRequest) {
+	if body.Name != nil {
 		existing.Name = *body.Name
 	}
 	if body.Description != nil {
 		existing.Description = *body.Description
 	}
 	if body.LimitUSD != nil {
-		if *body.LimitUSD < 0 {
-			return "limit_usd must not be negative"
-		}
 		existing.LimitMicros = int64(*body.LimitUSD * 1_000_000)
 	}
 	if body.LimitTokens != nil {
-		if *body.LimitTokens < 0 {
-			return "limit_tokens must not be negative"
-		}
 		existing.LimitTokens = *body.LimitTokens
 	}
 	if body.RPMLimit != nil {
-		if *body.RPMLimit < 0 {
-			return "rpm_limit must not be negative"
-		}
 		existing.RPMLimit = *body.RPMLimit
 	}
 	if body.TPMLimit != nil {
-		if *body.TPMLimit < 0 {
-			return "tpm_limit must not be negative"
-		}
 		existing.TPMLimit = *body.TPMLimit
 	}
 	if body.ConcurrencyLimit != nil {
-		if *body.ConcurrencyLimit < 0 {
-			return "concurrency_limit must not be negative"
-		}
 		existing.ConcurrencyLimit = *body.ConcurrencyLimit
 	}
 	if body.Period != nil {
-		period, ok := normalizeBudgetPeriod(*body.Period)
-		if !ok {
-			return "invalid period"
-		}
-		existing.Period = period
+		existing.Period, _ = normalizeBudgetPeriod(*body.Period)
 	}
 	if body.AlertPct != nil {
-		if *body.AlertPct < 1 || *body.AlertPct > 100 {
-			return "alert_pct must be between 1 and 100"
-		}
 		existing.AlertPct = *body.AlertPct
 	}
 	if body.HardCutoff != nil {
@@ -2374,7 +2391,6 @@ func applyPlanUpdate(existing *store.Plan, body planUpdateRequest) string {
 	if body.AllowedModels != nil {
 		existing.AllowedModels = store.SetPlanAllowedModels(body.AllowedModels)
 	}
-	return ""
 }
 
 func (s *Server) adminDeletePlan(w http.ResponseWriter, r *http.Request) {
@@ -2947,7 +2963,26 @@ func (s *Server) adminExportDatabase(w http.ResponseWriter, r *http.Request) {
 	portable := passphrase != ""
 	export["portable"] = portable
 
-	// Export providers (accounts) — includes encrypted credentials.
+	accountsOut, ok := s.exportAccounts(ctx, w, passphrase, portable)
+	if !ok {
+		return
+	}
+	export["accounts"] = accountsOut
+	export["chains"] = exportChainEntries(s, ctx)
+	export["keys"] = exportKeys(s, ctx)
+	export["budgets"] = exportBudgets(s, ctx)
+	export["proxy_pools"] = exportProxyPools(s, ctx)
+	export["endpoint_settings"] = s.loadEndpointSettings(ctx)
+	export["access_settings"] = s.loadAccessSettings(ctx)
+	export["aliases"] = exportAliases(s, ctx)
+
+	writeJSON(w, http.StatusOK, export)
+}
+
+// exportAccounts serializes account credentials, re-keying secrets to the
+// passphrase-derived key when exporting a portable backup. It writes the error
+// response itself and reports whether the export may continue.
+func (s *Server) exportAccounts(ctx context.Context, w http.ResponseWriter, passphrase string, portable bool) ([]map[string]any, bool) {
 	accs, _ := s.accounts.ListByTenant(ctx, adminTenant)
 	accountsOut := make([]map[string]any, 0, len(accs))
 	for _, a := range accs {
@@ -2961,84 +2996,87 @@ func (s *Server) adminExportDatabase(w http.ResponseWriter, r *http.Request) {
 			if err := s.exportPortableSecrets(out, a, passphrase); err != nil {
 				s.consoleLog.Log("ERROR", fmt.Sprintf("Portable export failed for account %s", a.ID), err.Error())
 				writeError(w, http.StatusInternalServerError, "portable export failed: cannot re-key account "+a.ID+" (master key mismatch?)")
-				return
+				return nil, false
 			}
 		} else {
-			if a.SecretWrappedDEK != "" {
-				out["secret_wrapped_dek"] = a.SecretWrappedDEK
-				out["secret_ciphertext"] = a.SecretCiphertext
-			}
-			if a.TokenWrappedDEK != "" {
-				out["token_wrapped_dek"] = a.TokenWrappedDEK
-				out["token_ciphertext"] = a.TokenCiphertext
-			}
-			if a.RefreshWrappedDEK != "" {
-				out["refresh_wrapped_dek"] = a.RefreshWrappedDEK
-				out["refresh_ciphertext"] = a.RefreshCiphertext
-			}
+			appendWrappedAccountSecrets(out, a)
 		}
 		if a.TokenExpiresAt != nil {
 			out["token_expires_at"] = a.TokenExpiresAt
 		}
 		accountsOut = append(accountsOut, out)
 	}
-	export["accounts"] = accountsOut
+	return accountsOut, true
+}
 
-	// Export chains.
+// appendWrappedAccountSecrets copies locally-sealed credential ciphertexts into
+// the export entry when the backup is not portable.
+func appendWrappedAccountSecrets(out map[string]any, a store.Account) {
+	if a.SecretWrappedDEK != "" {
+		out["secret_wrapped_dek"] = a.SecretWrappedDEK
+		out["secret_ciphertext"] = a.SecretCiphertext
+	}
+	if a.TokenWrappedDEK != "" {
+		out["token_wrapped_dek"] = a.TokenWrappedDEK
+		out["token_ciphertext"] = a.TokenCiphertext
+	}
+	if a.RefreshWrappedDEK != "" {
+		out["refresh_wrapped_dek"] = a.RefreshWrappedDEK
+		out["refresh_ciphertext"] = a.RefreshCiphertext
+	}
+}
+
+// exportTableEntries is the shared shape for flat table exports: list, project
+// each row into a map, and return the slice for the export payload.
+func exportTableEntries[T any](rows []T, project func(T) map[string]any) []map[string]any {
+	out := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, project(row))
+	}
+	return out
+}
+
+func exportChainEntries(s *Server, ctx context.Context) []map[string]any {
 	chains, _ := s.chains.ListByTenant(ctx, adminTenant)
-	chainsOut := make([]map[string]any, 0, len(chains))
-	for _, c := range chains {
-		chainsOut = append(chainsOut, chainExportEntry(c))
-	}
-	export["chains"] = chainsOut
+	return exportTableEntries(chains, chainExportEntry)
+}
 
-	// Export API keys (names only, not hashes).
+func exportKeys(s *Server, ctx context.Context) []map[string]any {
 	keys, _ := s.identity.List(ctx, adminTenant)
-	keysOut := make([]map[string]any, 0, len(keys))
-	for _, k := range keys {
-		keysOut = append(keysOut, map[string]any{
-			"name": k.Name, "disabled": k.Disabled,
-		})
-	}
-	export["keys"] = keysOut
+	return exportTableEntries(keys, func(k store.APIKey) map[string]any {
+		return map[string]any{"name": k.Name, "disabled": k.Disabled}
+	})
+}
 
-	// Export budgets.
+func exportBudgets(s *Server, ctx context.Context) []map[string]any {
 	budgets, _ := s.budgets.ListByTenant(ctx, adminTenant)
-	budgetsOut := make([]map[string]any, 0, len(budgets))
-	for _, b := range budgets {
-		budgetsOut = append(budgetsOut, map[string]any{
+	return exportTableEntries(budgets, func(b store.Budget) map[string]any {
+		return map[string]any{
 			"scope_kind": b.ScopeKind, "scope_id": b.ScopeID,
 			"limit_micros": b.LimitMicros, "period": b.Period,
 			"alert_pct": b.AlertPct, "hard_cutoff": b.HardCutoff,
-		})
-	}
-	export["budgets"] = budgetsOut
+		}
+	})
+}
 
-	// Export proxy pools.
+func exportProxyPools(s *Server, ctx context.Context) []map[string]any {
 	pools, _ := s.pools.List(ctx)
-	poolsOut := make([]map[string]any, 0, len(pools))
-	for _, p := range pools {
-		poolsOut = append(poolsOut, map[string]any{
+	return exportTableEntries(pools, func(p store.ProxyPool) map[string]any {
+		return map[string]any{
 			"id": p.ID, "name": p.Name, "type": p.Type,
 			"proxy_url": p.ProxyURL, "no_proxy": p.NoProxy,
 			"strict": p.Strict, "is_active": p.IsActive,
-		})
-	}
-	export["proxy_pools"] = poolsOut
+		}
+	})
+}
 
-	// Export settings.
-	export["endpoint_settings"] = s.loadEndpointSettings(ctx)
-	export["access_settings"] = s.loadAccessSettings(ctx)
-
-	// Export aliases.
+func exportAliases(s *Server, ctx context.Context) map[string]string {
 	aliases, _ := s.aliases.List(ctx)
 	aliasMap := map[string]string{}
 	for _, a := range aliases {
 		aliasMap[a.Alias] = a.Target
 	}
-	export["aliases"] = aliasMap
-
-	writeJSON(w, http.StatusOK, export)
+	return aliasMap
 }
 
 func decodeDatabaseExportPassphrase(w http.ResponseWriter, r *http.Request) (string, bool) {
