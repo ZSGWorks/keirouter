@@ -254,6 +254,175 @@ func webProvider(id string) bool {
 	}
 }
 
+type providerModelPricing struct {
+	InputPerM            float64 `json:"input_per_m"`
+	OutputPerM           float64 `json:"output_per_m"`
+	CachedInputPerM      float64 `json:"cached_input_per_m"`
+	CacheWritePerM       float64 `json:"cache_write_per_m"`
+	ReasoningPerM        float64 `json:"reasoning_per_m"`
+	LongContextThreshold int     `json:"long_context_threshold"`
+	LongInputPerM        float64 `json:"long_input_per_m"`
+	LongOutputPerM       float64 `json:"long_output_per_m"`
+	LongCachedInputPerM  float64 `json:"long_cached_input_per_m"`
+	LongCacheWritePerM   float64 `json:"long_cache_write_per_m"`
+	Source               string  `json:"source"`
+	SourceURL            string  `json:"source_url"`
+	Estimated            bool    `json:"estimated"`
+	ExplicitFree         bool    `json:"explicit_free"`
+}
+
+type providerModelInfo struct {
+	ID               string                      `json:"id"`
+	Name             string                      `json:"name"`
+	Kind             string                      `json:"kind"`
+	Kinds            []string                    `json:"kinds,omitempty"`
+	Capabilities     modelCapabilities           `json:"capabilities"`
+	CapabilitySource capability.CapabilitySource `json:"capability_source"`
+	Custom           bool                        `json:"custom,omitempty"`
+	DBID             string                      `json:"db_id,omitempty"`
+	Discovered       bool                        `json:"discovered,omitempty"`
+	Pricing          *providerModelPricing       `json:"pricing,omitempty"`
+}
+
+type providerModelResponseOptions struct {
+	ProviderID string
+	KindFilter core.ServiceKind
+	Price      connectors.ModelPrice
+	PriceOK    bool
+	Discovered bool
+}
+
+func providerModelPrice(price connectors.ModelPrice, ok bool) *providerModelPricing {
+	if !ok {
+		return nil
+	}
+	if price.Source == "" {
+		price.Source = "provider_catalog"
+	}
+	return &providerModelPricing{
+		InputPerM: price.InputPerM, OutputPerM: price.OutputPerM,
+		CachedInputPerM: price.CachedInputPerM, CacheWritePerM: price.CacheWritePerM,
+		ReasoningPerM: price.ReasoningPerM, LongContextThreshold: price.LongContextThreshold,
+		LongInputPerM: price.LongInputPerM, LongOutputPerM: price.LongOutputPerM,
+		LongCachedInputPerM: price.LongCachedInputPerM, LongCacheWritePerM: price.LongCacheWritePerM,
+		Source: price.Source, SourceURL: price.SourceURL, Estimated: price.Estimated, ExplicitFree: price.ExplicitFree,
+	}
+}
+
+func providerModelKind(kind core.ServiceKind) core.ServiceKind {
+	if kind == "" {
+		return core.ServiceLLM
+	}
+	return kind
+}
+
+func providerModelResponseKind(model connectors.ModelSpec, kindFilter core.ServiceKind) core.ServiceKind {
+	if kindFilter != "" {
+		return kindFilter
+	}
+	return providerModelKind(model.Kind)
+}
+
+func providerModelInfoFor(model connectors.ModelSpec, options providerModelResponseOptions) providerModelInfo {
+	caps, source := capabilityPayloadForModel(options.ProviderID, model, options.KindFilter)
+	return providerModelInfo{
+		ID: model.ID, Name: model.Name, Kind: string(providerModelResponseKind(model, options.KindFilter)),
+		Kinds: modelKindNames(model), Capabilities: caps, CapabilitySource: source,
+		Discovered: options.Discovered, Pricing: providerModelPrice(options.Price, options.PriceOK),
+	}
+}
+
+func (s *Server) providerCustomModels(ctx context.Context, providerID string) map[string]store.CustomModel {
+	customByID := map[string]store.CustomModel{}
+	if cms, err := s.db.CustomProviders().ListModelsByProvider(ctx, providerID); err == nil {
+		for _, cm := range cms {
+			customByID[cm.ModelID] = cm
+		}
+	}
+	return customByID
+}
+
+func (s *Server) catalogProviderModels(ctx context.Context, providerID string, kindFilter core.ServiceKind) ([]providerModelInfo, map[string]bool) {
+	customByID := s.providerCustomModels(ctx, providerID)
+	static, staticPrices := connectors.ModelsAndDisplayPricesForProvider(providerID)
+	seen := map[string]bool{}
+	out := make([]providerModelInfo, 0, len(static))
+	for _, m := range static {
+		if kindFilter != "" && !m.SupportsKind(kindFilter) {
+			continue
+		}
+		price, ok := staticPrices[m.ID]
+		mi := providerModelInfoFor(m, providerModelResponseOptions{
+			ProviderID: providerID, KindFilter: kindFilter, Price: price, PriceOK: ok,
+		})
+		if cm, ok := customByID[m.ID]; ok {
+			mi.Custom = true
+			mi.DBID = cm.ID
+		}
+		out = append(out, mi)
+		seen[m.ID] = true
+	}
+	return out, seen
+}
+
+func (s *Server) appendLiveProviderModels(ctx context.Context, providerID string, kindFilter core.ServiceKind, source connectors.LiveModelSource, creds core.Credentials, out *[]providerModelInfo, seen map[string]bool) bool {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	models, err := source.ListModels(ctx, creds)
+	if err != nil || len(models) == 0 {
+		return false
+	}
+	added := false
+	for _, model := range models {
+		if kindFilter != "" && !model.SupportsKind(kindFilter) {
+			continue
+		}
+		if seen[model.ID] {
+			continue
+		}
+		price, ok := connectors.ModelDisplayPriceByProviderModel(providerID, model.ID)
+		*out = append(*out, providerModelInfoFor(model, providerModelResponseOptions{
+			ProviderID: providerID, KindFilter: kindFilter, Price: price, PriceOK: ok, Discovered: true,
+		}))
+		seen[model.ID] = true
+		added = true
+	}
+	return added
+}
+
+func (s *Server) discoverProviderModels(ctx context.Context, providerID string, kindFilter core.ServiceKind, out *[]providerModelInfo, seen map[string]bool) {
+	source := connectors.GetLiveModelSource(providerID)
+	if source == nil {
+		return
+	}
+	if !s.discoverProviderModelsWithCredentials(ctx, providerID, kindFilter, source, out, seen) && len(*out) == 0 {
+		s.appendLiveProviderModels(ctx, providerID, kindFilter, source, core.Credentials{}, out, seen)
+	}
+}
+
+func (s *Server) discoverProviderModelsWithCredentials(ctx context.Context, providerID string, kindFilter core.ServiceKind, source connectors.LiveModelSource, out *[]providerModelInfo, seen map[string]bool) bool {
+	if s.accounts == nil || s.vault == nil {
+		return false
+	}
+	accounts, err := s.accounts.ListByProvider(ctx, adminTenant, providerID)
+	if err != nil {
+		return false
+	}
+	for _, account := range accounts {
+		if account.Disabled {
+			continue
+		}
+		creds, err := s.vault.Open(account)
+		if err != nil {
+			continue
+		}
+		if s.appendLiveProviderModels(ctx, providerID, kindFilter, source, creds, out, seen) {
+			return true
+		}
+	}
+	return false
+}
+
 // adminProviderModels returns the model list for a specific provider. It
 // includes hardcoded non-LLM models plus dynamically discovered LLM models
 // (models.dev snapshot and custom models) and, when a connected account
@@ -270,152 +439,8 @@ func (s *Server) adminProviderModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	type modelPricing struct {
-		InputPerM            float64 `json:"input_per_m"`
-		OutputPerM           float64 `json:"output_per_m"`
-		CachedInputPerM      float64 `json:"cached_input_per_m"`
-		CacheWritePerM       float64 `json:"cache_write_per_m"`
-		ReasoningPerM        float64 `json:"reasoning_per_m"`
-		LongContextThreshold int     `json:"long_context_threshold"`
-		LongInputPerM        float64 `json:"long_input_per_m"`
-		LongOutputPerM       float64 `json:"long_output_per_m"`
-		LongCachedInputPerM  float64 `json:"long_cached_input_per_m"`
-		LongCacheWritePerM   float64 `json:"long_cache_write_per_m"`
-		Source               string  `json:"source"`
-		SourceURL            string  `json:"source_url"`
-		Estimated            bool    `json:"estimated"`
-		ExplicitFree         bool    `json:"explicit_free"`
-	}
-	modelPrice := func(price connectors.ModelPrice, ok bool) *modelPricing {
-		if !ok {
-			return nil
-		}
-		if price.Source == "" {
-			price.Source = "provider_catalog"
-		}
-		return &modelPricing{
-			InputPerM: price.InputPerM, OutputPerM: price.OutputPerM,
-			CachedInputPerM: price.CachedInputPerM, CacheWritePerM: price.CacheWritePerM,
-			ReasoningPerM: price.ReasoningPerM, LongContextThreshold: price.LongContextThreshold,
-			LongInputPerM: price.LongInputPerM, LongOutputPerM: price.LongOutputPerM,
-			LongCachedInputPerM: price.LongCachedInputPerM, LongCacheWritePerM: price.LongCacheWritePerM,
-			Source: price.Source, SourceURL: price.SourceURL, Estimated: price.Estimated, ExplicitFree: price.ExplicitFree,
-		}
-	}
-	type modelInfo struct {
-		ID               string                      `json:"id"`
-		Name             string                      `json:"name"`
-		Kind             string                      `json:"kind"`
-		Kinds            []string                    `json:"kinds,omitempty"`
-		Capabilities     modelCapabilities           `json:"capabilities"`
-		CapabilitySource capability.CapabilitySource `json:"capability_source"`
-		Custom           bool                        `json:"custom,omitempty"`
-		DBID             string                      `json:"db_id,omitempty"`
-		Discovered       bool                        `json:"discovered,omitempty"`
-		Pricing          *modelPricing               `json:"pricing,omitempty"`
-	}
-	modelKind := func(kind core.ServiceKind) core.ServiceKind {
-		if kind == "" {
-			return core.ServiceLLM
-		}
-		return kind
-	}
-
-	// User-registered custom models for this provider (db-backed). These are
-	// tracked separately so the dashboard can render an editable section.
-	customByID := map[string]store.CustomModel{}
-	if cms, cerr := s.db.CustomProviders().ListModelsByProvider(r.Context(), providerID); cerr == nil {
-		for _, cm := range cms {
-			customByID[cm.ModelID] = cm
-		}
-	}
-
-	// Read fetched models and prices from one snapshot so a refresh cannot pair
-	// a stale model list with a newer price list.
-	static, staticPrices := connectors.ModelsAndDisplayPricesForProvider(providerID)
-	seen := map[string]bool{}
-	out := make([]modelInfo, 0, len(static))
-	for _, m := range static {
-		kind := modelKind(m.Kind)
-		if kindFilter != "" && !m.SupportsKind(kindFilter) {
-			continue
-		}
-		responseKind := kind
-		if kindFilter != "" {
-			responseKind = kindFilter
-		}
-		caps, source := capabilityPayloadForModel(providerID, m, kindFilter)
-		price, ok := staticPrices[m.ID]
-		mi := modelInfo{ID: m.ID, Name: m.Name, Kind: string(responseKind), Kinds: modelKindNames(m), Capabilities: caps, CapabilitySource: source, Pricing: modelPrice(price, ok)}
-		if cm, ok := customByID[m.ID]; ok {
-			mi.Custom = true
-			mi.DBID = cm.ID
-		}
-		out = append(out, mi)
-		seen[m.ID] = true
-	}
-
-	// Live model discovery (best-effort). A connected account's credentials are
-	// preferred since most upstreams gate /models behind auth. When no account
-	// yields models and nothing else is in the catalog, fall back to an
-	// unauthenticated fetch so providers whose /models endpoint is public (e.g.
-	// sumopod) still populate before an account is connected.
-	if src := connectors.GetLiveModelSource(providerID); src != nil {
-		appendLive := func(creds core.Credentials) bool {
-			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-			models, merr := src.ListModels(ctx, creds)
-			cancel()
-			if merr != nil || len(models) == 0 {
-				return false
-			}
-			added := false
-			for _, lm := range models {
-				kind := modelKind(lm.Kind)
-				if kindFilter != "" && !lm.SupportsKind(kindFilter) {
-					continue
-				}
-				responseKind := kind
-				if kindFilter != "" {
-					responseKind = kindFilter
-				}
-				if seen[lm.ID] {
-					continue
-				}
-				caps, source := capabilityPayloadForModel(providerID, lm, kindFilter)
-				price, ok := connectors.ModelDisplayPriceByProviderModel(providerID, lm.ID)
-				out = append(out, modelInfo{ID: lm.ID, Name: lm.Name, Kind: string(responseKind), Kinds: modelKindNames(lm), Capabilities: caps, CapabilitySource: source, Discovered: true, Pricing: modelPrice(price, ok)})
-				seen[lm.ID] = true
-				added = true
-			}
-			return added
-		}
-
-		discovered := false
-		if s.accounts != nil && s.vault != nil {
-			if accs, err := s.accounts.ListByProvider(r.Context(), adminTenant, providerID); err == nil {
-				for _, acc := range accs {
-					if acc.Disabled {
-						continue
-					}
-					creds, oerr := s.vault.Open(acc)
-					if oerr != nil {
-						continue
-					}
-					if appendLive(creds) {
-						discovered = true
-						break // only use first valid account
-					}
-				}
-			}
-		}
-
-		// Public fallback: only when we have nothing else to show, to avoid an
-		// extra upstream round-trip for providers that already have models.
-		if !discovered && len(out) == 0 {
-			appendLive(core.Credentials{})
-		}
-	}
-
+	out, seen := s.catalogProviderModels(r.Context(), providerID, kindFilter)
+	s.discoverProviderModels(r.Context(), providerID, kindFilter, &out, seen)
 	writeJSON(w, http.StatusOK, map[string]any{"models": out})
 }
 
