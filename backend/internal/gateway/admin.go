@@ -1165,7 +1165,7 @@ func (s *Server) adminValidateKey(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if verr := s.validateAccountCredentials(r.Context(), acc); verr != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"status": "error", "message": verr.Error()})
+		writeJSON(w, http.StatusOK, map[string]any{"status": "error", "message": sanitizeProviderError(s.log, verr, "credential validation failed")})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
@@ -1241,7 +1241,7 @@ func (s *Server) adminTestAccount(w http.ResponseWriter, r *http.Request) {
 			"provider": acc.Provider,
 			"label":    acc.Label,
 			"status":   "error",
-			"message":  verr.Error(),
+			"message":  sanitizeProviderError(s.log, verr, "account validation failed"),
 		})
 		return
 	}
@@ -1304,7 +1304,7 @@ func (s *Server) adminAccountQuota(w http.ResponseWriter, r *http.Request) {
 
 	quota, qerr := qs.FetchQuota(ctx, creds)
 	if qerr != nil {
-		writeError(w, http.StatusBadGateway, qerr.Error())
+		writeError(w, http.StatusBadGateway, sanitizeProviderError(s.log, qerr, "quota request failed"))
 		return
 	}
 
@@ -1323,7 +1323,7 @@ func (s *Server) adminAccountQuota(w http.ResponseWriter, r *http.Request) {
 		"provider":  acc.Provider,
 		"supported": true,
 		"plan_name": quota.PlanName,
-		"message":   quota.Message,
+		"message":   "Quota information retrieved from upstream provider.",
 		"quotas":    quotas,
 	})
 }
@@ -1361,7 +1361,7 @@ func (s *Server) adminCodexResetCredits(w http.ResponseWriter, r *http.Request) 
 
 	result, ferr := fetchCodexResetCredits(ctx, creds.AccessToken, creds.Extra)
 	if ferr != nil {
-		writeError(w, http.StatusBadGateway, ferr.Error())
+		writeError(w, http.StatusBadGateway, sanitizeProviderError(s.log, ferr, "Codex reset credits request failed"))
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -1413,7 +1413,7 @@ func (s *Server) adminCodexConsumeCredit(w http.ResponseWriter, r *http.Request)
 
 	result, cerr := consumeCodexResetCredit(ctx, creds.AccessToken, creds.Extra, body.RedeemRequestID, body.CreditID)
 	if cerr != nil {
-		writeError(w, http.StatusBadGateway, cerr.Error())
+		writeError(w, http.StatusBadGateway, sanitizeProviderError(s.log, cerr, "Codex reset credit request failed"))
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -1536,7 +1536,7 @@ func (s *Server) adminCodexUsageDetails(w http.ResponseWriter, r *http.Request) 
 	} else {
 		result.Error = "Failed to fetch usage data"
 		if usageErr != nil {
-			result.Error = usageErr.Error()
+			result.Error = sanitizeProviderError(s.log, usageErr, "Codex usage request failed")
 		}
 	}
 
@@ -1550,9 +1550,6 @@ func (s *Server) adminCodexUsageDetails(w http.ResponseWriter, r *http.Request) 
 			result.Error += "; Failed to fetch reset credits"
 		} else {
 			result.Error = "Failed to fetch reset credits"
-		}
-		if resetErr != nil {
-			result.Error += ": " + resetErr.Error()
 		}
 	}
 

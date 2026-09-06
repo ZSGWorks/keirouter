@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@opencode'
 created_date: '2026-09-06 10:01'
-updated_date: '2026-09-06 10:31'
+updated_date: '2026-09-06 10:39'
 labels: []
 dependencies: []
 modified_files:
@@ -67,6 +67,8 @@ Focused provider-model unit: refactor only `backend/internal/gateway/admin.go` `
 6. Focused app startup unit: extract ordered database bootstrap, cache, persisted endpoint settings, and guardrail setup helpers from Build. Preserve every constructor dependency, migration/tenant/cooldown sequence, cleanup ownership, and returned App fields. Run gofmt and go test ./backend/internal/app -count=1.
 
 Focused export-passphrase security unit: replace the GET `/settings/database?passphrase=...` contract with POST JSON `{passphrase}`. Decode only this field server-side, preserve portable-export behavior and response payload/download flow, update frontend `api.exportDatabase`, and add focused gateway regression coverage proving body passphrase enables portable export while query passphrase is ignored. Run gofmt, focused gateway tests, and frontend typecheck.
+
+Continuation approved 2026-09-06: close remaining security redaction, export route coverage, connector/Anthropic parser complexity, targeted admin/dashboard Code Health findings, and mechanical diagnostics in separate verified commits. Official Sonar execution remains a final prerequisite once scanner/configuration is available.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
