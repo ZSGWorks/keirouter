@@ -48,7 +48,21 @@ func TestSpecsByKind(t *testing.T) {
 	}
 }
 
+func TestJinaReaderFetchModel(t *testing.T) {
+	model, ok := FindModel("jina-reader", "jina-reader")
+	if !ok {
+		t.Fatal("jina-reader fetch model is missing")
+	}
+	if model.Kind != core.ServiceFetch {
+		t.Fatalf("jina-reader kind = %q, want %q", model.Kind, core.ServiceFetch)
+	}
+}
+
 func TestModelsByKind(t *testing.T) {
+	// LLM models come from dynamic discovery; fixture the snapshot here.
+	SeedLLMCatalog(t, map[string][]ModelSpec{
+		"openai": {llmSpec("gpt-4o", "GPT-4o")},
+	})
 	// Every LLM model should belong to a provider that advertises the LLM kind.
 	llms := ModelsByKind(core.ServiceLLM)
 	if len(llms) == 0 {
@@ -112,6 +126,16 @@ func TestMediaCatalogCompleteness(t *testing.T) {
 }
 
 func TestFindModel(t *testing.T) {
+	// LLM models resolve from dynamic discovery (models.dev snapshot fixture
+	// here), not a hardcoded list.
+	SeedLLMCatalog(t, map[string][]ModelSpec{
+		"openai":      {llmSpec("gpt-4o", "GPT-4o")},
+		"commandcode": {llmSpec("deepseek/deepseek-v4-pro", "DeepSeek V4 Pro")},
+		"deepseek": {
+			llmSpec("deepseek-v4-pro-max", "DeepSeek V4 Pro Max"),
+			llmSpec("deepseek-v4-pro-none", "DeepSeek V4 Pro No Thinking"),
+		},
+	})
 	if _, ok := FindModel("openai", "gpt-4o"); !ok {
 		t.Error("expected to find openai/gpt-4o")
 	}
@@ -260,27 +284,47 @@ func TestCommandCodeCatalogVisible(t *testing.T) {
 	if spec.APIKeyURL != "https://commandcode.ai/studio" {
 		t.Fatalf("unexpected commandcode APIKeyURL %q", spec.APIKeyURL)
 	}
-	if len(ModelsForProvider("commandcode")) == 0 {
-		t.Fatal("commandcode should have static models")
+	// LLM models resolve from dynamic discovery; fixture the snapshot here.
+	SeedLLMCatalog(t, map[string][]ModelSpec{
+		"commandcode": {llmSpec("deepseek/deepseek-v4-pro", "DeepSeek V4 Pro")},
+	})
+	if len(LLMModelsForProvider("commandcode")) == 0 {
+		t.Fatal("commandcode should resolve seeded LLM models")
 	}
 }
 
 // The OpenCode Zen gateway validates model existence before key validity, so
-// the validation probe must send a real catalog model. Without a static
-// catalog entry the probe falls back to a synthetic id and a valid key is
-// rejected with a misread auth failure.
-func TestOpenCodeCatalogHasProbeModel(t *testing.T) {
+// the validation probe must resolve a real model from dynamic discovery
+// (models.dev snapshot or custom models). With no discovered model the probe
+// resolves empty and Validate skips the chat probe instead of rejecting a
+// valid key.
+func TestOpenCodeProbeModelResolvesDynamically(t *testing.T) {
 	if _, ok := SpecByID("opencode"); !ok {
 		t.Fatal("catalog missing opencode")
 	}
-	if got := firstCatalogModel("opencode"); got == "" {
-		t.Fatal("opencode should have static models for the validation probe")
+	if got := ProbeModelFor("opencode"); got != "" {
+		t.Fatalf("ProbeModelFor(opencode) = %q without discovery data, want empty", got)
+	}
+	SeedLLMCatalog(t, map[string][]ModelSpec{
+		"opencode": {llmSpec("glm-5.3-flash", "GLM 5.3 Flash")},
+	})
+	if got := ProbeModelFor("opencode"); got != "glm-5.3-flash" {
+		t.Fatalf("ProbeModelFor(opencode) = %q, want glm-5.3-flash", got)
 	}
 }
 
 func TestCatalogHasNewProviders(t *testing.T) {
-	// Providers added for coverage parity. Each must exist, expose static
-	// models, and (since they use drivable dialects) get a live connector.
+	// Providers added for coverage parity. Each must exist and get a live
+	// connector; LLM models resolve from dynamic discovery (fixtured here),
+	// while venice also keeps hardcoded non-LLM entries.
+	SeedLLMCatalog(t, map[string][]ModelSpec{
+		"venice":           {llmSpec("venice-uncensored-1-2", "Venice Uncensored 1.2")},
+		"featherless":      {llmSpec("deepseek-ai/DeepSeek-V4-Pro", "DeepSeek V4 Pro")},
+		"perplexity-agent": {llmSpec("perplexity/sonar", "Perplexity Sonar")},
+		"mmf":              {llmSpec("mimo-auto", "MiMo Auto")},
+		"clinepass":        {llmSpec("cline-pass/glm-5.2", "GLM-5.2 (ClinePass)")},
+		"grok-cli":         {llmSpec("grok-4.5", "Grok 4.5")},
+	})
 	cases := []struct {
 		id       string
 		alias    string
@@ -307,7 +351,7 @@ func TestCatalogHasNewProviders(t *testing.T) {
 			t.Errorf("alias %q should resolve to %q, got %q ok=%v", c.alias, c.id, s.ID, ok)
 		}
 		if len(ModelsForProvider(c.id)) == 0 {
-			t.Errorf("%s should have static models", c.id)
+			t.Errorf("%s should resolve models from dynamic discovery", c.id)
 		}
 		if !r.Has(c.id) {
 			t.Errorf("registry should have connector for %q", c.id)

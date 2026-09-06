@@ -2,6 +2,7 @@ package connectors
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -177,7 +178,36 @@ func TestOpenAICompatible_ValidateAcceptsReachedNonAuthProbeError(t *testing.T) 
 
 	c := NewOpenAICompatible("sumopod", srv.URL)
 	require.NoError(t, c.Validate(context.Background(), core.Credentials{APIKey: "sk-test"}))
-	require.True(t, chatProbed, "validation should fall back to a chat probe")
+	require.False(t, chatProbed, "validation must not invent a model for a chat probe")
+}
+
+func TestOpenAICompatible_ValidateUsesDiscoveredProbeModel(t *testing.T) {
+	SeedLLMCatalog(t, map[string][]ModelSpec{
+		"sumopod": {llmSpec("real-model", "Real Model")},
+	})
+	var gotModel string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/models":
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"error":"models endpoint not supported"}`)
+		case "/chat/completions":
+			var body struct {
+				Model string `json:"model"`
+			}
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			gotModel = body.Model
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"error":"probe model not found"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	c := NewOpenAICompatible("sumopod", srv.URL)
+	require.NoError(t, c.Validate(context.Background(), core.Credentials{APIKey: "sk-test"}))
+	require.Equal(t, "real-model", gotModel)
 }
 
 func TestOpenAICompatible_ValidateRejectsAuthError(t *testing.T) {
@@ -262,6 +292,24 @@ func TestAnthropic_Chat(t *testing.T) {
 	require.Equal(t, "hello back", resp.Message.TextContent())
 	require.Equal(t, core.FinishStop, resp.FinishReason)
 	require.Equal(t, 7, resp.Usage.TotalTokens)
+}
+
+func TestAnthropic_MessagesAuthProbeSkipsEmptyDiscovery(t *testing.T) {
+	messageProbed := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/messages" {
+			messageProbed = true
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"data":[]}`)
+	}))
+	defer srv.Close()
+
+	c := NewAnthropic("anthropic", srv.URL)
+	require.NoError(t, c.messagesAuthProbe(context.Background(), core.Credentials{APIKey: "sk-ant"}))
+	require.False(t, messageProbed, "validation must not invent a model for a messages probe")
 }
 
 // TestAnthropic_Chat_HTMLResponse covers a custom anthropic-compatible base URL
@@ -425,6 +473,7 @@ func publicModelsServer(t *testing.T, goodKey string) (*httptest.Server, *bool) 
 
 func TestOpenAICompatible_ValidateConfirmsKeyWhenModelsIsPublic(t *testing.T) {
 	t.Run("bad key is rejected via chat probe", func(t *testing.T) {
+		SeedLLMCatalog(t, nil)
 		srv, chatProbed := publicModelsServer(t, "good-key")
 		c := NewOpenAICompatible("sumopod", srv.URL)
 		err := c.Validate(context.Background(), core.Credentials{APIKey: "bad-key"})
@@ -433,6 +482,7 @@ func TestOpenAICompatible_ValidateConfirmsKeyWhenModelsIsPublic(t *testing.T) {
 	})
 
 	t.Run("good key passes", func(t *testing.T) {
+		SeedLLMCatalog(t, nil)
 		srv, chatProbed := publicModelsServer(t, "good-key")
 		c := NewOpenAICompatible("sumopod", srv.URL)
 		require.NoError(t, c.Validate(context.Background(), core.Credentials{APIKey: "good-key"}))

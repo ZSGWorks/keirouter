@@ -529,7 +529,16 @@ func TestAntigravity_StreamRetriesTransientContextCancellation(t *testing.T) {
 	require.Equal(t, 2, calls)
 }
 
-func TestAntigravity_ModelCatalogIncludesGemini37AndExcludesUnverifiedGemini36(t *testing.T) {
+func TestAntigravity_ModelCatalogResolvesDynamically(t *testing.T) {
+	// LLM discovery is dynamic: whatever the models.dev snapshot (fixtured
+	// here) reports is listed with no curated gate.
+	SeedLLMCatalog(t, map[string][]ModelSpec{
+		"antigravity": {
+			llmSpec("gemini-3.7-flash-low", "Gemini 3.7 Flash (Low)"),
+			llmSpec("gemini-3.7-flash-medium", "Gemini 3.7 Flash (Medium)"),
+			llmSpec("gemini-3.7-flash-high", "Gemini 3.7 Flash (High)"),
+		},
+	})
 	models := ModelsForProvider("antigravity")
 	ids := make(map[string]struct{}, len(models))
 	for _, model := range models {
@@ -538,17 +547,6 @@ func TestAntigravity_ModelCatalogIncludesGemini37AndExcludesUnverifiedGemini36(t
 	for _, model := range []string{"gemini-3.7-flash-low", "gemini-3.7-flash-medium", "gemini-3.7-flash-high"} {
 		_, found := ids[model]
 		require.True(t, found, "Antigravity model %q is not listed", model)
-	}
-
-	for _, model := range []string{"gemini-3.6-flash", "gemini-3.6-flash-low", "gemini-3.6-flash-medium", "gemini-3.6-flash-high"} {
-		_, found := ids[model]
-		require.False(t, found, "unverified Antigravity model %q is still listed", model)
-	}
-	_, legacyGemini3Pro := ids["gemini-3-pro-preview"]
-	require.False(t, legacyGemini3Pro, "deprecated Antigravity model gemini-3-pro-preview is still listed")
-	for _, model := range []string{"gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"} {
-		_, found := ids[model]
-		require.False(t, found, "deprecated Antigravity model %q is still listed", model)
 	}
 }
 
@@ -1067,7 +1065,31 @@ func TestCatalog_AliasResolution(t *testing.T) {
 	}
 }
 
+// seedThreeProviderLLMs fixtures dynamic LLM discovery for the kiro /
+// xiaomi-mimo / xiaomi-tokenplan catalog tests.
+func seedThreeProviderLLMs(t *testing.T) {
+	t.Helper()
+	SeedLLMCatalog(t, map[string][]ModelSpec{
+		"kiro": {
+			llmSpec("auto", "Kiro Auto"), llmSpec("auto-thinking", "Kiro Auto (Thinking)"),
+			llmSpec("claude-sonnet-4.5", "Kiro Claude Sonnet 4.5"),
+			llmSpec("claude-sonnet-4.5-thinking", "Kiro Claude Sonnet 4.5 (Thinking)"),
+			llmSpec("claude-sonnet-4.5-agentic", "Kiro Claude Sonnet 4.5 (Agentic)"),
+			llmSpec("claude-sonnet-4.5-thinking-agentic", "Kiro Claude Sonnet 4.5 (Thinking + Agentic)"),
+		},
+		"xiaomi-mimo": {
+			llmSpec("mimo-v2.5-pro", "MiMo V2.5 Pro"), llmSpec("mimo-v2.5", "MiMo V2.5"),
+			llmSpec("mimo-v2-omni", "MiMo V2 Omni"), llmSpec("mimo-v2-flash", "MiMo V2 Flash"),
+		},
+		"xiaomi-tokenplan": {
+			llmSpec("mimo-v2.5-pro", "MiMo V2.5 Pro"), llmSpec("mimo-v2.5", "MiMo V2.5"),
+			llmSpec("mimo-v2-pro", "MiMo V2 Pro"), llmSpec("mimo-v2-omni", "MiMo V2 Omni"),
+		},
+	})
+}
+
 func TestModelsForProvider_ThreeProviders(t *testing.T) {
+	seedThreeProviderLLMs(t)
 	cases := map[string][]string{
 		"kiro":             {"auto", "auto-thinking", "claude-sonnet-4.5", "claude-sonnet-4.5-thinking", "claude-sonnet-4.5-agentic", "claude-sonnet-4.5-thinking-agentic"},
 		"xiaomi-mimo":      {"mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-omni", "mimo-v2-flash"},
@@ -1088,6 +1110,7 @@ func TestModelsForProvider_ThreeProviders(t *testing.T) {
 }
 
 func TestFindModel_ThreeProviders(t *testing.T) {
+	seedThreeProviderLLMs(t)
 	cases := []struct {
 		provider string
 		model    string

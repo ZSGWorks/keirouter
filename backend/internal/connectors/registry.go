@@ -88,21 +88,10 @@ func DefaultRegistry() *Registry {
 			conns = append(conns, NewAnthropic(p.ID, p.BaseURL))
 		case p.Dialect == core.DialectOpenAI:
 			conns = append(conns, NewOpenAICompatible(p.ID, p.BaseURL))
-			// Register live model discovery: fetches GET /models from the
-			// upstream so providers without a static catalog (e.g. opencode,
-			// sumopod) auto-discover their models at runtime.
-			if p.ID == "cloudflare-ai" {
-				// Cloudflare uses a non-standard response envelope, so it gets
-				// a dedicated model source that parses both formats.
-				RegisterLiveModelSource(p.ID, &CloudflareModelSource{defaultBase: p.BaseURL})
-			} else {
-				RegisterLiveModelSource(p.ID, &OpenAICompatibleModelSource{provider: p.ID, defaultBase: p.BaseURL})
-			}
 		case p.Dialect == core.DialectGemini:
 			conns = append(conns, NewGemini(p.ID, p.BaseURL))
 		case p.Dialect == core.DialectOllama:
 			conns = append(conns, NewOllama(p.ID, p.BaseURL))
-			RegisterLiveModelSource(p.ID, NewOllamaModelSource(p.BaseURL))
 		case p.Dialect == core.DialectVertex:
 			conns = append(conns, NewVertex(p.ID, p.BaseURL))
 		case p.Dialect == core.DialectOpenAIResponses:
@@ -126,8 +115,48 @@ func DefaultRegistry() *Registry {
 		default:
 			// Dialect not yet drivable; skip connector creation.
 		}
+		registerLiveModelSource(p)
 	}
 	return NewRegistry(conns...)
+}
+
+// registerLiveModelSource wires live model discovery for providers whose
+// upstream exposes a model list endpoint, so their LLM models auto-discover
+// at runtime instead of relying on a hardcoded list. Qoder registers its own
+// source inline above because discovery reuses the built connector.
+func registerLiveModelSource(p ProviderSpec) {
+	switch {
+	case p.ID == "cloudflare-ai":
+		// Cloudflare uses a non-standard response envelope, so it gets a
+		// dedicated model source that parses both formats.
+		RegisterLiveModelSource(p.ID, &CloudflareModelSource{defaultBase: p.BaseURL})
+	case p.Dialect == core.DialectOpenAI:
+		// Covers OpenAI-compatible providers without a static catalog (e.g.
+		// opencode, sumopod).
+		RegisterLiveModelSource(p.ID, &OpenAICompatibleModelSource{provider: p.ID, defaultBase: p.BaseURL})
+	case p.Dialect == core.DialectAnthropic:
+		RegisterLiveModelSource(p.ID, &AnthropicCompatibleModelSource{provider: p.ID, defaultBase: p.BaseURL})
+	case p.Dialect == core.DialectOllama:
+		RegisterLiveModelSource(p.ID, NewOllamaModelSource(p.BaseURL))
+	}
+}
+
+// ListProvidersWithoutLiveSource reports built-in catalog providers that have
+// no live model discovery source registered. It is a coverage checklist for
+// dynamic LLM discovery: providers listed here rely on the models.dev snapshot
+// (or nothing, when models.dev does not cover them either). Call after
+// DefaultRegistry so registrations are in place.
+func ListProvidersWithoutLiveSource() []string {
+	var out []string
+	for _, p := range Catalog() {
+		if p.Custom {
+			continue
+		}
+		if GetLiveModelSource(p.ID) == nil {
+			out = append(out, p.ID)
+		}
+	}
+	return out
 }
 
 // DrivableDialect reports whether KeiRouter has a connector that can drive the

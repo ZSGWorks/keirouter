@@ -848,12 +848,13 @@ func (r pricingCatalogRefresher) Refresh(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("refresh models.dev catalog: %w", err)
 	}
-	connected, err := connectedFetchedProviders(ctx, r.accounts, res.Models, res.Prices)
+	prices, err := filterFetchedPrices(ctx, r.accounts, res.Prices)
 	if err != nil {
-		return fmt.Errorf("filter models.dev catalog: %w", err)
+		return fmt.Errorf("filter models.dev prices: %w", err)
 	}
-	prices := filterFetchedPricesByProvider(res.Prices, connected)
-	models := filterFetchedModelsByProvider(res.Models, connected)
+	// Models are public discovery metadata. Gateway listing still filters them
+	// to usable accounts, so keep the complete snapshot for newly added accounts.
+	models := res.Models
 	if err := r.replacePrices(ctx, prices); err != nil {
 		return err
 	}
@@ -897,24 +898,6 @@ func connectedProviderIDs(ctx context.Context, accounts providerAccountLister, c
 	return ids, nil
 }
 
-func filterFetchedModels(ctx context.Context, accounts providerAccountLister, fetched map[string][]connectors.ModelSpec) (map[string][]connectors.ModelSpec, error) {
-	connected, err := connectedProviderIDs(ctx, accounts, mapKeys(fetched))
-	if err != nil {
-		return nil, err
-	}
-	return filterFetchedModelsByProvider(fetched, connected), nil
-}
-
-func filterFetchedModelsByProvider(fetched map[string][]connectors.ModelSpec, connected map[string]struct{}) map[string][]connectors.ModelSpec {
-	filtered := make(map[string][]connectors.ModelSpec, len(connected))
-	for provider, models := range fetched {
-		if _, ok := connected[provider]; ok {
-			filtered[provider] = models
-		}
-	}
-	return filtered
-}
-
 func filterFetchedPrices(ctx context.Context, accounts providerAccountLister, fetched map[string][]connectors.ModelPrice) (map[string][]connectors.ModelPrice, error) {
 	connected, err := connectedProviderIDs(ctx, accounts, mapKeys(fetched))
 	if err != nil {
@@ -931,12 +914,6 @@ func filterFetchedPricesByProvider(fetched map[string][]connectors.ModelPrice, c
 		}
 	}
 	return filtered
-}
-
-func connectedFetchedProviders(ctx context.Context, accounts providerAccountLister, models map[string][]connectors.ModelSpec, prices map[string][]connectors.ModelPrice) (map[string]struct{}, error) {
-	providers := mapKeys(models)
-	providers = append(providers, mapKeys(prices)...)
-	return connectedProviderIDs(ctx, accounts, providers)
 }
 
 func mapKeys[T any](entries map[string]T) []string {

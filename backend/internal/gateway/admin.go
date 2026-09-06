@@ -255,8 +255,9 @@ func webProvider(id string) bool {
 }
 
 // adminProviderModels returns the model list for a specific provider. It
-// includes static catalog models and, when a connected account exists, live
-// models from the upstream (e.g. Kiro's ListAvailableModels).
+// includes hardcoded non-LLM models plus dynamically discovered LLM models
+// (models.dev snapshot and custom models) and, when a connected account
+// exists, live models from the upstream (e.g. Kiro's ListAvailableModels).
 func (s *Server) adminProviderModels(w http.ResponseWriter, r *http.Request) {
 	providerID := chi.URLParam(r, "id")
 	if _, ok := connectors.SpecByID(providerID); !ok {

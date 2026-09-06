@@ -61,6 +61,7 @@ func (s *blockingLiveModelSource) ListModels(context.Context, core.Credentials) 
 }
 
 func TestListModelsOnlyShowsConnectedProviders(t *testing.T) {
+	seedDiscoveryLLMs(t)
 	gw, apiKey := newModelDiscoveryTestGateway(t, []store.Account{
 		modelDiscoveryAccount("acc-openai", "openai", false, false),
 		modelDiscoveryAccount("acc-anthropic-disabled", "anthropic", true, false),
@@ -96,6 +97,7 @@ func TestListModelsByKindOnlyShowsConnectedProviders(t *testing.T) {
 }
 
 func TestModelInfoOnlyShowsConnectedProviders(t *testing.T) {
+	seedDiscoveryLLMs(t)
 	gw, apiKey := newModelDiscoveryTestGateway(t, []store.Account{
 		modelDiscoveryAccount("acc-openai", "openai", false, false),
 	})
@@ -134,6 +136,7 @@ func TestListModelsStillShowsChains(t *testing.T) {
 }
 
 func TestListModelsHandlesLiveOllamaDiscovery(t *testing.T) {
+	seedDiscoveryLLMs(t)
 	tests := []struct {
 		name       string
 		source     connectors.LiveModelSource
@@ -152,7 +155,7 @@ func TestListModelsHandlesLiveOllamaDiscovery(t *testing.T) {
 			},
 		},
 		{
-			name:   "keeps static models after live failure",
+			name:   "keeps models.dev models after live failure",
 			source: failingLiveModelSource{},
 			expect: modelPresenceExpectation{
 				paths: []string{"/v1/models"},
@@ -284,6 +287,27 @@ func waitForLiveModelFetch(t *testing.T, done <-chan struct{}) {
 	case <-time.After(time.Second):
 		t.Fatal("live model probes did not finish")
 	}
+}
+
+// seedDiscoveryLLMs fixtures dynamic LLM discovery (models.dev snapshot) for
+// the model listing tests now that there is no hardcoded LLM catalog.
+func seedDiscoveryLLMs(t *testing.T) {
+	t.Helper()
+	connectors.ReplaceFetchedCatalog(map[string][]connectors.ModelSpec{
+		"openai": {
+			{ID: "gpt-4o", Name: "GPT-4o", Kind: core.ServiceLLM},
+		},
+		"anthropic": {
+			{ID: "claude-sonnet-4-20250514", Name: "Claude Sonnet 4", Kind: core.ServiceLLM},
+		},
+		"gemini": {
+			{ID: "gemini-2.5-pro", Name: "Gemini 2.5 Pro", Kind: core.ServiceLLM},
+		},
+		"ollama-local": {
+			{ID: "llama3.2", Name: "Llama 3.2", Kind: core.ServiceLLM},
+		},
+	}, nil)
+	t.Cleanup(func() { connectors.ReplaceFetchedCatalog(nil, nil) })
 }
 
 func newModelDiscoveryTestGateway(t *testing.T, accounts []store.Account) (*Server, string) {

@@ -36,31 +36,6 @@ func (f fakeProviderAccountLister) ListByProviders(ctx context.Context, _ string
 	return connected, nil
 }
 
-func TestFilterFetchedModelsKeepsConnectedProviders(t *testing.T) {
-	fetched := map[string][]connectors.ModelSpec{
-		"openrouter": {{ID: "connected", Kind: core.ServiceLLM}},
-		"venice":     {{ID: "unconnected", Kind: core.ServiceLLM}},
-	}
-	got, err := filterFetchedModels(context.Background(), fakeProviderAccountLister{
-		accounts: []store.Account{{Provider: "openrouter"}},
-	}, fetched)
-	if err != nil {
-		t.Fatalf("filter fetched models: %v", err)
-	}
-	if len(got) != 1 || len(got["openrouter"]) != 1 {
-		t.Fatalf("filtered models = %v, want only openrouter", got)
-	}
-}
-
-func TestFilterFetchedModelsPreservesCurrentSnapshotOnAccountLookupError(t *testing.T) {
-	_, err := filterFetchedModels(context.Background(), fakeProviderAccountLister{err: errors.New("database unavailable")}, map[string][]connectors.ModelSpec{
-		"openrouter": {{ID: "model", Kind: core.ServiceLLM}},
-	})
-	if err == nil {
-		t.Fatal("expected account lookup error")
-	}
-}
-
 func TestFilterFetchedPricesSkipsUnconnectedProviders(t *testing.T) {
 	got, err := filterFetchedPrices(context.Background(), fakeProviderAccountLister{
 		accounts: []store.Account{{Provider: "openrouter"}},
@@ -159,6 +134,13 @@ func assertPublishedCatalog(t *testing.T, prices map[string][]connectors.ModelPr
 	t.Helper()
 	assertPublished(t, prices, "openrouter", func(price connectors.ModelPrice) bool { return price.Model == "price-only" })
 	assertPublished(t, models, "venice", func(model connectors.ModelSpec) bool { return model.ID == "model-only" })
+	assertPublished(t, models, "mistral", func(model connectors.ModelSpec) bool { return model.ID == "unconnected-model" })
+	if len(prices) != 1 {
+		t.Fatalf("published prices = %v, want only connected providers", prices)
+	}
+	if len(models) != 2 {
+		t.Fatalf("published models = %v, want complete models.dev snapshot", models)
+	}
 	if !slices.Equal(events, []string{"prices", "models"}) {
 		t.Fatalf("publication order = %v, want prices then models", events)
 	}
@@ -166,9 +148,6 @@ func assertPublishedCatalog(t *testing.T, prices map[string][]connectors.ModelPr
 
 func assertPublished[T any](t *testing.T, values map[string][]T, provider string, matches func(T) bool) {
 	t.Helper()
-	if len(values) != 1 {
-		t.Fatalf("published values = %v, want one provider", values)
-	}
 	if len(values[provider]) != 1 {
 		t.Fatalf("published values = %v, want one %s value", values, provider)
 	}

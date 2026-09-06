@@ -393,18 +393,14 @@ func (c *OpenAICompatible) Validate(ctx context.Context, creds core.Credentials)
 // that never reached the provider counts as a failure. A non-auth HTTP response
 // (e.g. a 400/404 for an unknown probe model) still proves the key was accepted.
 func (c *OpenAICompatible) chatAuthProbe(ctx context.Context, creds core.Credentials) error {
-	probeModel := firstCatalogModel(c.id)
-	// Custom/dynamic providers may have no catalog models until the user imports
-	// them. Sending a synthetic "test" model id to such endpoints triggers
-	// upstream403 model_not_allowed, which is misclassified as an auth failure.
-	// When no real model is known, skip the chat probe for custom providers and
-	// rely on the GET /models probe above. Built-in providers keep the "test"
-	// fallback so a bad key is still rejected when /models is publicly readable.
+	probeModel := ProbeModelForCredentials(ctx, c.id, creds, &OpenAICompatibleModelSource{
+		provider: c.id, defaultBase: c.baseURL(creds),
+	})
+	// Sending an invented model id can trigger upstream model_not_allowed before
+	// credential checks. Without a discovered model, rely on the GET /models
+	// probe instead of issuing a model-bound request.
 	if probeModel == "" {
-		if IsCustomProviderID(c.id) {
-			return nil
-		}
-		probeModel = "test"
+		return nil
 	}
 	body, _ := json.Marshal(map[string]any{
 		"model": probeModel,
@@ -434,15 +430,6 @@ func validationAuthError(err error) bool {
 
 func validationReachedUpstream(err error) bool {
 	return core.AsProviderError(err).StatusCode > 0
-}
-
-func firstCatalogModel(provider string) string {
-	for _, m := range ModelsForProvider(provider) {
-		if m.Kind == core.ServiceLLM {
-			return m.ID
-		}
-	}
-	return ""
 }
 
 func strictModelsValidation(provider string) bool {
@@ -519,7 +506,7 @@ func (s *OpenAICompatibleModelSource) ListModels(ctx context.Context, creds core
 		}
 		out = append(out, ModelSpec{
 			ID:   entry.ID,
-			Name: entry.ID, // best-effort; static catalog may have a better name
+			Name: entry.ID, // best-effort; custom models may carry a better name
 			Kind: core.ServiceLLM,
 		})
 	}

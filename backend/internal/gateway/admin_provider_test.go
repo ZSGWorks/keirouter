@@ -12,6 +12,9 @@ import (
 )
 
 func TestProviderModelsIncludesResolvedPricing(t *testing.T) {
+	// openai/gpt-4o resolves from dynamic discovery (models.dev snapshot
+	// fixture); its price still comes from the provider catalog.
+	seedDiscoveryLLMs(t)
 	s, _ := newCustomProviderTestServer(t)
 	rec := httptest.NewRecorder()
 	s.adminProviderModels(rec, withChiID(http.MethodGet, "/providers/openai/models", "openai"))
