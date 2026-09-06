@@ -191,6 +191,17 @@ func TestAnthropic_RenderRequestOmitsThinkingWhenNotRequested(t *testing.T) {
 	require.False(t, ok, "thinking field must be omitted when not requested")
 }
 
+func TestAnthropic_ParseResponseUsesThinkingField(t *testing.T) {
+	resp, err := AnthropicCodec{}.ParseResponse([]byte(`{
+		"id": "msg_1",
+		"content": [{"type": "thinking", "thinking": "reasoning"}],
+		"stop_reason": "end_turn",
+		"usage": {"input_tokens": 1, "output_tokens": 2}
+	}`), "claude-test")
+	require.NoError(t, err)
+	require.Equal(t, []core.ContentPart{{Type: core.PartThinking, Text: "reasoning"}}, resp.Message.Content)
+}
+
 func TestAnthropic_RenderStreamChunkZeroStateStartsAtIndexZero(t *testing.T) {
 	state := &StreamState{Model: "claude-x"}
 	events, err := AnthropicCodec{}.RenderStreamChunk(core.StreamChunk{
