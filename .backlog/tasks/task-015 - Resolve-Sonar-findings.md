@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@opencode'
 created_date: '2026-09-06 10:01'
-updated_date: '2026-09-06 10:01'
+updated_date: '2026-09-06 10:15'
 labels: []
 dependencies: []
 modified_files:
@@ -52,4 +52,12 @@ Sonar findings cover security-sensitive API boundaries, dashboard accessibility,
 3. Refactor backend handlers and startup/connectors in independently tested groups. Extract helpers from high-complexity functions without altering routes, initialization order, provider validation, streaming, or request rendering. Commit each group separately.
 4. Apply capability-table and API type/literal cleanup while preserving table ordering and resolver precedence. Add resolution tests where declarative helpers replace repeated values.
 5. After each commit run targeted tests; finish with gofmt, go vet ./backend/..., go test ./backend/..., frontend typecheck/build, ./scripts/verify.sh, Sonar, Code Health, and final diff review.
+
+Focused unit: refactor only backend/internal/gateway/admin.go adminUpdatePlan. Move its PATCH-field validation and mutation into a typed helper, preserving every existing error literal, status, payload, persistence call, and timestamp behavior. Add focused handler tests for successful multi-field updates and rejected invalid fields, then run gofmt and gateway package tests.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Focused adminUpdatePlan unit complete: extracted typed PATCH validation/mutation into applyPlanUpdate, preserving route/status/error literals/payload/persistence behavior. Added success and invalid-field persistence regression tests. Verified `go test ./backend/internal/gateway -count=1`; Code Health confirms admin.go has pre-existing broader Brain Class and complex-method findings outside this intentionally scoped unit.
+<!-- SECTION:NOTES:END -->

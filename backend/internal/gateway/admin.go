@@ -2245,9 +2245,22 @@ func (s *Server) adminCreatePlan(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+type planUpdateRequest struct {
+	Name             *string  `json:"name"`
+	Description      *string  `json:"description"`
+	LimitUSD         *float64 `json:"limit_usd"`
+	LimitTokens      *int64   `json:"limit_tokens"`
+	RPMLimit         *int64   `json:"rpm_limit"`
+	TPMLimit         *int64   `json:"tpm_limit"`
+	ConcurrencyLimit *int64   `json:"concurrency_limit"`
+	Period           *string  `json:"period"`
+	AlertPct         *int     `json:"alert_pct"`
+	HardCutoff       *bool    `json:"hard_cutoff"`
+	AllowedModels    []string `json:"allowed_models"`
+}
+
 func (s *Server) adminUpdatePlan(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	existing, err := s.db.Plans().Get(r.Context(), id)
+	existing, err := s.db.Plans().Get(r.Context(), chi.URLParam(r, "id"))
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "plan not found")
@@ -2257,88 +2270,13 @@ func (s *Server) adminUpdatePlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var body struct {
-		Name             *string  `json:"name"`
-		Description      *string  `json:"description"`
-		LimitUSD         *float64 `json:"limit_usd"`
-		LimitTokens      *int64   `json:"limit_tokens"`
-		RPMLimit         *int64   `json:"rpm_limit"`
-		TPMLimit         *int64   `json:"tpm_limit"`
-		ConcurrencyLimit *int64   `json:"concurrency_limit"`
-		Period           *string  `json:"period"`
-		AlertPct         *int     `json:"alert_pct"`
-		HardCutoff       *bool    `json:"hard_cutoff"`
-		AllowedModels    []string `json:"allowed_models"`
-	}
+	var body planUpdateRequest
 	if !decodeJSON(w, r, &body) {
 		return
 	}
-
-	if body.Name != nil {
-		if *body.Name == "" {
-			writeError(w, http.StatusBadRequest, "name cannot be empty")
-			return
-		}
-		existing.Name = *body.Name
-	}
-	if body.Description != nil {
-		existing.Description = *body.Description
-	}
-	if body.LimitUSD != nil {
-		if *body.LimitUSD < 0 {
-			writeError(w, http.StatusBadRequest, "limit_usd must not be negative")
-			return
-		}
-		existing.LimitMicros = int64(*body.LimitUSD * 1_000_000)
-	}
-	if body.LimitTokens != nil {
-		if *body.LimitTokens < 0 {
-			writeError(w, http.StatusBadRequest, "limit_tokens must not be negative")
-			return
-		}
-		existing.LimitTokens = *body.LimitTokens
-	}
-	if body.RPMLimit != nil {
-		if *body.RPMLimit < 0 {
-			writeError(w, http.StatusBadRequest, "rpm_limit must not be negative")
-			return
-		}
-		existing.RPMLimit = *body.RPMLimit
-	}
-	if body.TPMLimit != nil {
-		if *body.TPMLimit < 0 {
-			writeError(w, http.StatusBadRequest, "tpm_limit must not be negative")
-			return
-		}
-		existing.TPMLimit = *body.TPMLimit
-	}
-	if body.ConcurrencyLimit != nil {
-		if *body.ConcurrencyLimit < 0 {
-			writeError(w, http.StatusBadRequest, "concurrency_limit must not be negative")
-			return
-		}
-		existing.ConcurrencyLimit = *body.ConcurrencyLimit
-	}
-	if body.Period != nil {
-		period, ok := normalizeBudgetPeriod(*body.Period)
-		if !ok {
-			writeError(w, http.StatusBadRequest, "invalid period")
-			return
-		}
-		existing.Period = period
-	}
-	if body.AlertPct != nil {
-		if *body.AlertPct < 1 || *body.AlertPct > 100 {
-			writeError(w, http.StatusBadRequest, "alert_pct must be between 1 and 100")
-			return
-		}
-		existing.AlertPct = *body.AlertPct
-	}
-	if body.HardCutoff != nil {
-		existing.HardCutoff = *body.HardCutoff
-	}
-	if body.AllowedModels != nil {
-		existing.AllowedModels = store.SetPlanAllowedModels(body.AllowedModels)
+	if message := applyPlanUpdate(&existing, body); message != "" {
+		writeError(w, http.StatusBadRequest, message)
+		return
 	}
 	existing.UpdatedAt = time.Now()
 
@@ -2353,6 +2291,68 @@ func (s *Server) adminUpdatePlan(w http.ResponseWriter, r *http.Request) {
 		"period": existing.Period, "alert_pct": existing.AlertPct, "hard_cutoff": existing.HardCutoff,
 		"allowed_models": store.GetPlanAllowedModels(existing),
 	})
+}
+
+func applyPlanUpdate(existing *store.Plan, body planUpdateRequest) string {
+	if body.Name != nil {
+		if *body.Name == "" {
+			return "name cannot be empty"
+		}
+		existing.Name = *body.Name
+	}
+	if body.Description != nil {
+		existing.Description = *body.Description
+	}
+	if body.LimitUSD != nil {
+		if *body.LimitUSD < 0 {
+			return "limit_usd must not be negative"
+		}
+		existing.LimitMicros = int64(*body.LimitUSD * 1_000_000)
+	}
+	if body.LimitTokens != nil {
+		if *body.LimitTokens < 0 {
+			return "limit_tokens must not be negative"
+		}
+		existing.LimitTokens = *body.LimitTokens
+	}
+	if body.RPMLimit != nil {
+		if *body.RPMLimit < 0 {
+			return "rpm_limit must not be negative"
+		}
+		existing.RPMLimit = *body.RPMLimit
+	}
+	if body.TPMLimit != nil {
+		if *body.TPMLimit < 0 {
+			return "tpm_limit must not be negative"
+		}
+		existing.TPMLimit = *body.TPMLimit
+	}
+	if body.ConcurrencyLimit != nil {
+		if *body.ConcurrencyLimit < 0 {
+			return "concurrency_limit must not be negative"
+		}
+		existing.ConcurrencyLimit = *body.ConcurrencyLimit
+	}
+	if body.Period != nil {
+		period, ok := normalizeBudgetPeriod(*body.Period)
+		if !ok {
+			return "invalid period"
+		}
+		existing.Period = period
+	}
+	if body.AlertPct != nil {
+		if *body.AlertPct < 1 || *body.AlertPct > 100 {
+			return "alert_pct must be between 1 and 100"
+		}
+		existing.AlertPct = *body.AlertPct
+	}
+	if body.HardCutoff != nil {
+		existing.HardCutoff = *body.HardCutoff
+	}
+	if body.AllowedModels != nil {
+		existing.AllowedModels = store.SetPlanAllowedModels(body.AllowedModels)
+	}
+	return ""
 }
 
 func (s *Server) adminDeletePlan(w http.ResponseWriter, r *http.Request) {
