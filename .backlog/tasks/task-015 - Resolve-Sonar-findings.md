@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@opencode'
 created_date: '2026-09-06 10:01'
-updated_date: '2026-09-06 10:21'
+updated_date: '2026-09-06 10:26'
 labels: []
 dependencies: []
 modified_files:
@@ -61,6 +61,10 @@ Focused OpenAI-compatible connector unit: extract small helpers from `headers`, 
 Focused cleanup: in backend/internal/capability/tables.go, declare shared constants for only repeated Claude thinking-format literals (claude-adaptive and claude-budget), replace their existing values in exact and ordered pattern entries without moving entries or changing fields. Retain existing resolution-chain tests; run gofmt and go test ./backend/internal/capability -count=1.
 
 Focused Anthropic transform unit: limit changes to backend/internal/transform/anthropic.go plus transform tests. Extract request max-token/thinking setup, request metadata, and per-content-block rendering helpers from RenderRequest/renderAntBlocks without changing JSON output or thinking signature forwarding. Correct confirmed ParseResponse thinking extraction to use antBlock.Thinking, with a regression test. Run gofmt and focused transform tests.
+
+Focused provider-model unit: refactor only `backend/internal/gateway/admin.go` `adminProviderModels` and relevant gateway tests. Extract response-model construction, catalog assembly, and credential/public live-discovery helpers while preserving static catalog then live then custom model ordering, custom/database markers, kind filtering/response kind, price/capability payload fields, credential iteration, and public fallback conditions. Run gofmt and `go test ./backend/internal/gateway -count=1`.
+
+6. Focused app startup unit: extract ordered database bootstrap, cache, persisted endpoint settings, and guardrail setup helpers from Build. Preserve every constructor dependency, migration/tenant/cooldown sequence, cleanup ownership, and returned App fields. Run gofmt and go test ./backend/internal/app -count=1.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
@@ -79,4 +83,10 @@ Focused Anthropic transform unit complete. Extracted token/thinking reconciliati
 Focused OpenAI-compatible connector refactor complete. Extracted provider header builders with named User-Agent constants, shared stream fallback helpers, and validation success/error branches. Added header regression table covering Azure, Cline, CodeBuddy, AgentRouter, Kimchi, and header override behavior. Verified `gofmt`, `go test ./backend/internal/connectors -count=1`, `git diff --check`, and IDE error lint. Code Health remains 8.1; remaining findings are pre-existing `drainStreamToResponse`, `Stream`, `ListModels`, and `validateProbe` work outside requested Headers/Chat/Validate scope.
 
 Added a dynamic-provider regression test for HTTP 400 `Stream must be set to true`: Chat retries once using SSE and returns the drained response. Re-ran `gofmt`, `go test ./backend/internal/connectors -count=1`, and `git diff --check`.
+
+Research: Build has Code Health cyclomatic complexity 34. Scoped minimal refactor to named startup lifecycle helpers only; Run, runtime behavior, and App fields remain unchanged.
+
+Focused `adminProviderModels` refactor complete. Extracted pricing/response construction, custom-model lookup, catalog assembly, authenticated discovery, and public fallback helpers. Preserved validation, static catalog ordering, custom/database markers, live append behavior, credential iteration, public fallback gate, and response `kind`/`kinds` payloads. Existing focused provider-model pricing and multimodal-kind tests cover preserved response fields; verified `gofmt`, `go test ./backend/internal/gateway -count=1`, `git diff --check`, IDE compile, and error lint. Code Health improved from 2.18 to 2.25; remaining warnings are unrelated legacy methods/module size. No commit created.
+
+Focused app startup unit complete. Extracted openDatabase, buildSemanticCache, configureEndpointSettings, and buildGuardrails lifecycle helpers from Build. Preserved database open → migrate → default tenant → cooldown cleanup ordering; cache/endpoint/guardrail constructor order; retention ownership; and every returned App field. Verified gofmt, go test ./backend/internal/app -count=1, git diff --check, and IDE error lint. Code Health: app.go 7.13 → 7.50; Build cyclomatic complexity 34 → 13. No commit created.
 <!-- SECTION:NOTES:END -->

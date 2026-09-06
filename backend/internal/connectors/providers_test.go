@@ -525,6 +525,7 @@ func TestAntigravity_StreamRetriesTransientContextCancellation(t *testing.T) {
 	stream, err := c.Stream(context.Background(), req, core.Credentials{AccessToken: "test-token"}, core.StreamConfig{})
 	require.NoError(t, err)
 	for range stream {
+		// Drain stream to completion.
 	}
 	require.Equal(t, 2, calls)
 }
