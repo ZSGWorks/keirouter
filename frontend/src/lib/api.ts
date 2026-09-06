@@ -154,8 +154,12 @@ export interface EndpointSettings {
   request_timeout_ms: number;
 }
 
+// Known routing strategies with server extensibility: the union keeps
+// autocomplete while allowing future backend values through as plain string.
+export type RoutingStrategy = "inherit" | "fill-first" | "round-robin" | "smart-round-robin" | (string & {});
+
 export interface ProviderRoutingSettings {
-  routing_strategy: "inherit" | "fill-first" | "round-robin" | "smart-round-robin" | string;
+  routing_strategy: RoutingStrategy;
   sticky_limit: number;
   affinity_ttl_minutes: number;
 }
@@ -208,7 +212,9 @@ export interface OAuthPollResult {
 }
 
 export interface OAuthCallbackStatus {
-  status: "pending" | "success" | "error" | "expired" | string;
+  // Known OAuth callback statuses; open union keeps autocomplete while
+  // tolerating future backend values.
+  status: "pending" | "success" | "error" | "expired" | (string & {});
   message?: string;
 }
 
