@@ -23,6 +23,9 @@ services:
       KEIROUTER_DATABASE__DSN: ${KEIROUTER_DATABASE__DSN:?set postgres DSN}
       KEIROUTER_LOG__FORMAT: ${KEIROUTER_LOG_FORMAT:-json}
       KEIROUTER_SECURITY__ALLOW_PRIVATE_BASE_URL: ${KEIROUTER_SECURITY__ALLOW_PRIVATE_BASE_URL:-false}
+      # Lockout recovery: set RESET_PWD=true in Coolify env vars, redeploy, log
+      # in with the default password, change it, then remove the variable.
+      KEIROUTER_SECURITY__RESET_PASSWORD: ${KEIROUTER_RESET_PWD:-false}
     volumes:
       - keirouter-data:/data
     depends_on:

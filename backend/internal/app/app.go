@@ -111,15 +111,9 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 
 	idSvc := identity.New(db.APIKeys())
 
-	authSvc := auth.New(db.Settings(), cfg.Security.JWTSecret, cfg.Security.SessionTTL)
-	seeded, err := authSvc.EnsureDefaults(ctx)
+	authSvc, err := initAuth(ctx, db, cfg, log)
 	if err != nil {
-		return nil, fmt.Errorf("app: init auth: %w", err)
-	}
-	if seeded {
-		log.Warn("seeded default dashboard password",
-			"password", auth.DefaultPassword,
-			"note", "change it on first login via the onboarding flow")
+		return nil, err
 	}
 
 	modelPrices, err := buildModelPrices(ctx, db, nil)
@@ -304,6 +298,28 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 	seedFreeAccounts(ctx, db.Accounts(), log)
 
 	return &App{cfg: cfg, log: log, db: db, accounts: db.Accounts(), server: srv, keepAlive: keepAlive, guardrailAudit: guardrails.audit, guardrailRetention: guardrails.retention, meter: mtr, healthChecker: healthChecker, providerHealth: healthSvc, probeRunner: probeRunner, pricingFetcher: pricingFetcher, reloadPricing: reloadPricing, refreshPricingCatalog: refreshPricingCatalog}, nil
+}
+
+// initAuth constructs the auth service, optionally resetting the dashboard
+// password (lockout recovery), and seeds defaults on first run.
+func initAuth(ctx context.Context, db *store.DB, cfg config.Config, log *slog.Logger) (*auth.Service, error) {
+	authSvc := auth.New(db.Settings(), cfg.Security.JWTSecret, cfg.Security.SessionTTL)
+	if cfg.Security.ResetPassword {
+		if err := authSvc.Delete(ctx); err != nil {
+			return nil, fmt.Errorf("app: reset dashboard password: %w", err)
+		}
+		log.Warn("dashboard password reset requested via config; default password reseeded, all sessions invalidated")
+	}
+	seeded, err := authSvc.EnsureDefaults(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("app: init auth: %w", err)
+	}
+	if seeded {
+		log.Warn("seeded default dashboard password",
+			"password", auth.DefaultPassword,
+			"note", "change it on first login via the onboarding flow")
+	}
+	return authSvc, nil
 }
 
 func openDatabase(ctx context.Context, cfg config.Config, dataDir string, log *slog.Logger) (*store.DB, error) {

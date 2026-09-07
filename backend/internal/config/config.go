@@ -109,6 +109,13 @@ type SecurityConfig struct {
 	// Set false to ignore forwarded headers entirely and base the flag only on a
 	// direct TLS connection. Default true.
 	TrustForwardedHeaders bool `koanf:"trust_forwarded_headers"`
+	// ResetPassword, when true, deletes the stored dashboard password hash
+	// (and signing key, invalidating all sessions) at startup so the default
+	// password is reseeded. Intended as a lockout recovery switch for
+	// deployments like Coolify where the operator lost the password they set
+	// during onboarding. Set it, restart, log in with the default password,
+	// change it, then unset the variable. Default false.
+	ResetPassword bool `koanf:"reset_password"`
 }
 
 // CacheConfig configures the semantic response cache.
