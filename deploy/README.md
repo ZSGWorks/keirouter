@@ -121,6 +121,8 @@ Deploying KeiRouter on [Coolify](https://coolify.io/) is highly recommended as i
     # sslmode=require when the resource enforces TLS.
     KEIROUTER_DATABASE__DSN=postgres://USER:PASSWORD@HOST:5432/DB?sslmode=disable
     KEIROUTER_LOG_FORMAT=json
+    # Uncomment for password lockout recovery; see the section below.
+    # KEIROUTER_RESET_PWD=true
     ```
 6. **Persistent Storage**:
     `compose.coolify-postgres.yaml` declares `keirouter-data` at `/data` for runtime secrets. Database data stays in the separate Coolify Postgres resource.
@@ -156,6 +158,21 @@ container.
 KEIROUTER_DATABASE__DSN=postgres://USER:PASSWORD@HOST:5432/DB?sslmode=require
 ```
 *(Replace `USER`, `PASSWORD`, `HOST`, and `DB` with your Postgres credentials).*
+
+### Dashboard Password Reset (Lockout Recovery)
+
+If you lost the dashboard password you set during onboarding, add this
+environment variable in Coolify and redeploy:
+
+```env
+KEIROUTER_RESET_PWD=true
+```
+
+On the next startup the stored password hash is deleted and the default
+password (`keirouter`) is reseeded; all dashboard sessions are invalidated.
+Log in with the default password, change it in the onboarding flow, then
+remove the variable and redeploy again. Alternatively, set
+`KEIROUTER_SECURITY__RESET_PASSWORD=true` directly.
 
 ## Updates
 

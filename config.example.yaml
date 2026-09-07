@@ -59,6 +59,11 @@ security:
   # plain-HTTP dashboards (e.g. a fresh install on http://<vps-ip>:20180) get a
   # non-Secure cookie so browsers accept it (issue #56).
   trust_forwarded_headers: true
+  # Lockout recovery: set true (e.g. KEIROUTER_SECURITY__RESET_PASSWORD=true),
+  # restart, log in with the default password, change it, then unset.
+  # Deletes the stored dashboard password hash, reseeds the default, and
+  # invalidates all dashboard sessions.
+  reset_password: false
 
 meter:
   # Buffered/batched usage writes. Keeps request latency low and reduces DB
