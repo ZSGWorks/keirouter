@@ -117,6 +117,11 @@ if [ -z "$DSN_FROM_ENV" ]; then
 fi
 
 # ---- build + deploy --------------------------------------------------------
+# macOS drops ._ AppleDouble sidecars on non-xattr filesystems (exFAT/network
+# volumes). BuildKit's Dockerfile transfer trips on them ("failed to xattr ...
+# operation not permitted"). Prune before build; self-healing on reappear.
+find . -path ./.git -prune -o -name '._*' -type f -delete
+
 log "Building image and starting container on 127.0.0.1:${PORT}"
 docker compose "${COMPOSE_FILES[@]}" up -d --build
 
