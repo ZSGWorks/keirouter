@@ -28,6 +28,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"syscall"
@@ -35,6 +36,7 @@ import (
 
 	"github.com/mydisha/keirouter/backend/internal/app"
 	"github.com/mydisha/keirouter/backend/internal/config"
+	"github.com/mydisha/keirouter/backend/internal/headroom"
 	"github.com/mydisha/keirouter/backend/internal/prettylog"
 	"github.com/mydisha/keirouter/backend/internal/tray"
 	"github.com/mydisha/keirouter/backend/internal/version"
@@ -286,6 +288,8 @@ func serve(cfg config.Config, log *slog.Logger, isPretty, autoOpenBrowser bool) 
 	// Cancel on SIGINT/SIGTERM for graceful shutdown.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	cleanupHeadroom := startHeadroomRuntime(ctx, cfg, log)
+	defer cleanupHeadroom()
 
 	if autoOpenBrowser {
 		go openDashboardWhenReady(ctx, cfg)
@@ -325,6 +329,8 @@ func serveWithTray(cfg config.Config, log *slog.Logger, isPretty, autoOpenBrowse
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	cleanupHeadroom := startHeadroomRuntime(ctx, cfg, log)
+	defer cleanupHeadroom()
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
@@ -408,6 +414,24 @@ func doBootstrap(cfg config.Config, keyName string) error {
 	fmt.Println("Created API key (copy it now, it will not be shown again):")
 	fmt.Println(plaintext)
 	return nil
+}
+
+// startHeadroomRuntime keeps the optional compressor available for serving
+// commands without changing bootstrap, status, or healthcheck behavior. A
+// provision/start failure is deliberately non-fatal because compression is
+// fail-open at the request pipeline boundary.
+func startHeadroomRuntime(ctx context.Context, cfg config.Config, log *slog.Logger) func() {
+	dataDir := cfg.Data.Dir
+	if dataDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			log.Warn("headroom runtime unavailable; could not resolve data directory", "error", err)
+			return func() {}
+		}
+		dataDir = filepath.Join(home, ".keirouter")
+	}
+	cleanup, _ := headroom.StartRuntime(ctx, dataDir, log)
+	return cleanup
 }
 
 func runHealthcheck(cfg config.Config) error {

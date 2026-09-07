@@ -13,6 +13,7 @@ services:
       - "127.0.0.1:20180:20180"
     environment:
       KEIROUTER_DATA__DIR: /data
+      KEIROUTER_HEADROOM_RUNTIME: compose
       KEIROUTER_SERVER__HOST: 0.0.0.0
       KEIROUTER_SERVER__PORT: 20180
       KEIROUTER_SECURITY__BIND_LOOPBACK_ONLY: ${KEIROUTER_BIND_LOOPBACK_ONLY:-false}
@@ -24,6 +25,30 @@ services:
       KEIROUTER_SECURITY__ALLOW_PRIVATE_BASE_URL: ${KEIROUTER_SECURITY__ALLOW_PRIVATE_BASE_URL:-false}
     volumes:
       - keirouter-data:/data
+    depends_on:
+      headroom:
+        condition: service_healthy
+    networks:
+      - coolify
+
+  headroom:
+    image: ghcr.io/headroomlabs-ai/headroom:0.36.0
+    entrypoint: ["headroom", "proxy"]
+    command: ["--host", "0.0.0.0", "--port", "8787"]
+    restart: unless-stopped
+    environment:
+      HOME: /tmp/headroom-home
+      HEADROOM_HOST: 0.0.0.0
+      HEADROOM_WORKSPACE_DIR: /tmp/headroom-home/.headroom
+      HEADROOM_CONFIG_DIR: /tmp/headroom-home/.headroom/config
+    volumes:
+      - headroom-data:/tmp/headroom-home/.headroom
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/readyz', timeout=3).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
     networks:
       - coolify
 
@@ -33,3 +58,4 @@ networks:
 
 volumes:
   keirouter-data:
+  headroom-data:
