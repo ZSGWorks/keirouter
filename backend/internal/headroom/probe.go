@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -72,20 +73,26 @@ func (c *Compressor) Probe(ctx context.Context, cfg Config) ProbeResult {
 		return res
 	}
 
-	var decoded compressResponse
-	if err := json.NewDecoder(httpResp.Body).Decode(&decoded); err != nil {
-		res.Message = "reachable, but response was not valid JSON"
-		return res
-	}
-	if len(decoded.Messages) == 0 {
-		res.OK = true
-		res.Message = "reachable; proxy responded but returned no compressed messages"
-		return res
-	}
-
-	res.OK = true
-	res.Message = "Headroom proxy is running"
+	applyProbeResponse(&res, httpResp.Body)
 	return res
+}
+
+func applyProbeResponse(res *ProbeResult, body io.Reader) {
+	var decoded compressResponse
+	if err := json.NewDecoder(body).Decode(&decoded); err != nil {
+		res.Message = "reachable, but response was not valid JSON"
+		return
+	}
+	if decoded.CompressionSkipped {
+		res.Message = "reachable, but compression was skipped"
+		return
+	}
+	res.OK = true
+	if len(decoded.Messages) == 0 {
+		res.Message = "reachable; proxy responded but returned no compressed messages"
+		return
+	}
+	res.Message = "Headroom proxy is running"
 }
 
 // maskErr renders an error message with any embedded URL stripped of

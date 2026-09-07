@@ -76,20 +76,15 @@ type compressConfig struct {
 	CompressUserMessages bool `json:"compress_user_messages"`
 }
 
-// compressResponse is the decoded proxy response. A nil/absent/empty Messages
-// slice is treated as a failure (fail-open); only a non-empty array counts as a
-// successful compression.
+// compressResponse is the Headroom v0.36 response. Token metrics are top-level
+// fields; a nil/absent/empty Messages slice is a failure (fail-open), while
+// missing metrics simply leave their recorded values at zero.
 type compressResponse struct {
-	Messages []openAIMessage `json:"messages"`
-	Stats    *compressStats  `json:"stats"`
-}
-
-// compressStats mirrors the proxy-reported token statistics. Absent stats leave
-// every token field at zero.
-type compressStats struct {
-	TokensBefore int `json:"tokens_before"`
-	TokensAfter  int `json:"tokens_after"`
-	TokensSaved  int `json:"tokens_saved"`
+	Messages           []openAIMessage `json:"messages"`
+	TokensBefore       int             `json:"tokens_before"`
+	TokensAfter        int             `json:"tokens_after"`
+	TokensSaved        int             `json:"tokens_saved"`
+	CompressionSkipped bool            `json:"compression_skipped"`
 }
 
 // Compress mutates req.Messages in place when compression succeeds and returns
@@ -98,7 +93,7 @@ type compressStats struct {
 // with a masked URL.
 func (c *Compressor) Compress(ctx context.Context, req *core.ChatRequest, cfg Config) *Stats {
 	// Skip entirely when disabled or no URL is configured.
-	if req == nil || !cfg.Enabled || strings.TrimSpace(cfg.URL) == "" {
+	if shouldSkipCompression(req, cfg) {
 		return &Stats{}
 	}
 
@@ -122,9 +117,8 @@ func (c *Compressor) Compress(ctx context.Context, req *core.ChatRequest, cfg Co
 		c.logFailOpen(cfg.URL, attempts, err)
 		return &Stats{}
 	}
-	if resp == nil || len(resp.Messages) == 0 {
-		// Missing / null / non-array / empty messages -> fail-open.
-		c.logFailOpen(cfg.URL, attempts, errors.New("response contained no compressed messages"))
+	if err := validateCompressedResponse(resp); err != nil {
+		c.logFailOpen(cfg.URL, attempts, err)
 		return &Stats{}
 	}
 
@@ -138,16 +132,40 @@ func (c *Compressor) Compress(ctx context.Context, req *core.ChatRequest, cfg Co
 		BytesAfter:  bytesAfter,
 		Compressed:  true,
 	}
-	if resp.Stats != nil {
-		stats.TokensBefore = resp.Stats.TokensBefore
-		stats.TokensAfter = resp.Stats.TokensAfter
-		stats.TokensSaved = resp.Stats.TokensSaved
-	}
+	stats.TokensBefore = resp.TokensBefore
+	stats.TokensAfter = resp.TokensAfter
+	stats.TokensSaved = resp.TokensSaved
 	// Phantom detection: tokens claimed saved but the body did not shrink.
 	stats.Phantom = isPhantom(bytesBefore, bytesAfter, defaultMinShrinkRatio)
 
 	clamped := stats.clamp()
 	return &clamped
+}
+
+func shouldSkipCompression(req *core.ChatRequest, cfg Config) bool {
+	if req == nil {
+		return true
+	}
+	if !cfg.Enabled {
+		return true
+	}
+	return strings.TrimSpace(cfg.URL) == ""
+}
+
+// validateCompressedResponse accepts only a response that can safely replace
+// the request's messages. A skipped response is fail-open by contract, even
+// when Headroom returns it with a successful HTTP status.
+func validateCompressedResponse(resp *compressResponse) error {
+	if resp == nil {
+		return errors.New("response skipped compression")
+	}
+	if resp.CompressionSkipped {
+		return errors.New("response skipped compression")
+	}
+	if len(resp.Messages) == 0 {
+		return errors.New("response contained no compressed messages")
+	}
+	return nil
 }
 
 // maxCompressAttempts bounds how many times callCompress will hit the proxy for
