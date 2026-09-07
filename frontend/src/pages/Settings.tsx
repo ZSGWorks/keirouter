@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Sparkles, Zap, MessageSquare, Layers, Route, Wifi, Monitor, Database, Clock,
-  ArrowUpCircle, CheckCircle2, ExternalLink, XCircle, Terminal, RefreshCw,
+  ArrowUpCircle, CheckCircle2, ExternalLink, XCircle, RefreshCw,
   Gauge, Eye, EyeOff, KeyRound, Download, Upload, ShieldCheck, Info,
   Palette, Shield,
 } from "lucide-react";
@@ -174,13 +174,11 @@ const HEADROOM_TIMEOUT_MAX = 60000;
 const PONYTAIL_LEVELS = ["lite", "full", "ultra"] as const;
 
 const SAVER_VALIDATION_MESSAGES = {
-  headroomUrl: "Proxy URL is required when Headroom is enabled.",
   headroomTimeout: `Timeout must be a whole number between ${HEADROOM_TIMEOUT_MIN} and ${HEADROOM_TIMEOUT_MAX} ms.`,
   ponytailLevel: `Ponytail level must be one of: ${PONYTAIL_LEVELS.join(", ")}.`,
 } as const;
 
 type SaverErrors = {
-  headroom_url?: string;
   headroom_timeout_ms?: string;
   ponytail_level?: string;
 };
@@ -190,9 +188,6 @@ type SaverErrors = {
 // while the relevant saver is enabled, mirroring the visible controls.
 function validateSaverSettings(s: EndpointSettings): SaverErrors {
   const errors: SaverErrors = {};
-  if (s.headroom_enabled && !(s.headroom_url ?? "").trim()) {
-    errors.headroom_url = SAVER_VALIDATION_MESSAGES.headroomUrl;
-  }
   if (s.headroom_enabled) {
     const t = s.headroom_timeout_ms;
     if (!Number.isInteger(t) || t < HEADROOM_TIMEOUT_MIN || t > HEADROOM_TIMEOUT_MAX) {
@@ -208,7 +203,6 @@ function validateSaverSettings(s: EndpointSettings): SaverErrors {
 function saverPatch(s: EndpointSettings): Partial<EndpointSettings> {
   return {
     headroom_enabled: s.headroom_enabled,
-    headroom_url: s.headroom_url,
     headroom_compress_user_messages: s.headroom_compress_user_messages,
     headroom_timeout_ms: s.headroom_timeout_ms,
     ponytail_enabled: s.ponytail_enabled,
@@ -233,7 +227,7 @@ function HeadroomAdvisory() {
           machines) to compress — when that exceeds the timeout below, Headroom{" "}
           <span className="font-medium text-[var(--text)]">fails open</span> (the request
           goes through uncompressed and records 0 savings). For consistent savings without
-          an external dependency, rely on{" "}
+          the bundled runtime, rely on{" "}
           <span className="font-medium text-[var(--text)]">RTK</span> +{" "}
           <span className="font-medium text-[var(--text)]">Caveman/Terse</span> +{" "}
           <span className="font-medium text-[var(--text)]">Ponytail</span>, which run
@@ -244,58 +238,17 @@ function HeadroomAdvisory() {
   );
 }
 
-// HeadroomInstallHelp explains how to install and run a local Headroom proxy.
-// Headroom is the open-source headroom-ai proxy; KeiRouter calls its
-// /v1/compress endpoint. Shown inside the Headroom card so operators can get a
-// proxy running before pointing KeiRouter at it.
-function HeadroomInstallHelp() {
-  return (
-    <div className="border-t border-[var(--border)] px-6 py-4">
-      <div className="rounded-xl border border-[var(--border)] bg-[var(--bg)] p-4">
-        <div className="flex items-center gap-2 text-sm font-medium">
-          <Terminal className="h-4 w-4 text-[var(--text-muted)]" />
-          Don&apos;t have a Headroom proxy yet?
-        </div>
-        <p className="mt-1 text-xs text-[var(--text-muted)]">
-          Headroom is a local, open-source compression proxy. The{" "}
-          <code className="rounded bg-[var(--bg-elevated)] px-1 py-0.5">headroom</code> CLI ships with the
-          Python package (the npm package is a library only). Install it with pipx, then start it:
-        </p>
-        <pre className="mt-2 overflow-x-auto rounded-lg bg-[var(--bg-elevated)] px-3 py-2 text-xs leading-relaxed text-[var(--text)]">
-          <code>{`pipx install "headroom-ai[all]"   # needs Python 3.10+ (or: pip install --user)
-pipx ensurepath                   # add headroom to PATH, then restart your shell
-headroom proxy --port 8787
-headroom doctor                   # verify it's working`}</code>
-        </pre>
-        <p className="mt-2 text-xs text-[var(--text-muted)]">
-          Then set <span className="font-medium text-[var(--text)]">Proxy URL</span> to{" "}
-          <code className="rounded bg-[var(--bg-elevated)] px-1 py-0.5">http://localhost:8787</code>.
-        </p>
-        <a
-          href="https://github.com/headroomlabs-ai/headroom"
-          target="_blank"
-          rel="noreferrer"
-          className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-secondary-600 hover:underline dark:text-secondary-400"
-        >
-          Installation guide <ExternalLink className="h-3 w-3" />
-        </a>
-      </div>
-    </div>
-  );
-}
-
-// HeadroomTestConnection validates that the configured proxy is actually
-// running by probing its /v1/compress endpoint via the backend. The backend
-// returns a masked endpoint and never leaks credentials.
-function HeadroomTestConnection({ url, timeoutMs }: { url: string; timeoutMs: number }) {
+// HeadroomTestConnection probes the bundled runtime via the backend. The
+// backend selects the private runtime endpoint and never leaks credentials.
+function HeadroomTestConnection({ timeoutMs }: { timeoutMs: number }) {
   const [result, setResult] = useState<HeadroomTestResult | null>(null);
   const test = useMutation({
-    mutationFn: () => api.testHeadroom({ url, timeout_ms: timeoutMs }),
+    mutationFn: () => api.testHeadroom({ timeout_ms: timeoutMs }),
     onSuccess: setResult,
     onError: (e) =>
       setResult({ ok: false, reachable: false, status: 0, latency_ms: 0, endpoint: "", message: (e as Error).message }),
   });
-  const disabled = !url.trim() || test.isPending;
+  const disabled = test.isPending;
   return (
     <div className="border-t border-[var(--border)] px-6 py-4">
       <div className="flex flex-wrap items-center gap-3">
@@ -315,7 +268,7 @@ function HeadroomTestConnection({ url, timeoutMs }: { url: string; timeoutMs: nu
         )}
       </div>
       <p className="mt-2 text-xs text-[var(--text-muted)]">
-        Checks that the proxy at the Proxy URL above responds on <code>/v1/compress</code>.
+        Checks that KeiRouter&apos;s bundled Headroom runtime responds on <code>/v1/compress</code>.
       </p>
     </div>
   );
@@ -427,7 +380,7 @@ function SavingTab({
       <Card>
         <SectionHeader
           title="Headroom input compression"
-          description="Compresses request messages through an external Headroom proxy before they reach the model. Fail-open — any proxy error leaves the request untouched."
+          description="Compresses request messages through KeiRouter&apos;s bundled Headroom runtime before they reach the model. Fail-open — any runtime error leaves the request untouched."
           icon={Zap}
           iconTone="neutral"
         />
@@ -438,20 +391,6 @@ function SavingTab({
         </div>
         {local.headroom_enabled && (
           <>
-            <div className="border-t border-[var(--border)] px-6 py-4">
-              <Field label="Proxy URL">
-                <Input
-                  type="text"
-                  placeholder="https://headroom.example.com"
-                  value={local.headroom_url}
-                  onChange={(e) => saverUpdate({ headroom_url: e.target.value })}
-                  aria-invalid={!!saverErrors.headroom_url}
-                />
-                {saverErrors.headroom_url && (
-                  <p className="text-xs text-[color:var(--color-danger)]">{saverErrors.headroom_url}</p>
-                )}
-              </Field>
-            </div>
             <div className="flex items-center justify-between border-t border-[var(--border)] px-6 py-4">
               <div>
                 <p className="text-sm font-medium">Compress user messages</p>
@@ -477,10 +416,9 @@ function SavingTab({
                 )}
               </Field>
             </div>
-            <HeadroomTestConnection url={local.headroom_url} timeoutMs={local.headroom_timeout_ms} />
+            <HeadroomTestConnection timeoutMs={local.headroom_timeout_ms} />
           </>
         )}
-        <HeadroomInstallHelp />
       </Card>
 
       <Card>

@@ -135,7 +135,6 @@ export interface EndpointSettings {
   terse_enabled: boolean;
   terse_level: string;
   headroom_enabled: boolean;
-  headroom_url: string;
   headroom_compress_user_messages: boolean;
   headroom_timeout_ms: number;
   ponytail_enabled: boolean;
@@ -165,8 +164,8 @@ export interface ProviderRoutingSettings {
 }
 
 // HeadroomTestResult is returned by POST /settings/headroom-test and reports
-// whether the configured Headroom proxy is reachable and behaving correctly.
-// endpoint is always masked (no credentials/query string).
+// whether KeiRouter's bundled Headroom runtime is reachable and behaving
+// correctly. endpoint is always masked (no credentials/query string).
 export interface HeadroomTestResult {
   ok: boolean;
   reachable: boolean;
@@ -1415,7 +1414,7 @@ export const api = {
   endpointSettings: () => request<EndpointSettings>("GET", "/settings/endpoint"),
   updateEndpointSettings: (patch: Partial<EndpointSettings>) =>
     request<EndpointSettings>("POST", "/settings/endpoint", patch),
-  testHeadroom: (body?: { url?: string; timeout_ms?: number }) =>
+  testHeadroom: (body?: { timeout_ms?: number }) =>
     request<HeadroomTestResult>("POST", "/settings/headroom-test", body ?? {}),
 
   accessSettings: () => request<AccessSettings>("GET", "/settings/access"),

@@ -21,12 +21,12 @@ C_GREEN  := \033[32m
 C_YELLOW := \033[33m
 C_CYAN   := \033[36m
 
-.PHONY: dev backend frontend build build-backend build-frontend test vet hooks bootstrap install setup quickstart clean docker dev-deploy
+.PHONY: dev backend frontend build build-backend build-frontend test vet hooks bootstrap install setup quickstart clean docker dev-deploy headroom-runtime
 
 ## dev: run backend and frontend concurrently; Ctrl-C stops both.
 ##      The backend starts first; frontend waits until the backend is healthy
 ##      so the Vite proxy never hits ECONNREFUSED on cold start.
-dev:
+dev: headroom-runtime
 	@printf "$(C_BOLD)$(C_CYAN)Starting KeiRouter$(C_RESET) backend (:20180) + dashboard (:5180)…\n"
 	@trap 'trap - INT TERM EXIT; kill 0' INT TERM EXIT; \
 	( cd $(BACKEND_DIR) && go run ./cmd/keirouter ) & \
@@ -48,6 +48,11 @@ dev:
 		cd $(FRONTEND_DIR) && npm run dev \
 	) & \
 	wait
+
+## headroom-runtime: provision the private native Headroom proxy runtime.
+##                    Failure is non-fatal because compression fails open.
+headroom-runtime:
+	@./scripts/ensure-headroom-runtime.sh || printf "$(C_YELLOW)Headroom runtime unavailable; compression will fail open.$(C_RESET)\n"
 
 ## backend: run only the Go backend.
 backend:

@@ -42,10 +42,9 @@ type EndpointSettings struct {
 	TerseLevel   string `json:"terse_level"`
 
 	// Headroom (input-side proxy compression).
-	HeadroomEnabled              bool   `json:"headroom_enabled"`
-	HeadroomURL                  string `json:"headroom_url"`
-	HeadroomCompressUserMessages bool   `json:"headroom_compress_user_messages"`
-	HeadroomTimeoutMs            int    `json:"headroom_timeout_ms"`
+	HeadroomEnabled              bool `json:"headroom_enabled"`
+	HeadroomCompressUserMessages bool `json:"headroom_compress_user_messages"`
+	HeadroomTimeoutMs            int  `json:"headroom_timeout_ms"`
 
 	// Ponytail (output-side system-prompt injection).
 	PonytailEnabled bool   `json:"ponytail_enabled"`
@@ -89,7 +88,6 @@ func defaultEndpointSettings() EndpointSettings {
 		TerseEnabled:                 false,
 		TerseLevel:                   "medium",
 		HeadroomEnabled:              false,
-		HeadroomURL:                  "",
 		HeadroomCompressUserMessages: false,
 		HeadroomTimeoutMs:            3000,
 		PonytailEnabled:              false,
@@ -223,7 +221,7 @@ func (s *Server) headroomConfig() headroom.Config {
 func (s *Server) headroomConfigFrom(es EndpointSettings) headroom.Config {
 	return headroom.Config{
 		Enabled:              es.HeadroomEnabled,
-		URL:                  es.HeadroomURL,
+		URL:                  headroom.RuntimeURL(),
 		CompressUserMessages: es.HeadroomCompressUserMessages,
 		Timeout:              time.Duration(es.HeadroomTimeoutMs) * time.Millisecond,
 	}
@@ -331,15 +329,11 @@ func (s *Server) adminGetEndpointSettings(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, s.loadEndpointSettings(r.Context()))
 }
 
-// adminTestHeadroom probes a Headroom proxy to confirm it is running. It accepts
-// an optional JSON body {"url": "...", "timeout_ms": N}; when omitted it falls
-// back to the saved Headroom settings. This lets the dashboard validate a proxy
-// before (or after) saving, without ever leaking credentials: the probe result
-// only carries a masked endpoint.
+// adminTestHeadroom probes the bundled Headroom runtime. Its endpoint is owned
+// by the selected native or Compose runtime and is never user-configurable.
 func (s *Server) adminTestHeadroom(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		URL       *string `json:"url"`
-		TimeoutMs *int    `json:"timeout_ms"`
+		TimeoutMs *int `json:"timeout_ms"`
 	}
 	if r.Body != nil {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
@@ -349,19 +343,6 @@ func (s *Server) adminTestHeadroom(w http.ResponseWriter, r *http.Request) {
 	}
 
 	es := s.loadEndpointSettings(r.Context())
-
-	url := es.HeadroomURL
-	if body.URL != nil {
-		url = *body.URL
-	}
-	if strings.TrimSpace(url) == "" {
-		writeError(w, http.StatusBadRequest, "headroom_url is required to test the connection")
-		return
-	}
-	if err := httputil.ValidateBaseURL(url); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid headroom_url: URL blocked by security policy")
-		return
-	}
 
 	timeoutMs := es.HeadroomTimeoutMs
 	if body.TimeoutMs != nil {
@@ -374,7 +355,7 @@ func (s *Server) adminTestHeadroom(w http.ResponseWriter, r *http.Request) {
 
 	result := headroom.New(nil).Probe(r.Context(), headroom.Config{
 		Enabled: true,
-		URL:     url,
+		URL:     headroom.RuntimeURL(),
 		Timeout: time.Duration(timeoutMs) * time.Millisecond,
 	})
 	writeJSON(w, http.StatusOK, result)
@@ -398,7 +379,6 @@ func (s *Server) adminUpdateEndpointSettings(w http.ResponseWriter, r *http.Requ
 		TerseLevel     *string `json:"terse_level"`
 
 		HeadroomEnabled              *bool   `json:"headroom_enabled"`
-		HeadroomURL                  *string `json:"headroom_url"`
 		HeadroomCompressUserMessages *bool   `json:"headroom_compress_user_messages"`
 		HeadroomTimeoutMs            *int    `json:"headroom_timeout_ms"`
 		PonytailEnabled              *bool   `json:"ponytail_enabled"`
@@ -456,9 +436,6 @@ func (s *Server) adminUpdateEndpointSettings(w http.ResponseWriter, r *http.Requ
 	if patch.HeadroomEnabled != nil {
 		current.HeadroomEnabled = *patch.HeadroomEnabled
 	}
-	if patch.HeadroomURL != nil {
-		current.HeadroomURL = *patch.HeadroomURL
-	}
 	if patch.HeadroomCompressUserMessages != nil {
 		current.HeadroomCompressUserMessages = *patch.HeadroomCompressUserMessages
 	}
@@ -478,23 +455,6 @@ func (s *Server) adminUpdateEndpointSettings(w http.ResponseWriter, r *http.Requ
 			return
 		}
 		current.PonytailLevel = *patch.PonytailLevel
-	}
-	// Headroom requires a proxy URL when enabled. Validate the effective value
-	// after merging so partial patches (enabling without a URL, or clearing the
-	// URL while enabled) are rejected before persistence.
-	if current.HeadroomEnabled && strings.TrimSpace(current.HeadroomURL) == "" {
-		writeError(w, http.StatusBadRequest, "headroom_url is required when Headroom is enabled")
-		return
-	}
-	// Only run SSRF validation when this request actually sets headroom_url.
-	// Re-validating a previously persisted URL on unrelated patches (e.g.
-	// toggling RTK/Caveman) would reject saves whenever the stored Headroom
-	// proxy points at a local/private host, which is a supported deployment.
-	if patch.HeadroomURL != nil && strings.TrimSpace(current.HeadroomURL) != "" {
-		if err := httputil.ValidateBaseURL(current.HeadroomURL); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid headroom_url: URL blocked by security policy")
-			return
-		}
 	}
 	if patch.RoutingStrategy != nil {
 		normalized, ok := normalizeAccountRoutingStrategy(*patch.RoutingStrategy)
@@ -532,8 +492,8 @@ func (s *Server) adminUpdateEndpointSettings(w http.ResponseWriter, r *http.Requ
 	if patch.OutboundProxyURL != nil {
 		current.OutboundProxyURL = *patch.OutboundProxyURL
 	}
-	// Same rationale as headroom_url: only validate when this request supplies
-	// the proxy URL, so unrelated patches don't fail on a persisted value.
+	// Only validate when this request supplies the proxy URL, so unrelated
+	// patches don't fail on a persisted value.
 	if patch.OutboundProxyURL != nil && strings.TrimSpace(current.OutboundProxyURL) != "" {
 		if err := httputil.ValidateProxyURL(current.OutboundProxyURL); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid outbound_proxy_url: URL blocked by security policy")

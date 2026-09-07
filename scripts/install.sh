@@ -204,6 +204,11 @@ run_source_install() {
   copy_with_optional_sudo "$INSTALL_DIR/keirouter" "$BIN_DIR/keirouter" "0755"
   install_frontend_assets
 
+  info "Preparing bundled Headroom runtime"
+  if ! "$INSTALL_DIR/scripts/ensure-headroom-runtime.sh"; then
+    warn "Headroom runtime setup was unavailable; KeiRouter will continue with fail-open compression."
+  fi
+
   ok "KeiRouter installed to $BIN_DIR/keirouter"
   ok "Dashboard assets installed to $SHARE_DIR/frontend/dist"
   echo ""

@@ -136,6 +136,15 @@ install_deps() {
   ok "Go modules ready"
 }
 
+prepare_headroom() {
+  info "Preparing bundled Headroom runtime…"
+  if "$REPO_DIR/scripts/ensure-headroom-runtime.sh"; then
+    ok "Headroom runtime ready"
+  else
+    warn "Headroom runtime unavailable; KeiRouter will continue with fail-open compression"
+  fi
+}
+
 # ── Start dev ────────────────────────────────────────────────────────────────
 start_dev() {
   cd "$REPO_DIR"
@@ -162,6 +171,7 @@ main() {
   check_prereqs
   resolve_repo
   install_deps
+  prepare_headroom
   start_dev
 }
 

@@ -175,7 +175,7 @@ Every request runs through a deterministic token-saving pipeline **before** it g
 | Saver | Side | The pitch |
 |---|---|---|
 | **RTK / Slimmer** | Input | Shrinks chunky tool output (diffs, greps, listings, build logs) locally before it ever leaves your machine. |
-| **Headroom** | Input | Routes request messages through an external [Headroom](https://github.com/headroomlabs-ai/headroom) proxy for deeper compression. *Fail-open* — if the proxy sneezes, your request sails through untouched. Also sniffs out "phantom savings" so only real wins get counted. |
+| **Headroom** | Input | Routes request messages through the bundled [Headroom](https://github.com/headroomlabs-ai/headroom) runtime for deeper compression. *Fail-open* — if the runtime sneezes, your request sails through untouched. Also sniffs out "phantom savings" so only real wins get counted. |
 | **Terse** | Output | Drops a concise-output directive so the model skips the small talk and gives you the goods. |
 | **Caveman** | Output | Terse's stronger cousin (Wenyan / 文言文 levels included) — trims output tokens by 65–75%. |
 | **Ponytail** | Output | Injects a "lazy senior dev" system prompt (`lite` / `full` / `ultra`) that nudges the model toward the smallest possible change. Stacks on top of Terse or Caveman. |
@@ -184,27 +184,9 @@ Every request runs through a deterministic token-saving pipeline **before** it g
 
 **Pipeline order:** `normalizer → RTK → Headroom → Terse / Caveman → Ponytail → provider translation`.
 
-### Getting Headroom running
+### Headroom is included
 
-Headroom is its own open-source compression proxy. KeiRouter just calls its `/v1/compress` endpoint, so you spin it up locally first. One gotcha worth shouting about: the **`headroom` CLI lives in the Python package** — the npm package is a library only, so `npm install -g headroom-ai` will leave you staring at `command not found`. Don't say we didn't warn you. 😉
-
-```bash
-# The clean way: pipx isolates the CLI and sorts out your PATH (needs Python 3.10+)
-pipx install "headroom-ai[all]"
-pipx ensurepath               # puts headroom on your PATH — then restart your shell
-
-headroom proxy --port 8787    # start the proxy
-headroom doctor               # make sure it's actually happy
-```
-
-On Ubuntu and `pip` is fighting you (PEP 668 blocks global installs)? Go `--user` and make sure `~/.local/bin` is on your `PATH`:
-
-```bash
-pip install --user "headroom-ai[all]"
-export PATH="$HOME/.local/bin:$PATH"   # drop this in ~/.zshrc or ~/.bashrc
-```
-
-Then over in **Settings → Token Saving → Headroom**: flip it on, set the **Proxy URL** to `http://localhost:8787`, and hit **Test connection** to confirm the handshake. Green check? You're golden.
+KeiRouter provisions the pinned Headroom runtime automatically: Docker deployments run it as a private sidecar, while supported macOS and Linux native installs manage a private local runtime. In **Settings → Token Saving → Headroom**, flip it on and use **Test connection** to confirm the bundled runtime is ready.
 
 ---
 
