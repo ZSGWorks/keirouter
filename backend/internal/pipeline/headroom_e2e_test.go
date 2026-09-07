@@ -77,11 +77,9 @@ func TestHeadroomEndToEnd_PipelineMeterStore(t *testing.T) {
 						{"role": "system", "content": "Helpful assistant."},
 						{"role": "user", "content": "Summarize the fox text."},
 					},
-					"stats": map[string]any{
-						"tokens_before": 1200,
-						"tokens_after":  200,
-						"tokens_saved":  1000,
-					},
+					"tokens_before": 1200,
+					"tokens_after":  200,
+					"tokens_saved":  1000,
 				})
 			},
 			wantHeadroomActive: true,
@@ -104,12 +102,10 @@ func TestHeadroomEndToEnd_PipelineMeterStore(t *testing.T) {
 				}
 				_ = json.NewDecoder(r.Body).Decode(&body)
 				writeJSON(w, map[string]any{
-					"messages": body.Messages,
-					"stats": map[string]any{
-						"tokens_before": 1200,
-						"tokens_after":  700,
-						"tokens_saved":  500,
-					},
+					"messages":      body.Messages,
+					"tokens_before": 1200,
+					"tokens_after":  700,
+					"tokens_saved":  500,
 				})
 			},
 			wantHeadroomActive: false,

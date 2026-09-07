@@ -32,7 +32,7 @@ func TestCompress_RetriesTransientThenSucceeds(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"messages":[{"role":"user","content":"hi"}],"stats":{"tokens_before":10,"tokens_after":2,"tokens_saved":8}}`))
+		_, _ = w.Write([]byte(`{"messages":[{"role":"user","content":"hi"}],"tokens_before":10,"tokens_after":2,"tokens_saved":8}`))
 	}))
 	defer srv.Close()
 
@@ -43,6 +43,9 @@ func TestCompress_RetriesTransientThenSucceeds(t *testing.T) {
 	require.Equal(t, int32(2), atomic.LoadInt32(&calls), "should retry once after 503")
 	require.Len(t, req.Messages, 1)
 	require.Equal(t, "hi", req.Messages[0].Content[0].Text)
+	require.Equal(t, 10, stats.TokensBefore)
+	require.Equal(t, 2, stats.TokensAfter)
+	require.Equal(t, 8, stats.TokensSaved)
 }
 
 // TestCompress_PersistentTransientFailsOpen verifies that when every attempt
@@ -101,4 +104,44 @@ func TestCompress_NonRetryableStatusNoRetry(t *testing.T) {
 
 	require.False(t, stats.Compressed)
 	require.Equal(t, int32(1), atomic.LoadInt32(&calls), "non-retryable status must not be retried")
+}
+
+// TestCompress_UnusableSuccessResponseFailsOpen ensures a 2xx response cannot
+// replace caller messages unless it contains a usable compression result.
+func TestCompress_UnusableSuccessResponseFailsOpen(t *testing.T) {
+	cases := map[string]string{
+		"malformed JSON":      `{"messages":`,
+		"compression skipped": `{"messages":[{"role":"user","content":"compressed"}],"compression_skipped":true}`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(body))
+			}))
+			defer srv.Close()
+
+			req := testRequest()
+			before := req.Messages[0].Content[0].Text
+			stats := New(nil).Compress(context.Background(), req, Config{Enabled: true, URL: srv.URL, Timeout: 2 * time.Second})
+
+			require.False(t, stats.Compressed)
+			require.Equal(t, before, req.Messages[0].Content[0].Text)
+			require.Zero(t, stats.TokensSaved)
+		})
+	}
+}
+
+func TestProbe_SkippedResponseIsNotOK(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"messages":[{"role":"user","content":"ping"}],"compression_skipped":true}`))
+	}))
+	defer srv.Close()
+
+	result := New(nil).Probe(context.Background(), Config{URL: srv.URL, Timeout: time.Second})
+
+	require.True(t, result.Reachable)
+	require.False(t, result.OK)
+	require.Contains(t, result.Message, "skipped")
 }
