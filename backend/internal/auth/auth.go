@@ -102,6 +102,20 @@ func (s *Service) loadOrCreateSigningKey(ctx context.Context) ([]byte, error) {
 	return key, nil
 }
 
+// Delete removes the stored password hash, signing key, and onboarding flag.
+// The next EnsureDefaults call reseeds the default password and a fresh
+// signing key (which also invalidates all outstanding sessions). Used by the
+// dashboard password recovery flow.
+func (s *Service) Delete(ctx context.Context) error {
+	for _, key := range []string{keyPasswordHash, keySigningKey, keyOnboarding} {
+		if err := s.settings.Delete(ctx, key); err != nil {
+			return fmt.Errorf("auth: delete %s: %w", key, err)
+		}
+	}
+	s.signingKey = nil
+	return nil
+}
+
 // VerifyPassword reports whether the given password matches the stored hash.
 func (s *Service) VerifyPassword(ctx context.Context, password string) (bool, error) {
 	hash, err := s.settings.Get(ctx, keyPasswordHash)

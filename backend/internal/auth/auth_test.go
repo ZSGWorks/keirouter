@@ -112,3 +112,31 @@ func TestSession_SigningKeyPersistsAcrossInstances(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, svc2.VerifySession(token))
 }
+
+func TestDelete_ResetsPasswordAndSessions(t *testing.T) {
+	svc, ctx := newTestAuth(t)
+
+	require.NoError(t, svc.SetPassword(ctx, "a-strong-password"))
+	require.NoError(t, svc.CompleteOnboarding(ctx))
+	token, err := svc.IssueSession()
+	require.NoError(t, err)
+	require.True(t, svc.VerifySession(token))
+
+	require.NoError(t, svc.Delete(ctx))
+
+	// Hash gone: verify must fail, onboarding cleared, sessions dead.
+	_, err = svc.VerifyPassword(ctx, "a-strong-password")
+	require.Error(t, err, "password hash must be gone")
+
+	// Next EnsureDefaults reseeds the default password + fresh signing key.
+	seeded, err := svc.EnsureDefaults(ctx)
+	require.NoError(t, err)
+	require.True(t, seeded, "reset must re-seed the default password")
+	require.False(t, svc.OnboardingComplete(ctx))
+
+	ok, err := svc.VerifyPassword(ctx, DefaultPassword)
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	require.False(t, svc.VerifySession(token), "old session token must be invalid after reset")
+}
