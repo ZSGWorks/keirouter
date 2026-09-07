@@ -178,6 +178,7 @@ func (s *Server) adminListProviders(w http.ResponseWriter, r *http.Request) {
 	kindFilter := core.ServiceKind(r.URL.Query().Get("kind"))
 
 	specs := connectors.Catalog()
+	connected := s.connectedProviderSet(r.Context(), adminTenant)
 	out := make([]map[string]any, 0, len(specs))
 	for _, p := range specs {
 		if kindFilter != "" && !core.HasServiceKind(p.ServiceKinds, kindFilter) {
@@ -204,6 +205,7 @@ func (s *Server) adminListProviders(w http.ResponseWriter, r *http.Request) {
 			"pinned":        p.Pinned,
 			"notice":        p.Notice,
 			"drivable":      connectors.DrivableDialect(p.Dialect) || webProvider(p.ID),
+			"connected":     connected[p.ID],
 			"input_per_m":   p.InputPerM,
 			"output_per_m":  p.OutputPerM,
 		}
@@ -439,8 +441,19 @@ func (s *Server) adminProviderModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Connected providers are served through the 12h model cache so repeated
+	// dashboard reads do not re-probe upstreams. Unconnected providers keep
+	// the uncached path. Connection state is resolved once and reused for
+	// both the read and the store below.
+	connected := s.isConnectedProvider(r.Context(), providerID)
+	if models, ok := s.cachedProviderModels(connected, providerID, kindFilter); ok {
+		writeJSON(w, http.StatusOK, map[string]any{"models": models})
+		return
+	}
+
 	out, seen := s.catalogProviderModels(r.Context(), providerID, kindFilter)
 	s.discoverProviderModels(r.Context(), providerID, kindFilter, &out, seen)
+	s.storeProviderModelCache(connected, providerID, kindFilter, out)
 	writeJSON(w, http.StatusOK, map[string]any{"models": out})
 }
 
@@ -848,6 +861,7 @@ func (s *Server) adminCreateAccount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "account creation failed"))
 		return
 	}
+	s.warmProviderModelCacheAsync(acc.Provider)
 	writeJSON(w, http.StatusCreated, map[string]any{"id": acc.ID, "provider": acc.Provider, "label": acc.Label})
 }
 
@@ -1072,6 +1086,8 @@ func (s *Server) adminBulkCreateAccounts(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
+	s.warmProviderModelCacheAsync(body.Provider)
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"total":   len(results),
 		"created": created,
@@ -1082,9 +1098,16 @@ func (s *Server) adminBulkCreateAccounts(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) adminDeleteAccount(w http.ResponseWriter, r *http.Request) {
+	acc, getErr := s.accounts.Get(r.Context(), chi.URLParam(r, "id"))
+	if getErr != nil {
+		s.log.Warn("failed to fetch account before delete; model cache invalidation may be skipped", "id", chi.URLParam(r, "id"), "err", getErr)
+	}
 	if err := s.accounts.Delete(r.Context(), chi.URLParam(r, "id")); err != nil {
 		writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "internal server error"))
 		return
+	}
+	if acc.Provider != "" {
+		s.invalidateProviderModelCache(acc.Provider)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -1207,6 +1230,7 @@ func (s *Server) adminUpdateAccount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "internal server error"))
 		return
 	}
+	s.invalidateModelCacheIfDisabled(body.Disabled, acc.Provider)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id": acc.ID, "provider": acc.Provider, "label": acc.Label,
 		"priority": acc.Priority, "disabled": acc.Disabled,
@@ -1250,6 +1274,8 @@ func (s *Server) adminTestAccount(w http.ResponseWriter, r *http.Request) {
 	if acc.NeedsReconnect {
 		if err := s.accounts.SetNeedsReconnect(r.Context(), acc.ID, false); err != nil {
 			s.log.Warn("failed to clear needs_reconnect after successful test", "account", acc.ID, "err", err)
+		} else {
+			s.warmProviderModelCacheAsync(acc.Provider)
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -3495,6 +3521,7 @@ func (s *Server) validateAccountCredentials(ctx context.Context, acc store.Accou
 						// Clear needs_reconnect if it was set.
 						if acc.NeedsReconnect {
 							_ = s.accounts.SetNeedsReconnect(ctx, acc.ID, false)
+							s.warmProviderModelCacheAsync(acc.Provider)
 						}
 						return nil
 					}
@@ -3502,6 +3529,7 @@ func (s *Server) validateAccountCredentials(ctx context.Context, acc store.Accou
 					retryPE := core.AsProviderError(retryErr)
 					if retryPE != nil && retryPE.Kind == core.ErrAuth {
 						_ = s.accounts.SetNeedsReconnect(ctx, acc.ID, true)
+						s.invalidateProviderModelCache(acc.Provider)
 					}
 					return retryErr
 				}

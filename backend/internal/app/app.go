@@ -71,6 +71,9 @@ type App struct {
 	reloadPricing         func(context.Context) error
 	refreshPricingCatalog func(context.Context) error
 
+	// gw exposes background warm hooks on the gateway server.
+	gw *gateway.Server
+
 	// bg tracks long-lived background workers that touch the DB (oauth
 	// keepalive, health checker, cooldown sweeper) so shutdown can wait for
 	// them to return before closing the store, avoiding a use-after-close race.
@@ -297,7 +300,7 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 	// usable without a manual "connect" step in the dashboard.
 	seedFreeAccounts(ctx, db.Accounts(), log)
 
-	return &App{cfg: cfg, log: log, db: db, accounts: db.Accounts(), server: srv, keepAlive: keepAlive, guardrailAudit: guardrails.audit, guardrailRetention: guardrails.retention, meter: mtr, healthChecker: healthChecker, providerHealth: healthSvc, probeRunner: probeRunner, pricingFetcher: pricingFetcher, reloadPricing: reloadPricing, refreshPricingCatalog: refreshPricingCatalog}, nil
+	return &App{cfg: cfg, log: log, db: db, accounts: db.Accounts(), server: srv, keepAlive: keepAlive, guardrailAudit: guardrails.audit, guardrailRetention: guardrails.retention, meter: mtr, healthChecker: healthChecker, providerHealth: healthSvc, probeRunner: probeRunner, pricingFetcher: pricingFetcher, reloadPricing: reloadPricing, refreshPricingCatalog: refreshPricingCatalog, gw: gw}, nil
 }
 
 // initAuth constructs the auth service, optionally resetting the dashboard
@@ -527,6 +530,20 @@ func seedFreeAccounts(ctx context.Context, accounts *store.AccountRepo, log *slo
 
 // Run starts the HTTP server and blocks until ctx is cancelled, then shuts down
 // gracefully.
+// warmModelCacheBackground warms the gateway model cache for connected
+// providers on startup so dashboard model pickers never wait on live
+// upstream discovery. Best-effort; tracked as a background worker.
+func (a *App) warmModelCacheBackground(ctx context.Context) {
+	if a.gw == nil {
+		return
+	}
+	a.bg.Add(1)
+	go func() {
+		defer a.bg.Done()
+		a.gw.WarmModelCache(ctx)
+	}()
+}
+
 func (a *App) Run(ctx context.Context) error {
 	// Launch the OAuth keepalive loop so tokens stay fresh between requests.
 	if a.keepAlive != nil {
@@ -571,6 +588,8 @@ func (a *App) Run(ctx context.Context) error {
 			a.runPricingRefresher(ctx)
 		}()
 	}
+
+	a.warmModelCacheBackground(ctx)
 
 	errCh := make(chan error, 1)
 

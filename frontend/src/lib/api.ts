@@ -32,6 +32,8 @@ export interface Provider {
   base_url?: string;
   // custom marks user-defined dynamic provider instances (editable/deletable).
   custom?: boolean;
+  /** true when the provider has at least one connected (usable) account. */
+  connected?: boolean;
 }
 
 // ProviderModel is a single model entry returned by providerModels(). Custom

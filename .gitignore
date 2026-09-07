@@ -48,6 +48,7 @@ data/
 
 # Editor / OS
 .DS_Store
+._*
 .idea/
 .vscode/*
 !.vscode/extensions.json

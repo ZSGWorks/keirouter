@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -81,6 +82,8 @@ type Server struct {
 	version               string
 	updates               *update.Checker
 	insightsCache         *ttlCache
+	modelCache            *modelCache
+	modelCacheOnce        sync.Once
 	guardrails            *guardrails.Engine
 	guardrailRepo         *store.GuardrailRepo
 	guardrailLogs         *store.GuardrailLogRepo

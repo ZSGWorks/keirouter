@@ -61,7 +61,7 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 
 	data := make([]modelEntry, 0, 64)
 	seen := make(map[string]struct{}, 64)
-	usableProviders := s.usableModelProviders(r.Context(), tenantID)
+	usableProviders := s.connectedProviderSet(r.Context(), tenantID)
 	data = s.appendChainModels(r.Context(), tenantID, data, seen)
 	data = appendCatalogModels(data, seen, usableProviders, core.ServiceLLM)
 	data = appendLiveModels(data, seen, s.fetchLiveModels(r.Context(), tenantID), "")
@@ -270,7 +270,7 @@ func (s *Server) handleListModelsByKind(w http.ResponseWriter, r *http.Request) 
 	data := make([]modelEntry, 0, 64)
 	seen := make(map[string]struct{}, 64)
 	key, _ := authedKey(r.Context())
-	usableProviders := s.usableModelProviders(r.Context(), tenantOf(key))
+	usableProviders := s.connectedProviderSet(r.Context(), tenantOf(key))
 	data = appendCatalogModels(data, seen, usableProviders, kind)
 	data = appendLiveModels(data, seen, s.fetchLiveModels(r.Context(), tenantOf(key)), kind)
 	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "kind": kindParam, "data": data})
@@ -361,7 +361,9 @@ func firstUsableAccount(accounts []store.Account) (store.Account, bool) {
 	return store.Account{}, false
 }
 
-func (s *Server) usableModelProviders(ctx context.Context, tenantID string) map[string]bool {
+// connectedProviderSet returns the set of providers that have at least one
+// usable account (enabled and not pending re-authentication) for the tenant.
+func (s *Server) connectedProviderSet(ctx context.Context, tenantID string) map[string]bool {
 	usable := map[string]bool{}
 	if s.accounts == nil {
 		return usable
@@ -405,7 +407,7 @@ func (s *Server) handleModelInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key, _ := authedKey(r.Context())
-	if !s.usableModelProviders(r.Context(), tenantOf(key))[provider] {
+	if !s.connectedProviderSet(r.Context(), tenantOf(key))[provider] {
 		writeError(w, http.StatusNotFound, "unknown model: "+id)
 		return
 	}
