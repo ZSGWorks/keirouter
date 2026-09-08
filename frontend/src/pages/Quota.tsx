@@ -35,6 +35,29 @@ const PERIODS = [
 ];
 
 const REFRESH_INTERVAL = 10_000;
+const QUOTA_REFRESH_DEBOUNCE_MS = 8_000;
+
+// AutoRefreshCountdown owns the 1s countdown state so the tick re-renders only
+// this leaf, not the whole QuotaPage (filters + sorts + tables). Bump `reset`
+// to restart the countdown from full interval.
+function AutoRefreshCountdown({ reset }: { reset: number }) {
+  const [countdown, setCountdown] = useState(REFRESH_INTERVAL / 1000);
+  const countdownRef = useRef(REFRESH_INTERVAL / 1000);
+
+  useEffect(() => {
+    countdownRef.current = REFRESH_INTERVAL / 1000;
+    setCountdown(REFRESH_INTERVAL / 1000);
+    const interval = window.setInterval(() => {
+      countdownRef.current = countdownRef.current <= 1
+        ? REFRESH_INTERVAL / 1000
+        : countdownRef.current - 1;
+      setCountdown(countdownRef.current);
+    }, 1000);
+    return () => window.clearInterval(interval);
+  }, [reset]);
+
+  return <>Auto refresh · {countdown}s</>;
+}
 const DEPLETED_THRESHOLD = 5;
 const ACCOUNTS_PER_PAGE = 12;
 
@@ -56,10 +79,12 @@ export function QuotaPage() {
   const [quotaFilter, setQuotaFilter] = useState<QuotaFilter>("all");
   const [sortMode, setSortMode] = useState<SortMode>("attention");
   const [autoRefresh, setAutoRefresh] = useState(() => localStorage.getItem("quotaAutoRefresh") !== "false");
-  const [countdown, setCountdown] = useState(REFRESH_INTERVAL / 1000);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const countdownRef = useRef(REFRESH_INTERVAL / 1000);
+  // Countdown ticks live in the leaf component; the page keeps only the reset
+  // signal so a 1s tick no longer re-renders filters/sort/tables.
+  const [countdownReset, setCountdownReset] = useState(0);
+  const refreshTimer = useRef<number | null>(null);
   const queryClient = useQueryClient();
   const toast = useToast();
 
@@ -70,22 +95,20 @@ export function QuotaPage() {
     placeholderData: (previous) => previous,
   });
 
+  // Debounced SSE-driven refresh: usage events can arrive in bursts, so the
+  // invalidation is coalesced into one refetch per window instead of one per
+  // event (same pattern as Usage.tsx).
   useEffect(() => connectUsageStream(() => {
-    queryClient.invalidateQueries({ queryKey: ["quota"] });
+    if (refreshTimer.current != null) return;
+    refreshTimer.current = window.setTimeout(() => {
+      refreshTimer.current = null;
+      queryClient.invalidateQueries({ queryKey: ["quota"] });
+    }, QUOTA_REFRESH_DEBOUNCE_MS);
   }), [queryClient]);
 
-  useEffect(() => {
-    if (!autoRefresh) return;
-    countdownRef.current = REFRESH_INTERVAL / 1000;
-    setCountdown(REFRESH_INTERVAL / 1000);
-    const interval = window.setInterval(() => {
-      countdownRef.current = countdownRef.current <= 1
-        ? REFRESH_INTERVAL / 1000
-        : countdownRef.current - 1;
-      setCountdown(countdownRef.current);
-    }, 1000);
-    return () => window.clearInterval(interval);
-  }, [autoRefresh, quota.dataUpdatedAt]);
+  useEffect(() => () => {
+    if (refreshTimer.current != null) window.clearTimeout(refreshTimer.current);
+  }, []);
 
   useEffect(() => {
     localStorage.setItem("quotaAutoRefresh", String(autoRefresh));
@@ -225,8 +248,7 @@ export function QuotaPage() {
   const handleResumeAvailable = () => applyBulkState(resumableAccounts, false);
 
   const handleRefresh = async () => {
-    countdownRef.current = REFRESH_INTERVAL / 1000;
-    setCountdown(REFRESH_INTERVAL / 1000);
+    setCountdownReset((n) => n + 1);
     const result = await quota.refetch();
     if (result.isError) toast.error("Quota refresh failed", "The latest account data could not be loaded.");
   };
@@ -340,7 +362,7 @@ export function QuotaPage() {
                 }`}
               >
                 <span className={`h-1.5 w-1.5 rounded-full ${autoRefresh ? "bg-emerald-500" : "bg-[var(--text-muted)]"}`} />
-                {autoRefresh ? `Auto refresh · ${countdown}s` : "Auto refresh off"}
+                {autoRefresh ? <AutoRefreshCountdown reset={countdownReset} /> : "Auto refresh off"}
               </button>
             </div>
 

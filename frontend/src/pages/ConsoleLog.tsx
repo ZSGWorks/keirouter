@@ -187,6 +187,28 @@ export function ConsoleLogPage() {
 
   // ── SSE stream ───────────────────────────────────────────────────────────
 
+  // ── SSE stream ───────────────────────────────────────────────────────────
+
+  // Incoming SSE lines accumulate in a ref and flush to state in one batch
+  // per window; per-line setEntries during a log burst recomputes the stats
+  // and filtered memos O(burst) times.
+  const pendingRef = useRef<ConsoleLogEntry[]>([]);
+  const flushTimerRef = useRef<number | null>(null);
+
+  const flushPending = useCallback(() => {
+    if (flushTimerRef.current != null) {
+      window.clearTimeout(flushTimerRef.current);
+      flushTimerRef.current = null;
+    }
+    const batch = pendingRef.current;
+    if (batch.length === 0) return;
+    pendingRef.current = [];
+    setEntries((prev) => {
+      const next = [...prev, ...batch];
+      return next.length > MAX_LINES ? next.slice(-MAX_LINES) : next;
+    });
+  }, []);
+
   useEffect(() => {
     const es = new EventSource("/api/console/stream");
 
@@ -195,23 +217,32 @@ export function ConsoleLogPage() {
     es.onmessage = (e) => {
       const msg = JSON.parse(e.data);
       if (msg.type === "init") {
+        pendingRef.current = [];
         setEntries(msg.logs || []);
         setLoading(false);
       } else if (msg.type === "line") {
-        setEntries((prev) => {
-          const next = [...prev, msg.log as ConsoleLogEntry];
-          return next.length > MAX_LINES ? next.slice(-MAX_LINES) : next;
-        });
+        pendingRef.current.push(msg.log as ConsoleLogEntry);
+        if (flushTimerRef.current == null) {
+          flushTimerRef.current = window.setTimeout(flushPending, 250);
+        }
       } else if (msg.type === "clear") {
+        pendingRef.current = [];
+        flushPending();
         setEntries([]);
         setExpanded(new Set());
       }
     };
 
-    es.onerror = () => setConnected(false);
+    es.onerror = () => {
+      setConnected(false);
+      flushPending();
+    };
 
-    return () => es.close();
-  }, []);
+    return () => {
+      es.close();
+      if (flushTimerRef.current != null) window.clearTimeout(flushTimerRef.current);
+    };
+  }, [flushPending]);
 
   // ── Filtering ────────────────────────────────────────────────────────────
 
