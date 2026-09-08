@@ -17,8 +17,8 @@ func TestCopilot_SupportsResponsesEndpoint(t *testing.T) {
 		{"o3", true},
 		{"gemini-2.5-pro", false},
 		{"claude-3.7-sonnet", false},
-		{"GEMINI-PRO", false},   // case-insensitive
-		{"Claude-Opus", false},  // case-insensitive
+		{"GEMINI-PRO", false},  // case-insensitive
+		{"Claude-Opus", false}, // case-insensitive
 	}
 	for _, tc := range cases {
 		if got := c.supportsResponsesEndpoint(tc.model); got != tc.want {

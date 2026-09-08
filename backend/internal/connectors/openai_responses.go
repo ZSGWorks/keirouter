@@ -188,7 +188,8 @@ func (c *OpenAIResponses) Stream(ctx context.Context, req *core.ChatRequest, cre
 		ttft := newTTFTTracker(cfg)
 		terminalSeen := false
 
-		scanner := sseScanner(resp.Body)
+		scanner, sseRelease := sseScanner(resp.Body)
+		defer sseRelease()
 		for scanner.Scan() {
 			select {
 			case <-ctx.Done():

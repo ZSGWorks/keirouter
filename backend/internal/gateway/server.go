@@ -170,6 +170,7 @@ func New(d Deps) *Server {
 	if conLog == nil {
 		conLog = consolelog.New()
 	}
+	conLog.SetMinLevel(d.Config.Log.Level)
 	s := &Server{
 		cfg:                   d.Config,
 		log:                   log,

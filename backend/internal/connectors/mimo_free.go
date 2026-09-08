@@ -22,7 +22,7 @@ import (
 const (
 	mimoFreeDefaultBase   = "https://api.xiaomimimo.com"
 	mimoFreeBootstrapURL  = mimoFreeDefaultBase + "/api/free-ai/bootstrap"
-	mimoFreeChatBase     = mimoFreeDefaultBase + "/api/free-ai/openai"
+	mimoFreeChatBase      = mimoFreeDefaultBase + "/api/free-ai/openai"
 	mimoFreeSourceHeader  = "mimocode-cli-free"
 	mimoFreeRefreshBuf    = 5 * time.Minute
 	mimoFreeDefaultExpiry = 50 * time.Minute
@@ -346,7 +346,8 @@ func (c *MimoFree) Stream(ctx context.Context, req *core.ChatRequest, creds core
 
 		ttft := newTTFTTracker(cfg)
 
-		scanner := sseScanner(resp.Body)
+		scanner, sseRelease := sseScanner(resp.Body)
+		defer sseRelease()
 		for scanner.Scan() {
 			select {
 			case <-ctx.Done():

@@ -130,7 +130,8 @@ func (c *CommandCode) Stream(ctx context.Context, req *core.ChatRequest, creds c
 
 		ttft := newTTFTTracker(cfg)
 
-		scanner := sseScanner(resp.Body)
+		scanner, sseRelease := sseScanner(resp.Body)
+		defer sseRelease()
 		for scanner.Scan() {
 			select {
 			case <-ctx.Done():

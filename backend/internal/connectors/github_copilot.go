@@ -222,7 +222,8 @@ func (c *GitHubCopilot) Stream(ctx context.Context, req *core.ChatRequest, creds
 
 		ttft := newTTFTTracker(cfg)
 
-		scanner := sseScanner(resp.Body)
+		scanner, sseRelease := sseScanner(resp.Body)
+		defer sseRelease()
 		for scanner.Scan() {
 			select {
 			case <-ctx.Done():
@@ -343,7 +344,8 @@ func (c *GitHubCopilot) streamViaResponses(ctx context.Context, req *core.ChatRe
 
 		ttft := newTTFTTracker(cfg)
 
-		scanner := sseScanner(resp.Body)
+		scanner, sseRelease := sseScanner(resp.Body)
+		defer sseRelease()
 		for scanner.Scan() {
 			select {
 			case <-ctx.Done():

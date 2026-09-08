@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -73,19 +74,41 @@ const usageColumns = `id, request_id, tenant_id, project_id, api_key_id, provide
 	slim_rules, slim_active, caveman_active, terse_active, headroom_tokens_saved,
 	headroom_bytes_saved, headroom_active, ponytail_active, created_at`
 
+// Precomputed INSERT statements for usage_records. usageArgs is fixed by the
+// struct, so the sqlite ('?') and postgres ('$n') forms are built once at
+// init instead of per call. The batch builder appends row placeholders from
+// usageRowPlaceholdersSqlite/Postgres without re-deriving them.
+var (
+	usageInsertSqlite = "INSERT INTO usage_records (" + usageColumns + ") VALUES (" +
+		strings.TrimSuffix(strings.Repeat("?,", usageArgsPerRow), ",") + ")"
+
+	usageRowPlaceholdersSqlite = "(" + strings.TrimSuffix(strings.Repeat("?,", usageArgsPerRow), ",") + ")"
+
+	usageRowPlaceholdersPostgres = func() string {
+		var b strings.Builder
+		b.WriteByte('(')
+		for i := 0; i < usageArgsPerRow; i++ {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteString("$" + strconv.Itoa(i+1))
+		}
+		b.WriteByte(')')
+		return b.String()
+	}()
+)
+
 func insertUsageBatch(ctx context.Context, tx *sql.Tx, rebind func(string) string, records []UsageRecord) error {
-	argsPerRow := len(usageArgs(UsageRecord{}))
-	rowPlaceholders := "(" + strings.TrimSuffix(strings.Repeat("?,", argsPerRow), ",") + ")"
+	args := make([]any, 0, len(records)*usageArgsPerRow)
 	var b strings.Builder
 	b.WriteString("INSERT INTO usage_records (")
 	b.WriteString(usageColumns)
 	b.WriteString(") VALUES ")
-	args := make([]any, 0, len(records)*argsPerRow)
 	for i, u := range records {
 		if i > 0 {
 			b.WriteString(",")
 		}
-		b.WriteString(rowPlaceholders)
+		b.WriteString(usageRowPlaceholdersSqlite)
 		args = append(args, usageArgs(u)...)
 	}
 	if _, err := tx.ExecContext(ctx, rebind(b.String()), args...); err != nil {
@@ -98,11 +121,15 @@ func insertUsage(ctx context.Context, exec interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }, rebind func(string) string, u UsageRecord) error {
 	args := usageArgs(u)
-	placeholders := "(" + strings.TrimSuffix(strings.Repeat("?,", len(args)), ",") + ")"
-	q := rebind("INSERT INTO usage_records (" + usageColumns + ") VALUES " + placeholders)
+	q := rebind(usageInsertSqlite)
 	_, err := exec.ExecContext(ctx, q, args...)
 	return err
 }
+
+// usageArgsPerRow is the number of bind values per usage row; it must match
+// the field count of the literal returned by usageArgs and the usageColumns
+// column list.
+var usageArgsPerRow = len(usageArgs(UsageRecord{}))
 
 func usageArgs(u UsageRecord) []any {
 	// Keep legacy direct callers lossless while cost_nanos is the authoritative

@@ -516,7 +516,8 @@ func scanOpenAISSE(ctx context.Context, provider, model string, resp *http.Respo
 
 		ttft := newTTFTTracker(cfg)
 
-		scanner := sseScanner(resp.Body)
+		scanner, sseRelease := sseScanner(resp.Body)
+		defer sseRelease()
 		for scanner.Scan() {
 			select {
 			case <-ctx.Done():
@@ -568,21 +569,27 @@ func isMeaningfulChunk(ch core.StreamChunk) bool {
 }
 
 // sseScanner returns a bufio.Scanner configured for SSE: it reads one logical
-// line at a time with a generous buffer for large data payloads. Uses a pooled
-// initial buffer to reduce allocation pressure on high-throughput streams.
-func sseScanner(r io.Reader) *bufio.Scanner {
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), 2*1024*1024)
-	return sc
+// line at a time with a generous buffer for large data payloads. The scanner's
+// initial buffer comes from a pool to reduce allocation pressure on
+// high-throughput streams. Call the returned release func when the scan loop
+// exits (every call site runs one goroutine with a single exit path) to hand
+// the buffer back for reuse.
+var sseBufPool = sync.Pool{
+	New: func() any { return make([]byte, 0, 64*1024) },
 }
 
-// sseScannerPooled returns a bufio.Scanner like sseScanner but reuses a buffer
-// from the pool. The caller should NOT return the buffer — the scanner owns it
-// for the lifetime of the stream.
-func sseScannerPooled(r io.Reader) *bufio.Scanner {
+func sseScanner(r io.Reader) (*bufio.Scanner, func()) {
 	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), 2*1024*1024)
-	return sc
+	buf := sseBufPool.Get().([]byte)
+	sc.Buffer(buf[:0], 2*1024*1024)
+	return sc, func() {
+		// Scanner.Text() copies line contents, so the buffer is reusable once
+		// scanning finishes. Drop grown buffers so the pool stays 64 KiB-sized.
+		if cap(buf) > 64*1024 {
+			return
+		}
+		sseBufPool.Put(buf)
+	}
 }
 
 // parseSSEData extracts the payload from an SSE "data:" line, or returns ("",
