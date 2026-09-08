@@ -1681,7 +1681,7 @@ export const api = {
     ),
 
   healthChains: (range = "1h") =>
-    request<{ chains: HealthChainRow[] }>(
+    request<HealthChainsResponse>(
       "GET",
       `/health/chains?range=${encodeURIComponent(range)}`,
     ),
@@ -1809,6 +1809,11 @@ export interface HealthModelRow {
   last_updated_at?: string;
 }
 
+export interface HealthChainsResponse {
+  chains: HealthChainRow[];
+  window: HealthOverviewWindow;
+}
+
 export interface HealthChainRow {
   chain_id: string;
   name: string;
@@ -1844,6 +1849,7 @@ export interface HealthChainDetail {
   final_failure_count?: number;
   fallback_provider?: string;
   fallback_model?: string;
+  window?: HealthOverviewWindow;
 }
 
 export interface HealthProbeRow {

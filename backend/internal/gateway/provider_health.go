@@ -206,20 +206,7 @@ func (s *Server) adminHealthOverview(w http.ResponseWriter, r *http.Request) {
 	if providerP95Count > 0 {
 		avgP95 = totalProviderP95 / providerP95Count
 	}
-	generatedAt := time.Now().UTC()
-	windowDuration := time.Duration(0)
-	if s.providerHealth != nil {
-		windowDuration = s.providerHealth.RollingWindow()
-	}
-	window := map[string]any{
-		"kind":             "rolling_current",
-		"duration_seconds": int64(windowDuration.Seconds()),
-		"requested_range":  requestedRange,
-		"generated_at":     generatedAt,
-	}
-	if windowDuration > 0 {
-		window["since"] = generatedAt.Add(-windowDuration)
-	}
+	window := s.healthWindow(requestedRange)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"window": window,
 		"summary": map[string]any{
@@ -354,6 +341,28 @@ func (s *Server) adminHealthModels(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"models": out})
 }
 
+// healthWindow builds the rolling-current window descriptor shared by the
+// chain health endpoints. It mirrors adminHealthOverview so dashboards always
+// see the real collector window instead of mistaking the requested range for
+// an applied aggregation span.
+func (s *Server) healthWindow(requestedRange string) map[string]any {
+	generatedAt := time.Now().UTC()
+	windowDuration := time.Duration(0)
+	if s.providerHealth != nil {
+		windowDuration = s.providerHealth.RollingWindow()
+	}
+	window := map[string]any{
+		"kind":             "rolling_current",
+		"duration_seconds": int64(windowDuration.Seconds()),
+		"requested_range":  requestedRange,
+		"generated_at":     generatedAt,
+	}
+	if windowDuration > 0 {
+		window["since"] = generatedAt.Add(-windowDuration)
+	}
+	return window
+}
+
 // adminHealthChains returns chain health: fallback rate, final failures, and
 // affected providers, derived from real-traffic telemetry joined with chain
 // config + current provider health.
@@ -419,7 +428,10 @@ func (s *Server) adminHealthChains(w http.ResponseWriter, r *http.Request) {
 		entry["recommendation"] = chainRecommendation(worstStatus, mainIssue, affectedProvider, affectedModel)
 		out = append(out, entry)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"chains": out})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"chains": out,
+		"window": s.healthWindow(r.URL.Query().Get("range")),
+	})
 }
 
 // adminHealthChainDetail returns step-level health + usage for one chain.
@@ -480,6 +492,7 @@ func (s *Server) adminHealthChainDetail(w http.ResponseWriter, r *http.Request) 
 		resp["fallback_provider"] = c.FallbackProvider
 		resp["fallback_model"] = c.FallbackModel
 	}
+	resp["window"] = s.healthWindow(r.URL.Query().Get("range"))
 	writeJSON(w, http.StatusOK, resp)
 }
 
