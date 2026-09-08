@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import {
@@ -197,6 +197,26 @@ function UsageContent({
 }) {
   const { summary, savings, providers, recent, series } = data;
 
+	// Stable item arrays keep memoized SummaryCard from re-rendering when the
+	// 30/60s poll or SSE refresh recreates the page element tree.
+	const trafficItems = useMemo(() => [
+		{ label: "Tokens", value: fmtCompact(summary.total_tokens) },
+		{ label: "Success / failed", value: `${fmtCompact(summary.successful_requests)} / ${fmtCompact(summary.failed_requests)}` },
+		{ label: "Input / output", value: `${fmtCompact(summary.prompt_tokens)} / ${fmtCompact(summary.completion_tokens)}` },
+	], [summary.total_tokens, summary.successful_requests, summary.failed_requests, summary.prompt_tokens, summary.completion_tokens]);
+
+	const spendItems = useMemo(() => [
+		{ label: "Value saved", value: fmtUSD(savings.usd_saved), tone: "good" as const },
+		{ label: "Cost / request", value: fmtUSD(summary.cost_per_request_usd) },
+		{ label: "Tokens saved", value: fmtCompact(savings.total_tokens_saved) },
+	], [savings.usd_saved, savings.total_tokens_saved, summary.cost_per_request_usd]);
+
+	const perfItems = useMemo(() => [
+		{ label: "Avg latency", value: fmtMs(summary.avg_latency_ms) },
+		{ label: "TTFT", value: fmtMs(summary.avg_ttft_ms) },
+		{ label: "Tokens / request", value: fmtCompact(summary.tokens_per_request) },
+	], [summary.avg_latency_ms, summary.avg_ttft_ms, summary.tokens_per_request]);
+
 	return (
 		<div className="space-y-6 pb-12">
 			<div className="grid gap-4 lg:grid-cols-3">
@@ -205,22 +225,14 @@ function UsageContent({
 					title="Traffic"
 					primary={fmtCompact(summary.total_requests)}
 					primaryLabel="requests"
-					items={[
-						{ label: "Tokens", value: fmtCompact(summary.total_tokens) },
-						{ label: "Success / failed", value: `${fmtCompact(summary.successful_requests)} / ${fmtCompact(summary.failed_requests)}` },
-						{ label: "Input / output", value: `${fmtCompact(summary.prompt_tokens)} / ${fmtCompact(summary.completion_tokens)}` },
-					]}
+					items={trafficItems}
 				/>
 				<SummaryCard
 					icon={DollarSign}
 					title="Spend & savings"
 					primary={fmtUSD(summary.cost_usd)}
 					primaryLabel="tracked cost"
-					items={[
-						{ label: "Value saved", value: fmtUSD(savings.usd_saved), tone: "good" },
-						{ label: "Cost / request", value: fmtUSD(summary.cost_per_request_usd) },
-						{ label: "Tokens saved", value: fmtCompact(savings.total_tokens_saved) },
-					]}
+					items={spendItems}
 					tone={summary.unpriced_requests > 0 ? "warning" : "accent"}
 				/>
 				<SummaryCard
@@ -228,11 +240,7 @@ function UsageContent({
 					title="Performance"
 					primary={fmtRatio(summary.success_rate)}
 					primaryLabel="successful"
-					items={[
-						{ label: "Avg latency", value: fmtMs(summary.avg_latency_ms) },
-						{ label: "TTFT", value: fmtMs(summary.avg_ttft_ms) },
-						{ label: "Tokens / request", value: fmtCompact(summary.tokens_per_request) },
-					]}
+					items={perfItems}
 					tone={summary.success_rate < 0.95 && summary.total_requests > 0 ? "warning" : "success"}
 				/>
 			</div>
@@ -345,7 +353,7 @@ function CoveragePill({ label, ratio }: { label: string; ratio: number | null })
 
 type MetricTone = "accent" | "success" | "warning";
 
-function SummaryCard({
+const SummaryCard = memo(function SummaryCard({
 	icon: Icon,
 	title,
 	primary,
@@ -398,7 +406,7 @@ function SummaryCard({
 			</div>
 		</Card>
 	);
-}
+});
 
 type TrendMetric = "requests" | "tokens" | "cost" | "failures";
 
