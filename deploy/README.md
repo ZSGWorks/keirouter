@@ -142,9 +142,12 @@ KEIROUTER_URL=http://keirouter:20180
 The port matches `KEIROUTER_SERVER__PORT`, which defaults to `20180` and is
 fixed by `compose.coolify-postgres.yaml`.
 
-No host port is published. `localhost` inside a container refers to that
-container itself, not KeiRouter. If a deployment is not on the `coolify`
-network, attach it in Coolify or add the network to its Compose file.
+No public host port is published; the Compose file binds `20180` to
+`127.0.0.1` only (loopback), so the host VPS can reach KeiRouter locally
+without exposing the port externally. `localhost` inside a container refers
+to that container itself, not KeiRouter. If a deployment is not on the
+`coolify` network, attach it in Coolify or add the network to its Compose
+file.
 
 Avoid naming another service `keirouter` on the shared network; Docker DNS
 round-robins duplicate service names, so clients could reach the wrong
