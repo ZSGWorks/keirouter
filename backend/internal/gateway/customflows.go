@@ -235,7 +235,6 @@ func (s *Server) kimchiCallback(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(`<!DOCTYPE html><html><head><title>Kimchi Connected</title></head><body><p style="font-family:sans-serif;text-align:center;margin-top:40vh">Kimchi connected. You can close this tab.</p><script>try{window.opener&&window.opener.postMessage({type:"kimchi-callback",status:"success",state:"` + state + `"},"*")}catch(e){}setTimeout(function(){window.close()},500)</script></body></html>`))
 }
 
-
 // kimchiCallbackSubmit processes a manually submitted callback URL.
 // Used when the browser redirect didn't reach the callback endpoint or
 // the popup didn't auto-close.
@@ -257,7 +256,6 @@ func (s *Server) kimchiCallbackSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 }
-
 
 // cursorImport validates and stores a token pasted from the Cursor IDE.
 func (s *Server) cursorImport(w http.ResponseWriter, r *http.Request) {

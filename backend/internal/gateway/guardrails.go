@@ -48,14 +48,14 @@ func (s *Server) mountGuardrails(r chi.Router) {
 
 // guardrailDTO is the JSON shape exchanged with the dashboard.
 type guardrailDTO struct {
-	ID        string             `json:"id"`
-	Name      string             `json:"name"`
-	Scope     string             `json:"scope"`
-	ScopeID   string             `json:"scope_id"`
-	Enabled   bool               `json:"enabled"`
+	ID        string            `json:"id"`
+	Name      string            `json:"name"`
+	Scope     string            `json:"scope"`
+	ScopeID   string            `json:"scope_id"`
+	Enabled   bool              `json:"enabled"`
 	Config    guardrails.Policy `json:"config"`
-	CreatedAt string             `json:"created_at"`
-	UpdatedAt string             `json:"updated_at"`
+	CreatedAt string            `json:"created_at"`
+	UpdatedAt string            `json:"updated_at"`
 }
 
 func toDTO(p store.GuardrailPolicy) guardrailDTO {
