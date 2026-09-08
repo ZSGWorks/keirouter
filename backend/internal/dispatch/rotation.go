@@ -33,10 +33,16 @@ type rotationCache struct {
 	sizes    map[string]int
 	affinity map[string]store.AccountAffinity
 	loaded   map[string]bool
+	seeding  map[string]chan struct{}
 	routing  RoutingSource
 
 	pendingMu sync.Mutex
 	inFlight  int
+	persistWG sync.WaitGroup
+}
+
+func (r *rotationCache) waitForPersistence() {
+	r.persistWG.Wait()
 }
 
 // rotationCursor is the minimal rotation state both chains and targets share.
@@ -45,41 +51,112 @@ type rotationCursor struct {
 	hitCount  int
 }
 
+// rotationKey identifies a rotation state row by kind and key.
+type rotationKey struct {
+	kind string
+	key  string
+}
+
+func (k rotationKey) id() string { return k.kind + "/" + k.key }
+
 func newRotationCache(routing RoutingSource) *rotationCache {
 	return &rotationCache{
 		cursors:  make(map[string]rotationCursor),
 		sizes:    make(map[string]int),
 		affinity: make(map[string]store.AccountAffinity),
 		loaded:   make(map[string]bool),
+		seeding:  make(map[string]chan struct{}),
 		routing:  routing,
 	}
 }
 
-// seedLocked loads one key's persisted state into memory the first time it is
-// requested. Errors are swallowed: missing state means zero cursor, and a
-// failed seed simply falls back to the in-memory zero value.
-func (r *rotationCache) seedLocked(kind, key string) {
-	id := kind + "/" + key
+// seed loads one key's persisted state without blocking unrelated rotations.
+// Errors are swallowed: missing state means zero cursor, and a failed seed
+// simply falls back to the in-memory zero value.
+func (r *rotationCache) seed(key rotationKey) {
+	for {
+		if r.trySeed(key) {
+			return
+		}
+	}
+}
+
+// trySeed attempts to load persisted state for one key. Returns true when
+// the key is loaded (or was already loaded), false when another goroutine
+// is mid-flight and the caller should retry.
+func (r *rotationCache) trySeed(key rotationKey) bool {
+	id := key.id()
+	r.mu.Lock()
 	if r.loaded[id] {
+		r.mu.Unlock()
+		return true
+	}
+	if done := r.seeding[id]; done != nil {
+		r.mu.Unlock()
+		<-done
+		return false
+	}
+	done := make(chan struct{})
+	r.seeding[id] = done
+	r.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	var cursor rotationCursor
+	var affinity store.AccountAffinity
+	if key.kind == "affinity" {
+		if state, err := r.routing.GetAccountAffinity(ctx, key.key); err == nil {
+			affinity = state
+		}
+	} else {
+		cursor = r.loadCursor(ctx, key)
+	}
+	cancel()
+
+	r.commitSeed(seedResult{key: key, cursor: cursor, affinity: affinity}, done)
+	return true
+}
+
+// seedResult carries the loaded state for one key into commitSeed.
+type seedResult struct {
+	key      rotationKey
+	cursor   rotationCursor
+	affinity store.AccountAffinity
+}
+
+// commitSeed writes the loaded state under the mutex, skipping if another
+// goroutine already loaded the same key while this flight was in progress.
+func (r *rotationCache) commitSeed(res seedResult, done chan struct{}) {
+	id := res.key.id()
+	r.mu.Lock()
+	if r.loaded[id] {
+		delete(r.seeding, id)
+		close(done)
+		r.mu.Unlock()
 		return
 	}
-	r.loaded[id] = true
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	switch kind {
-	case "chain":
-		if state, err := r.routing.GetChainRotationState(ctx, key); err == nil {
-			r.cursors[id] = rotationCursor{lastIndex: state.LastIndex, hitCount: state.HitCount}
-		}
-	case "target":
-		if state, err := r.routing.GetTargetRotationState(ctx, key); err == nil {
-			r.cursors[id] = rotationCursor{lastIndex: state.LastIndex, hitCount: state.HitCount}
-		}
-	case "affinity":
-		if state, err := r.routing.GetAccountAffinity(ctx, key); err == nil {
-			r.affinity[key] = state
-		}
+	if res.key.kind == "affinity" {
+		r.affinity[res.key.key] = res.affinity
+	} else {
+		r.cursors[id] = res.cursor
 	}
+	r.loaded[id] = true
+	delete(r.seeding, id)
+	close(done)
+	r.mu.Unlock()
+}
+
+// loadCursor reads a chain or target cursor from the store.
+func (r *rotationCache) loadCursor(ctx context.Context, key rotationKey) rotationCursor {
+	if key.kind == "chain" {
+		if state, err := r.routing.GetChainRotationState(ctx, key.key); err == nil {
+			return rotationCursor{lastIndex: state.LastIndex, hitCount: state.HitCount}
+		}
+		return rotationCursor{}
+	}
+	if state, err := r.routing.GetTargetRotationState(ctx, key.key); err == nil {
+		return rotationCursor{lastIndex: state.LastIndex, hitCount: state.HitCount}
+	}
+	return rotationCursor{}
 }
 
 // advanceChain atomically reads the chain cursor for this request and stores
@@ -96,9 +173,10 @@ func (r *rotationCache) advanceTarget(scopeKey string, length, stickyLimit int) 
 // advance atomically reads, advances, and stores one rotation cursor and
 // persists it async. kind selects the chain vs target store row.
 func (r *rotationCache) advance(kind, key string, length, stickyLimit int) int {
-	id := kind + "/" + key
+	rk := rotationKey{kind: kind, key: key}
+	id := rk.id()
+	r.seed(rk)
 	r.mu.Lock()
-	r.seedLocked(kind, key)
 	cur := r.cursors[id]
 	cursor, nextCursor, nextHitCount := advanceRotationState(length, cur.lastIndex, cur.hitCount, stickyLimit)
 	if len(r.cursors) > rotationEntryMax {
@@ -122,8 +200,8 @@ func (r *rotationCache) advance(kind, key string, length, stickyLimit int) int {
 
 // pinAffinity returns the stored affinity for a key (zero value when none).
 func (r *rotationCache) pinAffinity(scopeKey string) store.AccountAffinity {
+	r.seed(rotationKey{kind: "affinity", key: scopeKey})
 	r.mu.Lock()
-	r.seedLocked("affinity", scopeKey)
 	state := r.affinity[scopeKey]
 	r.mu.Unlock()
 	return state
@@ -132,7 +210,7 @@ func (r *rotationCache) pinAffinity(scopeKey string) store.AccountAffinity {
 // setAffinity stores or clears an affinity pin and persists async.
 func (r *rotationCache) setAffinity(state store.AccountAffinity) {
 	r.mu.Lock()
-	// Memory is now authoritative for this key; a later seedLocked must not
+	// Memory is now authoritative for this key; a later seed must not
 	// overwrite the fresh pin with the stale store row.
 	r.loaded["affinity/"+state.ScopeKey] = true
 	if len(r.affinity) > rotationEntryMax {
@@ -181,8 +259,10 @@ func (r *rotationCache) persist(write func(context.Context)) {
 		return
 	}
 	r.inFlight++
+	r.persistWG.Add(1)
 	r.pendingMu.Unlock()
 	go func() {
+		defer r.persistWG.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		write(ctx)

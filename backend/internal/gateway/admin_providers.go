@@ -295,6 +295,16 @@ func (s *Server) adminProviderModels(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"models": models})
 		return
 	}
+	if connected && kindFilter == "" {
+		cache := s.providerModelCache()
+		models, _ := cache.refresh(r.Context(), providerID, func(ctx context.Context) ([]providerModelInfo, bool) {
+			out, seen := s.catalogProviderModels(ctx, providerID, kindFilter)
+			s.discoverProviderModels(ctx, providerID, kindFilter, &out, seen)
+			return out, ctx.Err() == nil
+		})
+		writeJSON(w, http.StatusOK, map[string]any{"models": models})
+		return
+	}
 
 	out, seen := s.catalogProviderModels(r.Context(), providerID, kindFilter)
 	s.discoverProviderModels(r.Context(), providerID, kindFilter, &out, seen)

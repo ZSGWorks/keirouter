@@ -204,6 +204,13 @@ func (d *Dispatcher) SetPoolSource(p proxy.PoolSource) { d.pools = p }
 // SetRoutingSource installs the model-cooldown and chain-rotation backend.
 func (d *Dispatcher) SetRoutingSource(r RoutingSource) { d.routing = r }
 
+// WaitForRotationPersistence drains pending rotation writes during shutdown.
+func (d *Dispatcher) WaitForRotationPersistence() {
+	if d.rotation != nil {
+		d.rotation.waitForPersistence()
+	}
+}
+
 // rotationState returns the lazily-created in-memory rotation cache. Must be
 // called after SetRoutingSource; until then rotation calls no-op into the
 // store-backed fallback paths.
@@ -797,19 +804,12 @@ func (d *Dispatcher) applyRotation(ctx context.Context, targets []Target, opts P
 	if sticky <= 0 {
 		sticky = DefaultStickyLimit
 	}
-	state, _ := d.routing.GetChainRotationState(ctx, opts.ChainID)
-	cursor, nextCursor, nextHitCount := advanceRotationState(len(targets), state.LastIndex, state.HitCount, sticky)
+	cursor := d.rotationState().advanceChain(opts.ChainID, len(targets), sticky)
 
 	rotated := make([]Target, len(targets))
 	for i := range targets {
 		rotated[i] = targets[(cursor+i)%len(targets)]
 	}
-
-	_ = d.routing.SetChainRotationState(ctx, store.ChainRotation{
-		ChainID:   opts.ChainID,
-		LastIndex: nextCursor,
-		HitCount:  nextHitCount,
-	})
 
 	return rotated
 }

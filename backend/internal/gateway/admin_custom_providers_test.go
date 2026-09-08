@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -181,4 +182,24 @@ func TestDeleteCustomProvider_RepoReturnsNotFoundForMissing(t *testing.T) {
 	// And the handler maps it to 404 when it slips past the probe.
 	code, body := deleteCustomProvider(t, s, "custom-anthropic-ghost")
 	require.Equal(t, http.StatusNotFound, code, body)
+}
+
+func TestCreateCustomModelInvalidatesProviderModelCache(t *testing.T) {
+	s, _ := newCustomProviderTestServer(t)
+	const providerID = "custom-openai-cache-test"
+	connectors.RegisterDynamicProvider(connectors.DynamicProvider{
+		ID: providerID, DisplayName: "Cache Test", Alias: providerID,
+		Dialect: core.DialectOpenAI, BaseURL: "https://example.test/v1",
+	})
+	t.Cleanup(func() { connectors.UnregisterDynamicProvider(providerID) })
+
+	s.providerModelCache().set(providerID, []providerModelInfo{{ID: "stale"}})
+	req := httptest.NewRequest(http.MethodPost, "/custom-providers/"+providerID+"/models", strings.NewReader(`{"id":"fresh","kind":"llm"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(withChiID(http.MethodPost, req.URL.String(), providerID).Context())
+	rec := httptest.NewRecorder()
+	s.adminCreateCustomModel(rec, req)
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	_, ok := s.providerModelCache().get(providerID)
+	require.False(t, ok)
 }

@@ -84,6 +84,9 @@ type Server struct {
 	insightsCache         *ttlCache
 	modelCache            *modelCache
 	modelCacheOnce        sync.Once
+	modelCacheWarmMu      sync.Mutex
+	modelCacheWarmCtx     context.Context
+	modelCacheWarmWG      sync.WaitGroup
 	configCacheMu         sync.Mutex
 	chainCache            *configCache[[]store.Chain]
 	aliasCache            *configCache[aliasLookup]

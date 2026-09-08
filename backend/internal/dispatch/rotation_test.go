@@ -157,4 +157,9 @@ func TestPlanWithConcurrentRotationNoLock(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if rt.chainGets != 1 {
+		t.Fatalf("chain store reads = %d; want one cache seed", rt.chainGets)
+	}
 }

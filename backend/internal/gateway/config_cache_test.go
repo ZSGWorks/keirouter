@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -25,6 +26,21 @@ func TestConfigCacheHitAndExpiry(t *testing.T) {
 	if _, ok := c.get("k"); ok {
 		t.Fatal("invalidate should clear entries")
 	}
+}
+
+func TestChainsCacheConcurrentInitialization(t *testing.T) {
+	s := &Server{}
+	var wg sync.WaitGroup
+	for range 32 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if s.chainsCache() == nil {
+				t.Error("chains cache is nil")
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 func TestCachedChainSourceHitsCache(t *testing.T) {
@@ -69,15 +85,12 @@ func TestCachedChainSourceHitsCache(t *testing.T) {
 
 	// Invalidation must drop the stale entry.
 	s.invalidateConfigCaches()
-	if _, err := src.ListByTenant(ctx, "t1"); err != nil {
+	updated, err := src.ListByTenant(ctx, "t1")
+	if err != nil {
 		t.Fatalf("post-invalidate list: %v", err)
 	}
-	// (empty list is a valid response; absence of error + cache drop is the assert)
-
-	// A fresh cache must no longer serve the deleted chain.
-	s.invalidateConfigCaches()
-	if _, ok := s.chainsCache().get("t1"); ok {
-		t.Fatal("cache should be empty after invalidation + refill of empty list")
+	if len(updated) != 0 {
+		t.Fatalf("post-invalidate list = %+v; want no chains", updated)
 	}
 }
 

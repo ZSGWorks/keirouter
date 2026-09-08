@@ -472,6 +472,16 @@ func (s *Server) adminQuotaUsage(w http.ResponseWriter, r *http.Request) {
 // probeAccountQuota refreshes OAuth state, opens credentials, and fetches
 // upstream quota for one account inside the bounded probe fan-out.
 func (s *Server) probeAccountQuota(ctx context.Context, wg *sync.WaitGroup, quotaProbes chan struct{}, entry map[string]any, a store.Account, qs connectors.QuotaSource) {
+	if !acquireQuotaProbe(ctx, quotaProbes) {
+		return
+	}
+	releaseProbe := true
+	defer func() {
+		if releaseProbe {
+			<-quotaProbes
+		}
+	}()
+
 	// Refresh OAuth access tokens before probing so expired tokens
 	// don't silently suppress the quota/credits detail box. Mirrors
 	// refresh-then-probe pattern in validateAccountCredentials.
@@ -487,11 +497,8 @@ func (s *Server) probeAccountQuota(ctx context.Context, wg *sync.WaitGroup, quot
 		entry["message"] = "Credentials could not be opened for quota refresh."
 		return
 	}
-	select {
-	case quotaProbes <- struct{}{}:
-	case <-ctx.Done():
-	}
 	wg.Add(1)
+	releaseProbe = false
 	go func() {
 		defer wg.Done()
 		defer func() { <-quotaProbes }()
@@ -522,6 +529,15 @@ func (s *Server) probeAccountQuota(ctx context.Context, wg *sync.WaitGroup, quot
 			entry["message"] = "Upstream quota could not be refreshed."
 		}
 	}()
+}
+
+func acquireQuotaProbe(ctx context.Context, quotaProbes chan struct{}) bool {
+	select {
+	case quotaProbes <- struct{}{}:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 // ---- usage SSE stream --------------------------------------------------------

@@ -2,11 +2,13 @@ package gateway
 
 import (
 	"context"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/mydisha/keirouter/backend/internal/connectors"
 	"github.com/mydisha/keirouter/backend/internal/core"
+	"golang.org/x/sync/singleflight"
 )
 
 // modelCacheTTL bounds how long a connected provider's model listing stays
@@ -22,13 +24,15 @@ type modelCacheEntry struct {
 // modelCache is an in-memory, per-provider cache of model listings for
 // connected providers only. Unconnected providers bypass the cache.
 type modelCache struct {
-	mu      sync.Mutex
-	ttl     time.Duration
-	entries map[string]modelCacheEntry
+	mu          sync.Mutex
+	ttl         time.Duration
+	entries     map[string]modelCacheEntry
+	generations map[string]uint64
+	flights     singleflight.Group
 }
 
 func newModelCache() *modelCache {
-	return &modelCache{ttl: modelCacheTTL, entries: map[string]modelCacheEntry{}}
+	return &modelCache{ttl: modelCacheTTL, entries: map[string]modelCacheEntry{}, generations: map[string]uint64{}}
 }
 
 // get returns the cached models for a provider when a fresh entry exists.
@@ -64,6 +68,58 @@ func (c *modelCache) invalidate(provider string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.entries, provider)
+	c.generations[provider]++
+}
+
+// refresh returns the cached listing for a provider when fresh, or
+// coalesces concurrent refreshes via singleflight keyed by generation so
+// that a request arriving after invalidation never joins a stale flight.
+// compute is called with a bounded context; its second return value
+// indicates whether the result should be cached.
+func (c *modelCache) refresh(ctx context.Context, provider string, compute func(context.Context) ([]providerModelInfo, bool)) ([]providerModelInfo, bool) {
+	if c == nil {
+		return nil, false
+	}
+	c.mu.Lock()
+	gen := c.generations[provider]
+	if entry, ok := c.entries[provider]; ok && time.Now().Before(entry.expires) {
+		c.mu.Unlock()
+		return entry.models, true
+	}
+	c.mu.Unlock()
+
+	key := provider + "/" + strconv.FormatUint(gen, 10)
+	result, _, _ := c.flights.Do(key, func() (any, error) {
+		return c.computeOrCache(provider, gen, compute), nil
+	})
+	if result == nil {
+		return nil, false
+	}
+	return result.([]providerModelInfo), true
+}
+
+// computeOrCache re-checks the cache after winning a singleflight, computes
+// fresh models via the provided function, and stores the result when the
+// generation has not changed (i.e. no invalidation occurred mid-flight).
+func (c *modelCache) computeOrCache(provider string, gen uint64, compute func(context.Context) ([]providerModelInfo, bool)) []providerModelInfo {
+	c.mu.Lock()
+	if entry, ok := c.entries[provider]; ok && time.Now().Before(entry.expires) {
+		c.mu.Unlock()
+		return entry.models
+	}
+	c.mu.Unlock()
+
+	computeCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	models, shouldCache := compute(computeCtx)
+	if shouldCache {
+		c.mu.Lock()
+		if c.generations[provider] == gen {
+			c.entries[provider] = modelCacheEntry{models: models, expires: time.Now().Add(c.ttl)}
+		}
+		c.mu.Unlock()
+	}
+	return models
 }
 
 // providerModelCache returns the server's model cache, initializing it once.
@@ -115,11 +171,32 @@ func (s *Server) invalidateModelCacheIfDisabled(disabled *bool, provider string)
 // warmProviderModelCacheAsync refreshes a provider's cached listing in the
 // background after connect-style events.
 func (s *Server) warmProviderModelCacheAsync(providerID string) {
+	s.modelCacheWarmMu.Lock()
+	ctx := s.modelCacheWarmCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.modelCacheWarmWG.Add(1)
+	s.modelCacheWarmMu.Unlock()
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer s.modelCacheWarmWG.Done()
+		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
 		s.warmModelCache(ctx, providerID)
 	}()
+}
+
+// SetModelCacheWarmContext binds account-triggered cache warmers to the
+// application lifecycle. Call before serving requests.
+func (s *Server) SetModelCacheWarmContext(ctx context.Context) {
+	s.modelCacheWarmMu.Lock()
+	s.modelCacheWarmCtx = ctx
+	s.modelCacheWarmMu.Unlock()
+}
+
+// WaitForModelCacheWarmers prevents active warmers from querying a closed DB.
+func (s *Server) WaitForModelCacheWarmers() {
+	s.modelCacheWarmWG.Wait()
 }
 
 // connectedProvidersWithModels returns the subset of usable providers whose
@@ -152,10 +229,11 @@ func (s *Server) warmModelCache(ctx context.Context, providerID string) {
 	if !s.isConnectedProvider(ctx, providerID) {
 		return
 	}
-	cache := s.providerModelCache()
-	out, seen := s.catalogProviderModels(ctx, providerID, "")
-	s.discoverProviderModels(ctx, providerID, "", &out, seen)
-	cache.set(providerID, out)
+	s.providerModelCache().refresh(ctx, providerID, func(computeCtx context.Context) ([]providerModelInfo, bool) {
+		out, seen := s.catalogProviderModels(computeCtx, providerID, "")
+		s.discoverProviderModels(computeCtx, providerID, "", &out, seen)
+		return out, computeCtx.Err() == nil
+	})
 }
 
 // WarmModelCache warms model listings for every connected provider. It runs

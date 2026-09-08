@@ -78,67 +78,55 @@ func (c *configCache[T]) invalidate() {
 // Server-level caches. Server literals in tests may leave these nil, so all
 // accessors nil-check before use and fall through to the store.
 func (s *Server) chainsCache() *configCache[[]store.Chain] {
+	s.configCacheMu.Lock()
+	defer s.configCacheMu.Unlock()
 	if s.chainCache == nil {
-		s.configCacheMu.Lock()
-		if s.chainCache == nil {
-			s.chainCache = newConfigCache[[]store.Chain]()
-		}
-		s.configCacheMu.Unlock()
+		s.chainCache = newConfigCache[[]store.Chain]()
 	}
 	return s.chainCache
 }
 
 func (s *Server) aliasesCache() *configCache[aliasLookup] {
+	s.configCacheMu.Lock()
+	defer s.configCacheMu.Unlock()
 	if s.aliasCache == nil {
-		s.configCacheMu.Lock()
-		if s.aliasCache == nil {
-			s.aliasCache = newConfigCache[aliasLookup]()
-		}
-		s.configCacheMu.Unlock()
+		s.aliasCache = newConfigCache[aliasLookup]()
 	}
 	return s.aliasCache
 }
 
 func (s *Server) endpointSettingsCache() *configCache[EndpointSettings] {
+	s.configCacheMu.Lock()
+	defer s.configCacheMu.Unlock()
 	if s.esCache == nil {
-		s.configCacheMu.Lock()
-		if s.esCache == nil {
-			s.esCache = newConfigCache[EndpointSettings]()
-		}
-		s.configCacheMu.Unlock()
+		s.esCache = newConfigCache[EndpointSettings]()
 	}
 	return s.esCache
 }
 
 func (s *Server) providerRoutingCache() *configCache[ProviderRoutingSettings] {
+	s.configCacheMu.Lock()
+	defer s.configCacheMu.Unlock()
 	if s.prCache == nil {
-		s.configCacheMu.Lock()
-		if s.prCache == nil {
-			s.prCache = newConfigCache[ProviderRoutingSettings]()
-		}
-		s.configCacheMu.Unlock()
+		s.prCache = newConfigCache[ProviderRoutingSettings]()
 	}
 	return s.prCache
 }
 
 func (s *Server) planLimitsCache() *configCache[planLimitsLookup] {
+	s.configCacheMu.Lock()
+	defer s.configCacheMu.Unlock()
 	if s.planCache == nil {
-		s.configCacheMu.Lock()
-		if s.planCache == nil {
-			s.planCache = newConfigCache[planLimitsLookup]()
-		}
-		s.configCacheMu.Unlock()
+		s.planCache = newConfigCache[planLimitsLookup]()
 	}
 	return s.planCache
 }
 
 func (s *Server) allowedModelsCache() *configCache[[]string] {
+	s.configCacheMu.Lock()
+	defer s.configCacheMu.Unlock()
 	if s.allowedCache == nil {
-		s.configCacheMu.Lock()
-		if s.allowedCache == nil {
-			s.allowedCache = newConfigCache[[]string]()
-		}
-		s.configCacheMu.Unlock()
+		s.allowedCache = newConfigCache[[]string]()
 	}
 	return s.allowedCache
 }
