@@ -317,8 +317,23 @@ func overrideString(dst *string, v *string) {
 
 // effectiveTokenSaving resolves the global endpoint settings and overlays the
 // given chain's overrides (when the request routed through a chain).
-func (s *Server) effectiveTokenSaving(ctx context.Context, chainTokenSaving string) EndpointSettings {
+// endpointSettingsCached returns endpoint settings via the request-path TTL
+// cache; admin handlers read through loadEndpointSettings for fresh values.
+func (s *Server) endpointSettingsCached(ctx context.Context) EndpointSettings {
+	if s.settings == nil {
+		return defaultEndpointSettings()
+	}
+	cache := s.endpointSettingsCache()
+	if es, ok := cache.get(endpointSettingsKey); ok {
+		return es
+	}
 	es := s.loadEndpointSettings(ctx)
+	cache.set(endpointSettingsKey, es)
+	return es
+}
+
+func (s *Server) effectiveTokenSaving(ctx context.Context, chainTokenSaving string) EndpointSettings {
+	es := s.endpointSettingsCached(ctx)
 	return applyChainOverrides(es, parseChainTokenSaving(chainTokenSaving))
 }
 
@@ -553,6 +568,7 @@ func (s *Server) adminUpdateEndpointSettings(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.invalidateConfigCaches()
 
 	// Notify pipeline of timeout changes so they take effect without restart.
 	if s.timeoutNotifier != nil {
@@ -581,7 +597,7 @@ func (s *Server) adminUpdateEndpointSettings(w http.ResponseWriter, r *http.Requ
 }
 
 func (s *Server) endpointPlanOptions(ctx context.Context, opts dispatch.PlanOptions, targets []dispatch.Target, affinityKey string) dispatch.PlanOptions {
-	es := s.loadEndpointSettings(ctx)
+	es := s.endpointSettingsCached(ctx)
 	switch es.RoutingStrategy {
 	case string(dispatch.StrategyRoundRobin):
 		opts.AccountStrategy = dispatch.StrategyRoundRobin
@@ -671,7 +687,23 @@ func defaultProviderRoutingSettings() ProviderRoutingSettings {
 	}
 }
 
+// loadProviderRoutingSettings is served via the request-path TTL cache; the
+// admin update handler invalidates on write.
 func (s *Server) loadProviderRoutingSettings(ctx context.Context, provider string) ProviderRoutingSettings {
+	if s.settings == nil || provider == "" {
+		return defaultProviderRoutingSettings()
+	}
+	cache := s.providerRoutingCache()
+	key := providerRoutingPrefix + provider
+	if ps, ok := cache.get(key); ok {
+		return ps
+	}
+	ps := s.loadProviderRoutingSettingsFromStore(ctx, provider)
+	cache.set(key, ps)
+	return ps
+}
+
+func (s *Server) loadProviderRoutingSettingsFromStore(ctx context.Context, provider string) ProviderRoutingSettings {
 	def := defaultProviderRoutingSettings()
 	if s.settings == nil || provider == "" {
 		return def
@@ -772,6 +804,7 @@ func (s *Server) adminUpdateProviderRouting(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.invalidateConfigCaches()
 	writeJSON(w, http.StatusOK, current)
 }
 

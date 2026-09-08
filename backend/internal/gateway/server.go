@@ -84,6 +84,13 @@ type Server struct {
 	insightsCache         *ttlCache
 	modelCache            *modelCache
 	modelCacheOnce        sync.Once
+	configCacheMu         sync.Mutex
+	chainCache            *configCache[[]store.Chain]
+	aliasCache            *configCache[aliasLookup]
+	esCache               *configCache[EndpointSettings]
+	prCache               *configCache[ProviderRoutingSettings]
+	planCache             *configCache[planLimitsLookup]
+	allowedCache          *configCache[[]string]
 	guardrails            *guardrails.Engine
 	guardrailRepo         *store.GuardrailRepo
 	guardrailLogs         *store.GuardrailLogRepo

@@ -195,6 +195,7 @@ func (s *Server) adminSetAlias(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "internal server error"))
 		return
 	}
+	s.invalidateConfigCaches()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -208,6 +209,7 @@ func (s *Server) adminDeleteAlias(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "internal server error"))
 		return
 	}
+	s.invalidateConfigCaches()
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -445,6 +447,7 @@ func (s *Server) adminImportDatabase(w http.ResponseWriter, r *http.Request) {
 			imported++
 		}
 	}
+	s.invalidateConfigCaches()
 
 	// Import aliases.
 	if raw, ok := payload["aliases"]; ok {
@@ -456,6 +459,7 @@ func (s *Server) adminImportDatabase(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	s.invalidateConfigCaches()
 
 	writeJSON(w, http.StatusOK, map[string]any{"imported": imported})
 }

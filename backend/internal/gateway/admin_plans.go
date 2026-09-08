@@ -107,6 +107,7 @@ func (s *Server) adminCreatePlan(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "internal server error"))
 		return
 	}
+	s.invalidateConfigCaches()
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"id": p.ID, "name": p.Name, "description": p.Description,
 		"limit_micros": p.LimitMicros, "limit_tokens": p.LimitTokens,
@@ -155,6 +156,7 @@ func (s *Server) adminUpdatePlan(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "internal server error"))
 		return
 	}
+	s.invalidateConfigCaches()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id": existing.ID, "name": existing.Name, "description": existing.Description,
 		"limit_micros": existing.LimitMicros, "limit_tokens": existing.LimitTokens,
@@ -257,6 +259,7 @@ func (s *Server) adminDeletePlan(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "internal server error"))
 		return
 	}
+	s.invalidateConfigCaches()
 	w.WriteHeader(http.StatusNoContent)
 }
 

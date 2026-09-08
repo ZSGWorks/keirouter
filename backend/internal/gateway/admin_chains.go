@@ -266,6 +266,7 @@ func (s *Server) adminCreateChain(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "internal server error"))
 		return
 	}
+	s.invalidateConfigCaches()
 	writeJSON(w, http.StatusCreated, map[string]any{"id": chain.ID, "name": chain.Name})
 }
 
@@ -274,6 +275,7 @@ func (s *Server) adminDeleteChain(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "internal server error"))
 		return
 	}
+	s.invalidateConfigCaches()
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -354,6 +356,7 @@ func (s *Server) adminUpdateChain(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "internal server error"))
 		return
 	}
+	s.invalidateConfigCaches()
 	writeJSON(w, http.StatusOK, map[string]any{"id": existing.ID, "name": existing.Name})
 }
 

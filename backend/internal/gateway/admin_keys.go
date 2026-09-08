@@ -120,6 +120,7 @@ func (s *Server) adminCreateKey(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "internal server error"))
 			return
 		}
+		s.invalidateConfigCaches()
 		writeJSON(w, http.StatusCreated, map[string]any{
 			"id": issued.Record.ID, "name": issued.Record.Name,
 			"key": issued.Plaintext, "display": issued.Record.Display, "plan_id": issued.Record.PlanID,
@@ -224,6 +225,7 @@ func (s *Server) adminCreateKey(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "transaction commit failed")
 		return
 	}
+	s.invalidateConfigCaches()
 
 	// Invalidate the budget definition cache so the next request picks up
 	// the newly-created budget immediately.
@@ -262,6 +264,7 @@ func (s *Server) adminDeleteKey(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "internal server error"))
 		return
 	}
+	s.invalidateConfigCaches()
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -291,6 +294,7 @@ func (s *Server) adminUpdateKey(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	s.invalidateConfigCaches()
 	writeJSON(w, http.StatusOK, map[string]any{"id": id, "disabled": body.Disabled, "allowed_models": body.AllowedModels})
 }
 
