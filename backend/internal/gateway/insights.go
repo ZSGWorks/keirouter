@@ -16,7 +16,6 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/mydisha/keirouter/backend/internal/connectors"
-	"github.com/mydisha/keirouter/backend/internal/core"
 	"github.com/mydisha/keirouter/backend/internal/httputil"
 	"github.com/mydisha/keirouter/backend/internal/store"
 	"github.com/mydisha/keirouter/backend/internal/usagehub"
@@ -401,6 +400,10 @@ func (s *Server) adminQuotaUsage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var wg sync.WaitGroup
+	// Bound concurrent upstream quota probes (each opens an upstream HTTPS
+	// connection) so one dashboard refresh burst cannot fan out one goroutine
+	// per account. Mirrors the model-cache warm probe bound.
+	quotaProbes := make(chan struct{}, 4)
 	out := make([]map[string]any, 0, len(accs))
 
 	for _, a := range accs {
@@ -459,55 +462,82 @@ func (s *Server) adminQuotaUsage(w http.ResponseWriter, r *http.Request) {
 
 		// Fetch upstream quota for providers that support it (e.g. Kiro) concurrently.
 		if quotaSource != nil && !a.Disabled {
-			// Refresh OAuth access tokens before probing so expired tokens
-			// don't silently suppress the quota/credits detail box. Mirrors
-			// the refresh-then-probe pattern in validateAccountCredentials.
-			quotaAcc := a
-			if s.refresher != nil {
-				if refreshed, rerr := s.refresher.EnsureFresh(ctx, a); rerr == nil {
-					quotaAcc = refreshed
-				}
-			}
-			if creds, err := s.vault.Open(quotaAcc); err == nil {
-				wg.Add(1)
-				go func(target map[string]any, qs connectors.QuotaSource, creds core.Credentials) {
-					defer wg.Done()
-					quotaCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-					quota, qerr := qs.FetchQuota(quotaCtx, creds)
-					cancel()
-					if qerr == nil && quota != nil {
-						var quotas []map[string]any
-						for _, q := range quota.Quotas {
-							quotas = append(quotas, map[string]any{
-								"resource_type": q.ResourceType,
-								"used":          q.Used,
-								"limit":         q.Limit,
-								"remaining":     q.Remaining,
-								"reset_at":      q.ResetAt,
-							})
-						}
-
-						target["plan_name"] = quota.PlanName
-						target["message"] = quota.Message
-						if len(quotas) > 0 {
-							target["quota_state"] = "reported"
-							target["upstream_quotas"] = quotas
-						} else {
-							target["quota_state"] = "unavailable"
-						}
-					} else {
-						target["quota_state"] = "error"
-						target["message"] = "Upstream quota could not be refreshed."
-					}
-				}(entry, quotaSource, creds)
-			} else {
-				entry["quota_state"] = "error"
-				entry["message"] = "Credentials could not be opened for quota refresh."
-			}
+			s.probeAccountQuota(ctx, &wg, quotaProbes, entry, a, quotaSource)
 		}
 	}
 	wg.Wait()
 	writeJSON(w, http.StatusOK, map[string]any{"accounts": out, "since": since})
+}
+
+// probeAccountQuota refreshes OAuth state, opens credentials, and fetches
+// upstream quota for one account inside the bounded probe fan-out.
+func (s *Server) probeAccountQuota(ctx context.Context, wg *sync.WaitGroup, quotaProbes chan struct{}, entry map[string]any, a store.Account, qs connectors.QuotaSource) {
+	if !acquireQuotaProbe(ctx, quotaProbes) {
+		return
+	}
+	releaseProbe := true
+	defer func() {
+		if releaseProbe {
+			<-quotaProbes
+		}
+	}()
+
+	// Refresh OAuth access tokens before probing so expired tokens
+	// don't silently suppress the quota/credits detail box. Mirrors
+	// refresh-then-probe pattern in validateAccountCredentials.
+	quotaAcc := a
+	if s.refresher != nil {
+		if refreshed, rerr := s.refresher.EnsureFresh(ctx, a); rerr == nil {
+			quotaAcc = refreshed
+		}
+	}
+	creds, err := s.vault.Open(quotaAcc)
+	if err != nil {
+		entry["quota_state"] = "error"
+		entry["message"] = "Credentials could not be opened for quota refresh."
+		return
+	}
+	wg.Add(1)
+	releaseProbe = false
+	go func() {
+		defer wg.Done()
+		defer func() { <-quotaProbes }()
+		quotaCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+		quota, qerr := qs.FetchQuota(quotaCtx, creds)
+		cancel()
+		if qerr == nil && quota != nil {
+			var quotas []map[string]any
+			for _, q := range quota.Quotas {
+				quotas = append(quotas, map[string]any{
+					"resource_type": q.ResourceType,
+					"used":          q.Used,
+					"limit":         q.Limit,
+					"remaining":     q.Remaining,
+					"reset_at":      q.ResetAt,
+				})
+			}
+			entry["plan_name"] = quota.PlanName
+			entry["message"] = quota.Message
+			if len(quotas) > 0 {
+				entry["quota_state"] = "reported"
+				entry["upstream_quotas"] = quotas
+			} else {
+				entry["quota_state"] = "unavailable"
+			}
+		} else {
+			entry["quota_state"] = "error"
+			entry["message"] = "Upstream quota could not be refreshed."
+		}
+	}()
+}
+
+func acquireQuotaProbe(ctx context.Context, quotaProbes chan struct{}) bool {
+	select {
+	case quotaProbes <- struct{}{}:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 // ---- usage SSE stream --------------------------------------------------------

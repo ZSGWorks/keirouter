@@ -190,7 +190,8 @@ func (c *Vertex) Stream(ctx context.Context, req *core.ChatRequest, creds core.C
 
 		ttft := newTTFTTracker(cfg)
 
-		scanner := sseScanner(resp.Body)
+		scanner, sseRelease := sseScanner(resp.Body)
+		defer sseRelease()
 		for scanner.Scan() {
 			select {
 			case <-ctx.Done():

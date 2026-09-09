@@ -6,9 +6,9 @@ import "github.com/mydisha/keirouter/backend/internal/guardrails"
 // template" picker. The config is a full guardrails.Policy so the frontend
 // can drop it into the editor without further massaging.
 type guardrailTemplate struct {
-	ID          string             `json:"id"`
-	Name        string             `json:"name"`
-	Description string             `json:"description"`
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	Description string            `json:"description"`
 	Config      guardrails.Policy `json:"config"`
 }
 

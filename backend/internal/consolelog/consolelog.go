@@ -10,6 +10,7 @@ package consolelog
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -57,10 +58,48 @@ func NewListener(bufSize int) *Listener {
 
 // Buffer is a ring buffer of log entries with pub/sub for SSE streaming.
 type Buffer struct {
-	mu        sync.RWMutex
-	entries   []Entry
-	listeners map[*Listener]struct{}
-	seq       uint64 // guarded by mu; monotonic entry counter
+	mu sync.RWMutex
+	// minLevelRank filters entries below the configured verbosity: the
+	// dashboard streams every entry, so an unfiltered DEBUG gate would
+	// format, ring-buffer, and fan out noise on every request. Rank is
+	// compared in add(); 0 = keep everything (debug).
+	minLevelRank int
+	entries      []Entry
+	listeners    map[*Listener]struct{}
+	seq          uint64 // guarded by mu; monotonic entry counter
+}
+
+// levelRank maps log level names to a severity rank. Unknown levels keep
+// everything (rank 0). DEBUG < LOG < INFO < WARN < ERROR.
+var levelRank = map[string]int{
+	"DEBUG": 1,
+	"LOG":   2,
+	"INFO":  2,
+	"WARN":  3,
+	"ERROR": 4,
+}
+
+// minLevelRankFor converts a config level (debug, info, warn, error) into the
+// minimum severity rank a console entry must reach to be buffered.
+func minLevelRankFor(level string) int {
+	switch strings.ToLower(level) {
+	case "debug":
+		return 0
+	case "warn":
+		return levelRank["WARN"]
+	case "error":
+		return levelRank["ERROR"]
+	default:
+		return levelRank["LOG"]
+	}
+}
+
+// SetMinLevel drops entries below the given config level (debug/info/warn/
+// error). Safe for concurrent use; intended for one call at startup.
+func (b *Buffer) SetMinLevel(level string) {
+	b.mu.Lock()
+	b.minLevelRank = minLevelRankFor(level)
+	b.mu.Unlock()
 }
 
 // New creates an empty log buffer.
@@ -83,6 +122,10 @@ func (b *Buffer) Entries() []Entry {
 // add appends an entry and notifies all listeners.
 func (b *Buffer) add(level, message, detail string) {
 	b.mu.Lock()
+	if levelRank[level] < b.minLevelRank {
+		b.mu.Unlock()
+		return
+	}
 	b.seq++
 	e := Entry{
 		Seq:     b.seq,

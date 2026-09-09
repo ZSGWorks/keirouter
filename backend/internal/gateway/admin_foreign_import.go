@@ -678,6 +678,7 @@ func (s *Server) importN9routerAliases(ctx context.Context, doc map[string]json.
 		}
 		res.Aliases++
 	}
+	s.invalidateConfigCaches()
 }
 
 // importN9routerCustomModels imports 9router's customModels (user-registered

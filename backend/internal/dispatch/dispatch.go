@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"math"
 	"math/rand/v2"
-	"sort"
 	"sync"
 	"time"
 
@@ -160,11 +159,13 @@ type Dispatcher struct {
 	routing     RoutingSource
 	health      HealthSource
 	proxyReader GlobalProxyReader
-	// selectionLocks serializes rotation/affinity selection per provider so
-	// concurrent requests do not all observe and choose the same cursor.
-	selectionLocks sync.Map
-	circuitMu      sync.Mutex
-	circuits       map[string]providerCircuit
+	// rotation holds in-memory chain/target cursors and affinity pins.
+	// Nil until first use; lazily initialized because the routing source is
+	// injected after construction (SetRoutingSource).
+	rotation  *rotationCache
+	rotOnce   sync.Once
+	circuitMu sync.Mutex
+	circuits  map[string]providerCircuit
 	// recentFailures tracks the last cooldown escalation per account (or
 	// account+model) so a burst of parallel failures counts once.
 	failureMu      sync.Mutex
@@ -202,6 +203,21 @@ func (d *Dispatcher) SetPoolSource(p proxy.PoolSource) { d.pools = p }
 
 // SetRoutingSource installs the model-cooldown and chain-rotation backend.
 func (d *Dispatcher) SetRoutingSource(r RoutingSource) { d.routing = r }
+
+// WaitForRotationPersistence drains pending rotation writes during shutdown.
+func (d *Dispatcher) WaitForRotationPersistence() {
+	if d.rotation != nil {
+		d.rotation.waitForPersistence()
+	}
+}
+
+// rotationState returns the lazily-created in-memory rotation cache. Must be
+// called after SetRoutingSource; until then rotation calls no-op into the
+// store-backed fallback paths.
+func (d *Dispatcher) rotationState() *rotationCache {
+	d.rotOnce.Do(func() { d.rotation = newRotationCache(d.routing) })
+	return d.rotation
+}
 
 // SetHealthSource installs background account/model health state.
 func (d *Dispatcher) SetHealthSource(h HealthSource) { d.health = h }
@@ -283,11 +299,43 @@ func (d *Dispatcher) Plan(ctx context.Context, tenantID string, targets []Target
 	return d.PlanWith(ctx, tenantID, targets, required, PlanOptions{})
 }
 
+// probeCache dedupes cooldown/health lookups per provider+model when a chain
+// repeats the same step, so N identical targets cost one query each.
+type probeCache struct {
+	entries map[probeKey]probeResult
+}
+
+type probeKey struct{ provider, model string }
+
+type probeResult struct {
+	cools  map[string]time.Time
+	health map[string]bool
+}
+
+func newProbeCache() *probeCache {
+	return &probeCache{entries: make(map[probeKey]probeResult)}
+}
+
+// get returns cached cooldown expirations and unhealthy-account flags for one
+// provider/model, querying the routing/health sources only on first use.
+func (p *probeCache) get(ctx context.Context, d *Dispatcher, provider, model string, accountIDs []string) (map[string]time.Time, map[string]bool) {
+	key := probeKey{provider: provider, model: model}
+	if res, ok := p.entries[key]; ok {
+		return res.cools, res.health
+	}
+	var res probeResult
+	if d.routing != nil {
+		res.cools, _ = d.routing.ActiveCooldownExpirations(ctx, accountIDs, model)
+	}
+	if d.health != nil {
+		res.health, _ = d.health.UnhealthyAccounts(ctx, accountIDs, model)
+	}
+	p.entries[key] = res
+	return res.cools, res.health
+}
+
 // PlanWith is like Plan but accepts strategy options.
 func (d *Dispatcher) PlanWith(ctx context.Context, tenantID string, targets []Target, required core.CapabilitySet, opts PlanOptions) ([]Attempt, error) {
-	unlock := d.lockSelection(targets)
-	defer unlock()
-
 	// Apply round-robin rotation if requested.
 	ordered := d.applyRotation(ctx, targets, opts)
 	hardRequired := capability.NonStrippable(required)
@@ -345,6 +393,10 @@ func (d *Dispatcher) PlanWith(ctx context.Context, tenantID string, targets []Ta
 	now := time.Now()
 	attempts := make([]Attempt, 0, len(ordered))
 	unhealthyAttempts := make([]Attempt, 0, len(ordered))
+	// probeCache dedupes cooldown/health lookups when a chain repeats the
+	// same provider+model across targets, so N identical steps cost one query.
+	probes := newProbeCache()
+
 	var lastReason string
 	// nonCooldownReason remembers accounts skipped for actionable reasons
 	// (needs-reconnect, token refresh failure). Without it, one account on
@@ -391,12 +443,9 @@ func (d *Dispatcher) PlanWith(ctx context.Context, tenantID string, targets []Ta
 		accountIDs := accountIDsByProvider[target.Provider]
 
 		var cooldownExpirations map[string]time.Time
-		if d.routing != nil && len(accountIDs) > 0 {
-			cooldownExpirations, _ = d.routing.ActiveCooldownExpirations(ctx, accountIDs, target.Model)
-		}
 		var unhealthySet map[string]bool
-		if d.health != nil && len(accountIDs) > 0 {
-			unhealthySet, _ = d.health.UnhealthyAccounts(ctx, accountIDs, target.Model)
+		if len(accountIDs) > 0 {
+			cooldownExpirations, unhealthySet = probes.get(ctx, d, target.Provider, target.Model, accountIDs)
 		}
 
 		for _, acc := range accs {
@@ -755,19 +804,12 @@ func (d *Dispatcher) applyRotation(ctx context.Context, targets []Target, opts P
 	if sticky <= 0 {
 		sticky = DefaultStickyLimit
 	}
-	state, _ := d.routing.GetChainRotationState(ctx, opts.ChainID)
-	cursor, nextCursor, nextHitCount := advanceRotationState(len(targets), state.LastIndex, state.HitCount, sticky)
+	cursor := d.rotationState().advanceChain(opts.ChainID, len(targets), sticky)
 
 	rotated := make([]Target, len(targets))
 	for i := range targets {
 		rotated[i] = targets[(cursor+i)%len(targets)]
 	}
-
-	_ = d.routing.SetChainRotationState(ctx, store.ChainRotation{
-		ChainID:   opts.ChainID,
-		LastIndex: nextCursor,
-		HitCount:  nextHitCount,
-	})
 
 	return rotated
 }
@@ -810,19 +852,12 @@ func (d *Dispatcher) applyAccountRoundRobin(ctx context.Context, tenantID string
 		sticky = DefaultStickyLimit
 	}
 	scopeKey := accountRotationKey(tenantID, target)
-	state, _ := d.routing.GetTargetRotationState(ctx, scopeKey)
-	cursor, nextCursor, nextHitCount := advanceRotationState(len(accounts), state.LastIndex, state.HitCount, sticky)
+	cursor := d.rotationState().advanceTarget(scopeKey, len(accounts), sticky)
 
 	rotated := make([]store.Account, len(accounts))
 	for i := range accounts {
 		rotated[i] = accounts[(cursor+i)%len(accounts)]
 	}
-
-	_ = d.routing.SetTargetRotationState(ctx, store.TargetRotation{
-		ScopeKey:  scopeKey,
-		LastIndex: nextCursor,
-		HitCount:  nextHitCount,
-	})
 	return rotated
 }
 
@@ -844,10 +879,10 @@ func (d *Dispatcher) applySmartAccountRoundRobin(ctx context.Context, tenantID s
 	}
 	now := time.Now()
 	scopeKey := accountAffinityKey(tenantID, target, opts.AffinityKey)
-	affinity, _ := d.routing.GetAccountAffinity(ctx, scopeKey)
+	affinity := d.rotationState().pinAffinity(scopeKey)
 	if affinity.AccountID != "" && affinity.ExpiresAt.After(now) {
 		if reordered, ok := moveAccountToFront(accounts, affinity.AccountID); ok {
-			_ = d.routing.SetAccountAffinity(ctx, store.AccountAffinity{
+			d.rotationState().setAffinity(store.AccountAffinity{
 				ScopeKey:  scopeKey,
 				AccountID: affinity.AccountID,
 				ExpiresAt: now.Add(ttl),
@@ -858,7 +893,7 @@ func (d *Dispatcher) applySmartAccountRoundRobin(ctx context.Context, tenantID s
 
 	rotated := d.applyAccountRoundRobin(ctx, tenantID, target, accounts, opts)
 	if len(rotated) > 0 {
-		_ = d.routing.SetAccountAffinity(ctx, store.AccountAffinity{
+		d.rotationState().setAffinity(store.AccountAffinity{
 			ScopeKey:  scopeKey,
 			AccountID: rotated[0].ID,
 			ExpiresAt: now.Add(ttl),
@@ -905,43 +940,7 @@ func (d *Dispatcher) EvictAccountAffinity(ctx context.Context, tenantID string, 
 		return
 	}
 	scopeKey := accountAffinityKey(tenantID, target, accountOpts.AffinityKey)
-	affinity, err := d.routing.GetAccountAffinity(ctx, scopeKey)
-	if err != nil || affinity.AccountID != accountID {
-		return
-	}
-	_ = d.routing.SetAccountAffinity(ctx, store.AccountAffinity{
-		ScopeKey:  scopeKey,
-		AccountID: "",
-		ExpiresAt: time.Unix(0, 0),
-	})
-}
-
-func (d *Dispatcher) lockSelection(targets []Target) func() {
-	providers := make([]string, 0, len(targets))
-	seen := make(map[string]struct{}, len(targets))
-	for _, target := range targets {
-		if target.Provider == "" {
-			continue
-		}
-		if _, ok := seen[target.Provider]; ok {
-			continue
-		}
-		seen[target.Provider] = struct{}{}
-		providers = append(providers, target.Provider)
-	}
-	sort.Strings(providers)
-	locks := make([]*sync.Mutex, 0, len(providers))
-	for _, provider := range providers {
-		value, _ := d.selectionLocks.LoadOrStore(provider, &sync.Mutex{})
-		lock := value.(*sync.Mutex)
-		lock.Lock()
-		locks = append(locks, lock)
-	}
-	return func() {
-		for i := len(locks) - 1; i >= 0; i-- {
-			locks[i].Unlock()
-		}
-	}
+	d.rotationState().evictAffinity(scopeKey, accountID)
 }
 
 func (d *Dispatcher) recordProviderFailure(provider string) {

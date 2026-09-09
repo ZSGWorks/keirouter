@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { Check, ChevronRight, CircleAlert, Copy, Layers, Loader2, Pencil, Plus, Search, ShieldAlert, Trash2 } from "lucide-react";
-import { api, type Chain, type HealthChainRow, type Provider } from "../lib/api";
+import { api, type Chain, type HealthChainRow, type HealthOverviewWindow, type Provider } from "../lib/api";
 import { PageHeader } from "../components/Layout";
 import { useToast } from "../components/Toast";
 import { Badge, Button, Card, EmptyState, ErrorCard, Input, Modal, Skeleton } from "../components/ui";
@@ -20,6 +20,27 @@ const healthTone = (status?: HealthChainRow["status"]) => {
     default: return "neutral" as const;
   }
 };
+
+function formatWindowLabel(win?: HealthOverviewWindow): string {
+  const seconds = win?.duration_seconds ?? 0;
+  if (seconds <= 0) return "";
+  if (seconds % 86400 === 0) return `${seconds / 86400}d`;
+  if (seconds % 3600 === 0) return `${seconds / 3600}h`;
+  if (seconds % 60 === 0) return `${seconds / 60}m`;
+  return `${seconds}s`;
+}
+
+function healthHeaderInfo(data?: { window?: HealthOverviewWindow }): { label: string; title: string } {
+  const win = data?.window;
+  const suffix = formatWindowLabel(win);
+  if (!suffix) return { label: "Health", title: "Provider health telemetry disabled" };
+  return {
+    label: `Health · ${suffix}`,
+    title: win?.since
+      ? `Provider health rolling window · since ${new Date(win.since).toLocaleString()}`
+      : "Provider health rolling window",
+  };
+}
 
 function ChainListSkeleton() {
   return <Card className="overflow-hidden">{[0, 1, 2].map((index) => <div key={index} className="flex items-center gap-4 border-b border-[var(--border)] px-5 py-4 last:border-b-0"><Skeleton className="h-10 w-10 shrink-0 rounded-xl" /><div className="min-w-0 flex-1 space-y-2"><Skeleton className="h-4 w-36" /><Skeleton className="h-3 w-64" /></div><Skeleton className="hidden h-8 w-20 rounded-lg sm:block" /></div>)}</Card>;
@@ -76,11 +97,12 @@ export function ChainsPage() {
     });
   }, [chainsQuery.data, healthByID, healthFilter, query, strategy]);
   const filtersActive = Boolean(query || strategy !== "all" || healthFilter !== "all");
+  const healthHeader = healthHeaderInfo(healthQuery.data);
   return <>
     <PageHeader title="Chains" icon={Layers} description="Build named routing paths that keep requests moving when a model or provider cannot serve them." action={<Button onClick={() => navigate("/chains/new")}><Plus className="h-4 w-4" />Create chain</Button>} />
     <div className="space-y-4"><div className="flex flex-col gap-2 sm:flex-row sm:items-center"><div className="relative min-w-0 flex-1"><Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-muted)]" /><Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search chains, models, or providers…" className="pl-9" aria-label="Search chains" /></div><select value={strategy} onChange={(event) => setStrategy(event.target.value as StrategyFilter)} className="min-h-10 rounded-xl border border-[var(--border)] bg-[var(--bg-elevated)] px-3 text-sm text-[var(--text)] focus:border-accent-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/30"><option value="all">All strategies</option><option value="priority">Priority</option><option value="round_robin">Round robin</option><option value="latency">Latency</option><option value="cost">Cost</option></select><select value={healthFilter} onChange={(event) => setHealthFilter(event.target.value as HealthFilter)} className="min-h-10 rounded-xl border border-[var(--border)] bg-[var(--bg-elevated)] px-3 text-sm text-[var(--text)] focus:border-accent-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/30"><option value="all">All health</option><option value="healthy">Healthy</option><option value="degraded">Degraded</option><option value="unhealthy">Unhealthy</option><option value="unknown">Unknown</option></select></div>
       {healthQuery.isError && <div className="flex items-center gap-2 rounded-xl border border-[color:var(--color-warning)]/25 bg-[color:var(--color-warning)]/8 px-3.5 py-2.5 text-sm text-[color:var(--color-warning)]"><CircleAlert className="h-4 w-4 shrink-0" />Health data is temporarily unavailable. Chain configuration is still available.</div>}
-      {chainsQuery.isLoading ? <ChainListSkeleton /> : chainsQuery.isError ? <ErrorCard message="Could not load chains. Please refresh and try again." /> : chains.length === 0 ? <Card><div className="space-y-4"><EmptyState title={filtersActive ? "No chains match these filters" : "No chains yet"} hint={filtersActive ? "Try clearing a filter or search term." : "Create a chain to add ordered fallback and resilience to a model target."} />{!filtersActive && <div className="flex justify-center"><Button onClick={() => navigate("/chains/new")}><Plus className="h-4 w-4" />Create your first chain</Button></div>}</div></Card> : <Card className="overflow-hidden p-0"><div className="hidden grid-cols-[minmax(200px,0.8fr)_minmax(280px,1.55fr)_minmax(150px,0.55fr)_auto] gap-5 border-b border-[var(--border)] bg-[var(--bg-subtle)]/60 px-5 py-2.5 text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)] sm:grid"><span>Chain</span><span>Route</span><span>Health · 24h</span><span className="text-right">Actions</span></div>{chains.map((chain, index) => <div key={chain.id} className={index > 0 ? "border-t border-[var(--border)]" : ""}><ChainRow chain={chain} providers={providersQuery.data?.providers ?? []} health={healthByID.get(chain.id)} onDelete={() => setDeleting(chain)} /></div>)}</Card>}</div>
+      {chainsQuery.isLoading ? <ChainListSkeleton /> : chainsQuery.isError ? <ErrorCard message="Could not load chains. Please refresh and try again." /> : chains.length === 0 ? <Card><div className="space-y-4"><EmptyState title={filtersActive ? "No chains match these filters" : "No chains yet"} hint={filtersActive ? "Try clearing a filter or search term." : "Create a chain to add ordered fallback and resilience to a model target."} />{!filtersActive && <div className="flex justify-center"><Button onClick={() => navigate("/chains/new")}><Plus className="h-4 w-4" />Create your first chain</Button></div>}</div></Card> : <Card className="overflow-hidden p-0"><div className="hidden grid-cols-[minmax(200px,0.8fr)_minmax(280px,1.55fr)_minmax(150px,0.55fr)_auto] gap-5 border-b border-[var(--border)] bg-[var(--bg-subtle)]/60 px-5 py-2.5 text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)] sm:grid"><span>Chain</span><span>Route</span><span title={healthHeader.title}>{healthHeader.label}</span><span className="text-right">Actions</span></div>{chains.map((chain, index) => <div key={chain.id} className={index > 0 ? "border-t border-[var(--border)]" : ""}><ChainRow chain={chain} providers={providersQuery.data?.providers ?? []} health={healthByID.get(chain.id)} onDelete={() => setDeleting(chain)} /></div>)}</Card>}</div>
     <Modal open={Boolean(deleting)} onClose={() => !deleteMutation.isPending && setDeleting(null)} title="Delete chain" subtitle={deleting ? `This permanently removes chain:${deleting.name}. Existing requests using this target will no longer resolve.` : undefined}><div className="flex justify-end gap-2 px-6 py-4"><Button variant="ghost" onClick={() => setDeleting(null)} disabled={deleteMutation.isPending}>Cancel</Button><Button variant="danger" onClick={() => deleting && deleteMutation.mutate(deleting.id)} disabled={deleteMutation.isPending}>{deleteMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}Delete chain</Button></div></Modal>
   </>;
 }

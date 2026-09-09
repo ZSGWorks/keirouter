@@ -633,7 +633,8 @@ func (c *OpenAICompatible) streamResponse(ctx context.Context, model string, cfg
 		defer close(out)
 		defer body.Close()
 		ttft := newTTFTTracker(cfg)
-		scanner := sseScanner(body)
+		scanner, sseRelease := sseScanner(body)
+		defer sseRelease()
 		for scanner.Scan() {
 			if !c.streamSSELine(ctx, model, ttft, out, scanner.Text()) {
 				return

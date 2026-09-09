@@ -1,10 +1,10 @@
 ---
 id: TASK-006
 title: Chain-overridable token saving settings
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-09-01 10:05'
-updated_date: '2026-09-01 12:21'
+updated_date: '2026-09-08 08:03'
 labels: []
 dependencies: []
 priority: medium
@@ -34,13 +34,13 @@ Key touchpoints:
 - [x] #2 chainResult carries the chain's token_saving blob; non-chain resolutions carry none
 - [x] #3 EndpointSettings overlay helper applies 5 toggles + 4 levels per request in handleChat and gemini handler
 - [x] #4 Admin API: list/create/update/export/import chains accept and validate token_saving (tri-state, level enums, caveman/terse exclusion)
-- [ ] #5 Frontend Chain type extended; ChainEditor gains Token saving card with Inherit/On/Off per feature and level selects
+- [x] #5 Frontend Chain type extended; ChainEditor gains Token saving card with Inherit/On/Off per feature and level selects
 - [x] #6 make vet && make test pass; frontend npm run typecheck passes
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 Codehealth is green
+- [x] #1 Codehealth is green
 - [x] #2 Changes are fork maintenance compatible
 - [x] #3 Changes are validated by tests
 <!-- DOD:END -->

@@ -198,7 +198,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request, dialect core
 		fmt.Sprintf("Model:    %s\nMessages: %d\nStream:   %v\nTenant:   %s\nKey:      %s (%s)",
 			req.Model, len(req.Messages), req.Stream, tenantID, key.Name, key.ID))
 
-	resolved, err := resolveTargets(r.Context(), s.chains, s.aliases, s.latencyReader(), tenantID, req.Model)
+	resolved, err := resolveTargets(r.Context(), s.chainSource(), s.aliasSource(), s.latencyReader(), tenantID, req.Model)
 	if err != nil {
 		var bad badModelError
 		if errors.As(err, &bad) {
@@ -287,22 +287,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request, dialect core
 }
 
 func (s *Server) effectiveLimits(ctx context.Context, key store.APIKey) (limits.EffectiveLimits, error) {
-	if key.PlanID != "" {
-		plan, err := s.db.Plans().Get(ctx, key.PlanID)
-		if err != nil {
-			return limits.EffectiveLimits{}, err
-		}
-		return limits.EffectiveLimits{
-			RPM:         plan.RPMLimit,
-			TPM:         plan.TPMLimit,
-			Concurrency: plan.ConcurrencyLimit,
-		}, nil
-	}
-	return limits.EffectiveLimits{
-		RPM:         s.cfg.Limits.DefaultRPM,
-		TPM:         s.cfg.Limits.DefaultTPM,
-		Concurrency: s.cfg.Limits.DefaultConcurrency,
-	}, nil
+	return s.cachedEffectiveLimits(ctx, key)
 }
 
 // unaryChat runs a non-streaming request and renders the response.
@@ -887,8 +872,7 @@ func isClientDisconnect(err error) bool {
 // the given API key is allowed to access. Returns empty slice if no target
 // matches the key's model access policy.
 func (s *Server) filterAllowedTargets(ctx context.Context, keyID string, targets []dispatch.Target) ([]dispatch.Target, error) {
-	keys := s.identity.Keys()
-	allowed, err := keys.GetAllowedModels(ctx, keyID)
+	allowed, err := s.cachedAllowedModels(ctx, keyID)
 	if err != nil {
 		return nil, err
 	}

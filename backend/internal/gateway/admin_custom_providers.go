@@ -371,6 +371,7 @@ func (s *Server) adminCreateCustomModel(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	s.reloadCustomModels(r.Context(), providerID)
+	s.invalidateProviderModelCache(providerID)
 	writeJSON(w, http.StatusCreated, customModelJSON(m))
 }
 
@@ -426,6 +427,7 @@ func (s *Server) adminUpdateCustomModel(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	s.reloadCustomModels(r.Context(), providerID)
+	s.invalidateProviderModelCache(providerID)
 	writeJSON(w, http.StatusOK, customModelJSON(existing))
 }
 
@@ -442,6 +444,7 @@ func (s *Server) adminDeleteCustomModel(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	s.reloadCustomModels(r.Context(), providerID)
+	s.invalidateProviderModelCache(providerID)
 	writeJSON(w, http.StatusOK, map[string]any{"db_id": dbID, "deleted": true})
 }
 
@@ -595,6 +598,7 @@ func (s *Server) adminImportModels(w http.ResponseWriter, r *http.Request) {
 	}
 	if imported > 0 {
 		s.reloadCustomModels(r.Context(), providerID)
+		s.invalidateProviderModelCache(providerID)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"provider_id": providerID,

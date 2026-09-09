@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Activity,
@@ -53,21 +54,27 @@ export function SystemPage() {
     refetchInterval: 5000,
   });
 
+  const h = history.data;
+  const spikes = h?.spikes ?? [];
+
+  // Memoized before the early returns (hooks rules): recomputing per render
+  // across two 5s refetch intervals churned the chart subtree.
+  const chartData = useMemo(
+    () =>
+      (h?.samples ?? []).map((pt) => ({
+        time: tsLabel(pt.ts),
+        cpu: +pt.cpu_pct.toFixed(1),
+        mem: +pt.mem_pct.toFixed(1),
+        procCpu: +(pt.proc_cpu_pct ?? 0).toFixed(1),
+        procRss: +(pt.proc_rss_mb ?? 0).toFixed(1),
+      })),
+    [h?.samples],
+  );
+
   if (snap.isLoading) return <Spinner />;
   if (snap.isError) return <ErrorCard message={(snap.error as Error).message} />;
 
   const s = snap.data!;
-  const h = history.data;
-
-  const chartData = (h?.samples ?? []).map((pt) => ({
-    time: tsLabel(pt.ts),
-    cpu: +pt.cpu_pct.toFixed(1),
-    mem: +pt.mem_pct.toFixed(1),
-    procCpu: +(pt.proc_cpu_pct ?? 0).toFixed(1),
-    procRss: +(pt.proc_rss_mb ?? 0).toFixed(1),
-  }));
-
-  const spikes = h?.spikes ?? [];
 
   return (
     <>

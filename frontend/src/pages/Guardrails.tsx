@@ -689,16 +689,40 @@ function LogsTab() {
       setLiveStatus("off");
       return;
     }
+    // Live rows batch in a ref and flush once per window: guardrail logs can
+    // burst, and per-row setLiveRows re-runs the merge memo per row.
+    const pending: GuardrailLogEntry[] = [];
+    let timer: number | null = null;
+    const flush = () => {
+      timer = null;
+      if (pending.length === 0) return;
+      const batch = pending.splice(0);
+      setLiveRows((prev) => {
+        // Drop matching ids to dedupe with the initial fetch on reconnect.
+        const batchIDs = new Set(batch.map((r) => r.id));
+        let merged = [...batch, ...prev.filter((r) => !batchIDs.has(r.id))];
+        for (const row of batch) {
+          merged = merged.filter((r) => r.id !== row.id || row === r);
+        }
+        // Dedupe within batch (newest last wins → put latest first).
+        const seen = new Set<string>();
+        const deduped: GuardrailLogEntry[] = [];
+        for (const r of merged) {
+          if (seen.has(r.id)) continue;
+          seen.add(r.id);
+          deduped.push(r);
+        }
+        return deduped.slice(0, 200);
+      });
+    };
     const close = connectGuardrailLogStream((row) => {
       setLiveStatus("connected");
-      setLiveRows((prev) => {
-        // Drop matching id to dedupe with the initial fetch on reconnect.
-        const filtered = prev.filter((r) => r.id !== row.id);
-        return [row, ...filtered].slice(0, 200);
-      });
+      pending.push(row);
+      if (timer == null) timer = window.setTimeout(flush, 250);
     });
     return () => {
       setLiveStatus("off");
+      if (timer != null) window.clearTimeout(timer);
       close();
     };
   }, [liveOn]);

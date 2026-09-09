@@ -5,7 +5,7 @@ import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { useQuery, useQueries } from "@tanstack/react-query";
 import { X, Search, ChevronDown, Check, Cpu } from "lucide-react";
-import { api, type ModelCapabilities } from "../lib/api";
+import { api, type ModelCapabilities, type Provider } from "../lib/api";
 import { ModelCapabilityIcons } from "./ModelCapabilityIcons";
 
 // ── Token Formatting ─────────────────────────────────────────────────
@@ -56,11 +56,16 @@ export interface ModelCatalogOption {
 	capabilities?: ModelCapabilities;
 }
 
-export function useModelCatalog() {
+function filterVisibleProviders(providers: Provider[], connectedOnly: boolean) {
+  return providers.filter((provider) => !provider.hidden && (!connectedOnly || provider.connected === true));
+}
+
+export function useModelCatalog(options?: { connectedOnly?: boolean }) {
+  const connectedOnly = options?.connectedOnly === true;
   const providers = useQuery({ queryKey: ["providers"], queryFn: () => api.providers(), staleTime: 300_000 });
   const visibleProviders = useMemo(
-    () => (providers.data?.providers ?? []).filter((provider) => !provider.hidden),
-    [providers.data],
+    () => filterVisibleProviders(providers.data?.providers ?? [], connectedOnly),
+    [connectedOnly, providers.data],
   );
   const modelQueries = useQueries({
     queries: visibleProviders.map((provider) => ({

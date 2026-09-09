@@ -1,8 +1,10 @@
 import {
   createContext,
+  memo,
   useCallback,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -75,12 +77,15 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  const api: ToastAPI = {
-    toast: push,
-    success: (title, description) => push({ tone: "success", title, description }),
-    error: (title, description) => push({ tone: "error", title, description }),
-    info: (title, description) => push({ tone: "info", title, description }),
-  };
+  const api = useMemo<ToastAPI>(
+    () => ({
+      toast: push,
+      success: (title, description) => push({ tone: "success", title, description }),
+      error: (title, description) => push({ tone: "error", title, description }),
+      info: (title, description) => push({ tone: "info", title, description }),
+    }),
+    [push],
+  );
 
   return (
     <ToastContext.Provider value={api}>
@@ -90,15 +95,15 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   );
 }
 
-function ToastViewport({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id: number) => void }) {
+const ToastViewport = memo(function ToastViewport({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id: number) => void }) {
   return (
     <div className="pointer-events-none fixed top-4 right-4 z-60 flex w-full max-w-sm flex-col gap-2.5">
       {toasts.map((t) => (
-        <ToastCard key={t.id} toast={t} onDismiss={() => onDismiss(t.id)} />
+        <ToastCard key={t.id} toast={t} onDismiss={onDismiss} />
       ))}
     </div>
   );
-}
+});
 
 const toneMeta: Record<
   ToastTone,
@@ -127,7 +132,7 @@ const toneMeta: Record<
   },
 };
 
-function ToastCard({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }) {
+const ToastCard = memo(function ToastCard({ toast, onDismiss }: { toast: Toast; onDismiss: (id: number) => void }) {
   const meta = toneMeta[toast.tone];
   const Icon = meta.icon;
   return (
@@ -144,7 +149,7 @@ function ToastCard({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
           )}
         </div>
         <button
-          onClick={onDismiss}
+          onClick={() => onDismiss(toast.id)}
           className="-mr-1 -mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[var(--text-muted)] transition-colors hover:bg-black/5 hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60 dark:hover:bg-white/10"
           aria-label="Dismiss"
         >
@@ -159,4 +164,4 @@ function ToastCard({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
       </div>
     </div>
   );
-}
+});

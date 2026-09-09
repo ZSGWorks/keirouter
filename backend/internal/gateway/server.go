@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -81,6 +82,18 @@ type Server struct {
 	version               string
 	updates               *update.Checker
 	insightsCache         *ttlCache
+	modelCache            *modelCache
+	modelCacheOnce        sync.Once
+	modelCacheWarmMu      sync.Mutex
+	modelCacheWarmCtx     context.Context
+	modelCacheWarmWG      sync.WaitGroup
+	configCacheMu         sync.Mutex
+	chainCache            *configCache[[]store.Chain]
+	aliasCache            *configCache[aliasLookup]
+	esCache               *configCache[EndpointSettings]
+	prCache               *configCache[ProviderRoutingSettings]
+	planCache             *configCache[planLimitsLookup]
+	allowedCache          *configCache[[]string]
 	guardrails            *guardrails.Engine
 	guardrailRepo         *store.GuardrailRepo
 	guardrailLogs         *store.GuardrailLogRepo
@@ -160,6 +173,7 @@ func New(d Deps) *Server {
 	if conLog == nil {
 		conLog = consolelog.New()
 	}
+	conLog.SetMinLevel(d.Config.Log.Level)
 	s := &Server{
 		cfg:                   d.Config,
 		log:                   log,

@@ -15,5 +15,8 @@ frontend/.vite/
 *.md
 !config.example.yaml
 .DS_Store
+**/.DS_Store
+._*
+**/._*
 .idea/
 .vscode/

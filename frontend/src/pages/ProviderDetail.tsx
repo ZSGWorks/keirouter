@@ -200,6 +200,7 @@ export function ProviderDetailPage() {
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["accounts"] });
+      qc.invalidateQueries({ queryKey: ["providers"] });
       setLabel("");
       setApiKey("");
       setBaseURL("");
@@ -222,6 +223,7 @@ export function ProviderDetailPage() {
     mutationFn: (accountId: string) => api.deleteAccount(accountId),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["accounts"] });
+      qc.invalidateQueries({ queryKey: ["providers"] });
       toast.success("Account removed", "The upstream credential has been deleted and encrypted secrets purged.");
     },
     onError: (e: Error) => toast.error("Account removal failed", e.message),
@@ -230,7 +232,10 @@ export function ProviderDetailPage() {
   const updateAccount = useMutation({
     mutationFn: ({ id: accId, patch }: { id: string; patch: { label?: string; priority?: number; disabled?: boolean; proxy_pool_id?: string } }) =>
       api.updateAccount(accId, patch),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["accounts"] }),
+    onSuccess: () => {
+        qc.invalidateQueries({ queryKey: ["accounts"] });
+        qc.invalidateQueries({ queryKey: ["providers"] });
+    },
     onError: (e: Error) => toast.error("Account update failed", e.message),
   });
 
@@ -250,6 +255,7 @@ export function ProviderDetailPage() {
       const res = await api.testAccount(accountId);
       const ok = res.status === "ok";
       setTestResults((prev) => ({ ...prev, [accountId]: { status: ok ? "ok" : "error", message: res.message } }));
+      qc.invalidateQueries({ queryKey: ["providers"] });
       if (!ok) {
         // Refetch accounts so needs_reconnect flag is picked up.
         qc.invalidateQueries({ queryKey: ["accounts"] });
@@ -258,6 +264,7 @@ export function ProviderDetailPage() {
     } catch (e) {
       setTestResults((prev) => ({ ...prev, [accountId]: { status: "error", message: (e as Error).message } }));
       qc.invalidateQueries({ queryKey: ["accounts"] });
+      qc.invalidateQueries({ queryKey: ["providers"] });
       return false;
     }
   };
@@ -266,6 +273,7 @@ export function ProviderDetailPage() {
     mutationFn: (ids: string[]) => api.disableModels(id!, ids),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["disabled-models", id] });
+      qc.invalidateQueries({ queryKey: ["providers"] });
       toast.success("Models disabled", "Selected models will be excluded from routing until re-enabled.");
     },
     onError: (e: Error) => toast.error("Model disable failed", e.message),
@@ -275,6 +283,7 @@ export function ProviderDetailPage() {
     mutationFn: (ids: string[]) => api.enableModels(id!, ids),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["disabled-models", id] });
+      qc.invalidateQueries({ queryKey: ["providers"] });
       toast.success("Models re-enabled", "Selected models are available for routing again.");
     },
     onError: (e: Error) => toast.error("Couldn't enable models", e.message),
@@ -323,6 +332,7 @@ export function ProviderDetailPage() {
     },
     onSuccess: (_, ids) => {
       qc.invalidateQueries({ queryKey: ["accounts"] });
+      qc.invalidateQueries({ queryKey: ["providers"] });
       clearAccountSelection();
       setBulkDeleteConfirmOpen(false);
       toast.success(`${ids.length} account${ids.length > 1 ? "s" : ""} removed`, "Encrypted secrets have been purged.");

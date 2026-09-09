@@ -87,8 +87,8 @@ func serializeLog(e store.GuardrailLog) map[string]any {
 // the top-level "version" field so future changes can add a migration path
 // without breaking older bundles.
 type guardrailBundle struct {
-	Version  int                `json:"version"`
-	Exported string             `json:"exported_at"`
+	Version  int               `json:"version"`
+	Exported string            `json:"exported_at"`
 	Policies []guardrailExport `json:"policies"`
 }
 
@@ -98,10 +98,10 @@ type guardrailBundle struct {
 // imported but the binding is invalid until the key is recreated. The
 // import endpoint surfaces a per-row note when that happens.
 type guardrailExport struct {
-	Name    string             `json:"name"`
-	Scope   string             `json:"scope"`
-	ScopeID string             `json:"scope_id,omitempty"`
-	Enabled bool               `json:"enabled"`
+	Name    string            `json:"name"`
+	Scope   string            `json:"scope"`
+	ScopeID string            `json:"scope_id,omitempty"`
+	Enabled bool              `json:"enabled"`
 	Config  guardrails.Policy `json:"config"`
 }
 
@@ -241,8 +241,8 @@ type guardrailTestRateLimiter struct {
 }
 
 type rateBucket struct {
-	tokens   float64
-	last     time.Time
+	tokens float64
+	last   time.Time
 }
 
 func newGuardrailTestRateLimiter(capacity int, window time.Duration) *guardrailTestRateLimiter {

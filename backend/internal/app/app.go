@@ -71,6 +71,10 @@ type App struct {
 	reloadPricing         func(context.Context) error
 	refreshPricingCatalog func(context.Context) error
 
+	// gw exposes background warm hooks on the gateway server.
+	gw         *gateway.Server
+	dispatcher *dispatch.Dispatcher
+
 	// bg tracks long-lived background workers that touch the DB (oauth
 	// keepalive, health checker, cooldown sweeper) so shutdown can wait for
 	// them to return before closing the store, avoiding a use-after-close race.
@@ -297,7 +301,7 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 	// usable without a manual "connect" step in the dashboard.
 	seedFreeAccounts(ctx, db.Accounts(), log)
 
-	return &App{cfg: cfg, log: log, db: db, accounts: db.Accounts(), server: srv, keepAlive: keepAlive, guardrailAudit: guardrails.audit, guardrailRetention: guardrails.retention, meter: mtr, healthChecker: healthChecker, providerHealth: healthSvc, probeRunner: probeRunner, pricingFetcher: pricingFetcher, reloadPricing: reloadPricing, refreshPricingCatalog: refreshPricingCatalog}, nil
+	return &App{cfg: cfg, log: log, db: db, accounts: db.Accounts(), server: srv, keepAlive: keepAlive, guardrailAudit: guardrails.audit, guardrailRetention: guardrails.retention, meter: mtr, healthChecker: healthChecker, providerHealth: healthSvc, probeRunner: probeRunner, pricingFetcher: pricingFetcher, reloadPricing: reloadPricing, refreshPricingCatalog: refreshPricingCatalog, gw: gw, dispatcher: disp}, nil
 }
 
 // initAuth constructs the auth service, optionally resetting the dashboard
@@ -527,50 +531,22 @@ func seedFreeAccounts(ctx context.Context, accounts *store.AccountRepo, log *slo
 
 // Run starts the HTTP server and blocks until ctx is cancelled, then shuts down
 // gracefully.
+// warmModelCacheBackground warms the gateway model cache for connected
+// providers on startup so dashboard model pickers never wait on live
+// upstream discovery. Best-effort; tracked as a background worker.
+func (a *App) warmModelCacheBackground(ctx context.Context) {
+	if a.gw == nil {
+		return
+	}
+	a.bg.Add(1)
+	go func() {
+		defer a.bg.Done()
+		a.gw.WarmModelCache(ctx)
+	}()
+}
+
 func (a *App) Run(ctx context.Context) error {
-	// Launch the OAuth keepalive loop so tokens stay fresh between requests.
-	if a.keepAlive != nil {
-		a.bg.Add(1)
-		go func() {
-			defer a.bg.Done()
-			a.keepAlive.Run(ctx)
-		}()
-	}
-	if a.meter != nil {
-		a.meter.StartAsync(ctx)
-	}
-	if a.healthChecker != nil {
-		a.bg.Add(1)
-		go func() {
-			defer a.bg.Done()
-			a.healthChecker.Run(ctx, store.DefaultTenantID)
-		}()
-	}
-	// Provider health telemetry aggregator (best-effort, non-blocking).
-	// It manages its own goroutine; Close is called during shutdown to flush.
-	if a.providerHealth != nil {
-		a.providerHealth.Start(ctx)
-	}
-
-	// Background cooldown sweeper: periodically clears expired cooldowns so
-	// accounts recover automatically without a restart.
-	if a.accounts != nil {
-		a.bg.Add(1)
-		go func() {
-			defer a.bg.Done()
-			a.runCooldownSweeper(ctx)
-		}()
-	}
-
-	// models.dev catalog: fetch on startup, then refresh daily. Best-effort —
-	// failures keep the previous projection and never block startup.
-	if a.pricingFetcher != nil {
-		a.bg.Add(1)
-		go func() {
-			defer a.bg.Done()
-			a.runPricingRefresher(ctx)
-		}()
-	}
+	a.startBackgroundWorkers(ctx)
 
 	errCh := make(chan error, 1)
 
@@ -592,34 +568,92 @@ func (a *App) Run(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		a.log.Info("shutting down")
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if err := a.server.Shutdown(shutdownCtx); err != nil {
-			return err
-		}
-		// Wait for background workers that query the DB (oauth keepalive, health
-		// checker, cooldown sweeper) to return before closing the store. They
-		// observe ctx cancellation and exit promptly; the bounded wait prevents
-		// a slow in-flight worker from hanging shutdown while still closing the
-		// use-after-close window against db.Close() (a pure-Go SQLite handle can
-		// crash if a query races a Close).
-		a.waitForBackground(5 * time.Second)
-		// Drain pending guardrail audit and usage rows before closing the DB.
-		if a.guardrailRetention != nil {
-			a.guardrailRetention.Stop(2 * time.Second)
-		}
-		if a.guardrailAudit != nil {
-			a.guardrailAudit.Stop(5 * time.Second)
-		}
-		if a.meter != nil {
-			a.meter.Close(a.cfg.Meter.ShutdownFlushTimeout)
-		}
-		if a.providerHealth != nil {
-			a.providerHealth.Close(5 * time.Second)
-		}
-		return a.db.Close()
+		return a.shutdown()
 	case err := <-errCh:
 		return err
+	}
+}
+
+// startBackgroundWorkers launches all async loops bound to the application
+// context: OAuth keepalive, meter, health checker, provider health, cooldown
+// sweeper, pricing refresher, and model cache warm.
+func (a *App) startBackgroundWorkers(ctx context.Context) {
+	a.bindModelCacheWarmers(ctx)
+	if a.keepAlive != nil {
+		a.bg.Add(1)
+		go func() {
+			defer a.bg.Done()
+			a.keepAlive.Run(ctx)
+		}()
+	}
+	if a.meter != nil {
+		a.meter.StartAsync(ctx)
+	}
+	if a.healthChecker != nil {
+		a.bg.Add(1)
+		go func() {
+			defer a.bg.Done()
+			a.healthChecker.Run(ctx, store.DefaultTenantID)
+		}()
+	}
+	if a.providerHealth != nil {
+		a.providerHealth.Start(ctx)
+	}
+	if a.accounts != nil {
+		a.bg.Add(1)
+		go func() {
+			defer a.bg.Done()
+			a.runCooldownSweeper(ctx)
+		}()
+	}
+	if a.pricingFetcher != nil {
+		a.bg.Add(1)
+		go func() {
+			defer a.bg.Done()
+			a.runPricingRefresher(ctx)
+		}()
+	}
+	a.warmModelCacheBackground(ctx)
+}
+
+// shutdown drains in-flight work and closes resources in dependency order:
+// HTTP server, async warmers, rotation persistence, background workers,
+// guardrail/meter/health flushers, and finally the database.
+func (a *App) shutdown() error {
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := a.server.Shutdown(shutdownCtx); err != nil {
+		return err
+	}
+	a.waitForModelCacheWarmers()
+	if a.dispatcher != nil {
+		a.dispatcher.WaitForRotationPersistence()
+	}
+	a.waitForBackground(5 * time.Second)
+	if a.guardrailRetention != nil {
+		a.guardrailRetention.Stop(2 * time.Second)
+	}
+	if a.guardrailAudit != nil {
+		a.guardrailAudit.Stop(5 * time.Second)
+	}
+	if a.meter != nil {
+		a.meter.Close(a.cfg.Meter.ShutdownFlushTimeout)
+	}
+	if a.providerHealth != nil {
+		a.providerHealth.Close(5 * time.Second)
+	}
+	return a.db.Close()
+}
+
+func (a *App) bindModelCacheWarmers(ctx context.Context) {
+	if a.gw != nil {
+		a.gw.SetModelCacheWarmContext(ctx)
+	}
+}
+
+func (a *App) waitForModelCacheWarmers() {
+	if a.gw != nil {
+		a.gw.WaitForModelCacheWarmers()
 	}
 }
 

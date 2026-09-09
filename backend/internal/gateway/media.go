@@ -23,7 +23,7 @@ import (
 func (s *Server) mediaOptions(r *http.Request, model string) (pipeline.MediaOptions, error) {
 	key, _ := authedKey(r.Context())
 	tenantID := tenantOf(key)
-	resolved, err := resolveTargets(r.Context(), s.chains, s.aliases, s.latencyReader(), tenantID, model)
+	resolved, err := resolveTargets(r.Context(), s.chainSource(), s.aliasSource(), s.latencyReader(), tenantID, model)
 	if err != nil {
 		return pipeline.MediaOptions{}, err
 	}

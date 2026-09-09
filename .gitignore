@@ -1,7 +1,3 @@
-# Reference material (not part of KeiRouter source)
-_research/
-docs/
-
 # Go
 backend/bin/
 backend/dist/
@@ -48,6 +44,7 @@ data/
 
 # Editor / OS
 .DS_Store
+._*
 .idea/
 .vscode/*
 !.vscode/extensions.json

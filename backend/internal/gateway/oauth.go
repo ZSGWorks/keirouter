@@ -521,6 +521,7 @@ func (s *Server) persistOAuthAccount(r *http.Request, provider, label string, to
 	if err := s.accounts.Create(r.Context(), acc); err != nil {
 		return "", err
 	}
+	s.warmProviderModelCacheAsync(acc.Provider)
 
 	// Clear stale cooldowns on other accounts for the same provider/tenant.
 	// When a user reconnects a provider, any previously-stuck accounts
