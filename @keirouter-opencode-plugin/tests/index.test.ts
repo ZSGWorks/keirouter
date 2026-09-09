@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  authJsonCandidates,
   buildModelMap,
   buildStaticProviderEntry,
   createKeiRouterAuthHook,
@@ -55,6 +56,24 @@ test("normalizes model and provider URLs", () => {
   assert.equal(modelsURL("http://localhost:8080/v1"), "http://localhost:8080/v1/models");
   assert.equal(toOpenAICompatibleBaseURL("http://localhost:8080"), "http://localhost:8080/v1");
   assert.equal(toOpenAICompatibleBaseURL("http://localhost:8080/v1"), "http://localhost:8080/v1");
+});
+
+test("honors OpenCode data-directory overrides when locating credentials", () => {
+  const originalDataDir = process.env.OPENCODE_DATA_DIR;
+  const originalXdgDataHome = process.env.XDG_DATA_HOME;
+  try {
+    process.env.OPENCODE_DATA_DIR = "/tmp/opencode-data";
+    assert.deepEqual(authJsonCandidates(), ["/tmp/opencode-data/auth.json"]);
+
+    delete process.env.OPENCODE_DATA_DIR;
+    process.env.XDG_DATA_HOME = "/tmp/xdg-data";
+    assert.equal(authJsonCandidates()[0], "/tmp/xdg-data/opencode/auth.json");
+  } finally {
+    if (originalDataDir === undefined) delete process.env.OPENCODE_DATA_DIR;
+    else process.env.OPENCODE_DATA_DIR = originalDataDir;
+    if (originalXdgDataHome === undefined) delete process.env.XDG_DATA_HOME;
+    else process.env.XDG_DATA_HOME = originalXdgDataHome;
+  }
 });
 
 test("fetch auth prefix check is URL-safe", () => {
