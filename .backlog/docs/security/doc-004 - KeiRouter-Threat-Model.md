@@ -1,3 +1,14 @@
+---
+id: doc-004
+title: KeiRouter Threat Model
+type: specification
+created_date: '2026-09-09 18:31'
+updated_date: '2026-09-09 18:32'
+tags:
+  - security
+  - threat-model
+  - appsec
+---
 # KeiRouter Threat Model
 
 ## Executive summary
