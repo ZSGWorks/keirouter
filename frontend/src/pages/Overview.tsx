@@ -317,6 +317,10 @@ function TrendCard({ series, busiest }: { series: SeriesPoint[]; busiest: string
     [series],
   );
   const config = TREND_CONFIG[metric];
+  const labelByStart = useMemo(
+    () => new Map(points.map((p) => [p.start, p.label])),
+    [points],
+  );
 
   return (
     <Card className="flex min-h-[370px] flex-col">
@@ -345,7 +349,7 @@ function TrendCard({ series, busiest }: { series: SeriesPoint[]; busiest: string
                 </linearGradient>
               </defs>
               <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false} />
-              <XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: "var(--text-muted)" }} minTickGap={28} />
+              <XAxis dataKey="start" tickFormatter={(v) => labelByStart.get(String(v)) ?? String(v)} axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: "var(--text-muted)" }} minTickGap={28} />
               <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: "var(--text-muted)" }} width={46} tickFormatter={(value) => fmtAxis(Number(value), metric)} />
               <Tooltip
                 cursor={{ stroke: "var(--border-strong)", strokeWidth: 1 }}
@@ -356,6 +360,7 @@ function TrendCard({ series, busiest }: { series: SeriesPoint[]; busiest: string
                   fontSize: "12px",
                   boxShadow: "var(--shadow-card)",
                 }}
+                labelFormatter={(v) => labelByStart.get(String(v)) ?? String(v)}
                 formatter={(value) => [fmtTrendValue(Number(value), metric), config.label]}
               />
               <Area

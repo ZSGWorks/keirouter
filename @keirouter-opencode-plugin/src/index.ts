@@ -453,10 +453,12 @@ export const defaultReadAuthJson: KeiRouterReadAuthJson = async () => {
 export function authJsonCandidates(): string[] {
   if (process.env.OPENCODE_DATA_DIR) return [path.join(process.env.OPENCODE_DATA_DIR, "auth.json")];
   const home = os.homedir();
-  return [
+  const candidates = [
+    ...(process.env.XDG_DATA_HOME ? [path.join(process.env.XDG_DATA_HOME, "opencode", "auth.json")] : []),
     path.join(home, ".local/share/opencode/auth.json"),
     path.join(home, "Library/Application Support/opencode/auth.json"),
   ];
+  return [...new Set(candidates)];
 }
 
 export function isSameBaseURL(rawURL: string, root: string): boolean {

@@ -55,6 +55,7 @@ make vet                 # backend: go vet ./...
 ./scripts/verify.sh      # former CI-equivalent local verification
 cd frontend && npm run typecheck
 cd @keirouter-opencode-plugin && npm test && npm run build
+make deps-scan           # report upgradable deps; releases < 7d excluded (deps-update applies)
 ```
 
 Frontend Vite proxy sends API calls to backend `:20180`. Before handoff, run

@@ -483,7 +483,7 @@ function UsageTrendCard({ series, busiest }: { series: SeriesPoint[]; busiest: s
                   borderRadius: 10,
                   boxShadow: "var(--shadow-card)",
                 }}
-                formatter={(value: number) => [formatTrendValue(metric, Number(value)), config.label]}
+                formatter={(value) => [formatTrendValue(metric, Number(value)), config.label]}
                 labelStyle={{ color: "var(--text-muted)", marginBottom: 4 }}
               />
               <Area
