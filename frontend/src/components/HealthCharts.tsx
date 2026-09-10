@@ -23,9 +23,9 @@ const tooltipStyle = {
 };
 const axisTick = { fontSize: 10, fill: "var(--text-muted)", fontWeight: 500 };
 
-function fmtTime(t: string) {
-  const d = new Date(t);
-  if (isNaN(d.getTime())) return t;
+function fmtTime(t: unknown) {
+  const d = new Date(t as string);
+  if (isNaN(d.getTime())) return String(t);
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
@@ -82,7 +82,7 @@ export function ErrorRateChart({ data }: { data: HealthSnapshot[] }) {
         <CartesianGrid vertical={false} stroke="var(--border)" opacity={0.3} />
         <XAxis dataKey="bucket_start" tickFormatter={fmtTime} tick={axisTick} tickLine={false} axisLine={false} dy={10} />
         <YAxis tick={axisTick} tickLine={false} axisLine={false} width={40} tickFormatter={(v: number) => `${v}%`} />
-        <Tooltip contentStyle={tooltipStyle} labelFormatter={fmtTime} formatter={(v: number) => [`${v.toFixed(1)}%`, "Error rate"]} />
+        <Tooltip contentStyle={tooltipStyle} labelFormatter={fmtTime} formatter={(v) => [`${Number(v).toFixed(1)}%`, "Error rate"]} />
         <Area type="monotone" dataKey="error_rate" stroke="var(--color-danger)" strokeWidth={2} fill="url(#errFill)" />
       </AreaChart>
     </ResponsiveContainer>
@@ -97,7 +97,7 @@ export function LatencyChart({ data }: { data: HealthSnapshot[] }) {
         <CartesianGrid vertical={false} stroke="var(--border)" opacity={0.3} />
         <XAxis dataKey="bucket_start" tickFormatter={fmtTime} tick={axisTick} tickLine={false} axisLine={false} dy={10} />
         <YAxis tick={axisTick} tickLine={false} axisLine={false} width={50} tickFormatter={fmtMs} />
-        <Tooltip contentStyle={tooltipStyle} labelFormatter={fmtTime} formatter={(v: number) => [fmtMs(v), ""]} />
+        <Tooltip contentStyle={tooltipStyle} labelFormatter={fmtTime} formatter={(v) => [fmtMs(Number(v)), ""]} />
         <Line type="monotone" dataKey="latency_p50_ms" name="p50" stroke="var(--color-chart-3)" strokeWidth={1.5} dot={false} />
         <Line type="monotone" dataKey="latency_p95_ms" name="p95" stroke="var(--color-warning)" strokeWidth={2} dot={false} />
         <Line type="monotone" dataKey="latency_p99_ms" name="p99" stroke="var(--color-danger)" strokeWidth={1.5} dot={false} />
@@ -120,7 +120,7 @@ export function TTFTChart({ data }: { data: HealthSnapshot[] }) {
         <CartesianGrid vertical={false} stroke="var(--border)" opacity={0.3} />
         <XAxis dataKey="bucket_start" tickFormatter={fmtTime} tick={axisTick} tickLine={false} axisLine={false} dy={10} />
         <YAxis tick={axisTick} tickLine={false} axisLine={false} width={50} tickFormatter={fmtMs} />
-        <Tooltip contentStyle={tooltipStyle} labelFormatter={fmtTime} formatter={(v: number) => [fmtMs(v), "TTFT p95"]} />
+        <Tooltip contentStyle={tooltipStyle} labelFormatter={fmtTime} formatter={(v) => [fmtMs(Number(v)), "TTFT p95"]} />
         <Area type="monotone" dataKey="ttft_p95_ms" stroke="var(--color-chart-2)" strokeWidth={2} fill="url(#ttftFill)" />
       </AreaChart>
     </ResponsiveContainer>

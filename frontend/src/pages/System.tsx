@@ -386,7 +386,7 @@ function MetricChart({
                   boxShadow: "var(--shadow-pop)",
                 }}
                 labelStyle={{ fontSize: 11, color: "var(--text-muted)" }}
-                formatter={(val: number) => [`${val}${unit}`, title]}
+                formatter={(val) => [`${Number(val)}${unit}`, title]}
               />
               {threshold != null && (
                 <Area

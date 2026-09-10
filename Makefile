@@ -21,7 +21,7 @@ C_GREEN  := \033[32m
 C_YELLOW := \033[33m
 C_CYAN   := \033[36m
 
-.PHONY: dev backend frontend build build-backend build-frontend test vet hooks bootstrap install setup quickstart clean docker dev-deploy headroom-runtime
+.PHONY: dev backend frontend build build-backend build-frontend test vet hooks bootstrap install setup quickstart clean docker dev-deploy headroom-runtime deps-scan deps-update
 
 ## dev: run backend and frontend concurrently; Ctrl-C stops both.
 ##      The backend starts first; frontend waits until the backend is healthy
@@ -125,3 +125,11 @@ setup:
 
 ## quickstart: alias for setup.
 quickstart: setup
+
+## deps-scan: report dependency updates; releases newer than 7 days are excluded.
+deps-scan:
+	./scripts/update-deps.sh
+
+## deps-update: install dependency updates that pass the 7-day release-age guard.
+deps-update:
+	./scripts/update-deps.sh --apply
