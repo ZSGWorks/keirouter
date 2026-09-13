@@ -173,6 +173,33 @@ type cooldownClear struct {
 	args  []any
 }
 
+// cooldownResetSet and cooldownParkedWhere define the shared shape of the
+// manual reset paths: which columns to null and which rows count as parked.
+// Parked requires an active (future) cooldown — an already-expired
+// cooldown_until must not count as cleared; stale rows are swept by
+// ClearExpiredCooldowns.
+const (
+	cooldownResetSet    = `cooldown_until = NULL, backoff_level = 0, credits_exhausted = 0`
+	cooldownParkedWhere = `(cooldown_until IS NOT NULL AND cooldown_until > ?) OR backoff_level != 0 OR credits_exhausted != 0`
+)
+
+// tenantCooldownClear builds the tenant-wide manual reset spec. Shared by the
+// plain and OnTx variants so their predicates cannot drift apart.
+func tenantCooldownClear(tenantID string, now time.Time) cooldownClear {
+	return cooldownClear{op: "tenant",
+		set:   cooldownResetSet,
+		where: `tenant_id = ? AND (` + cooldownParkedWhere + `)`,
+		args:  []any{tenantID, formatTime(now)}}
+}
+
+// accountCooldownClear builds the per-account manual reset spec.
+func accountCooldownClear(accountID string, now time.Time) cooldownClear {
+	return cooldownClear{op: "account",
+		set:   cooldownResetSet,
+		where: `id = ? AND (` + cooldownParkedWhere + `)`,
+		args:  []any{accountID, formatTime(now)}}
+}
+
 // clearCooldowns resets dispatcher cooldown columns on accounts matching
 // where. It is the shared implementation behind the expired, reconnect, and
 // manual reset paths so their UPDATE shapes cannot drift apart.
@@ -183,10 +210,14 @@ func (r *AccountRepo) clearCooldowns(ctx context.Context, c cooldownClear) (int6
 // ClearTenantCooldownsOnTx clears tenant cooldown state within an existing
 // transaction.
 func (r *AccountRepo) ClearTenantCooldownsOnTx(ctx context.Context, tx *sql.Tx, tenantID string) (int64, error) {
-	return r.clearCooldownsOn(ctx, tx, cooldownClear{op: "tenant",
-		set:   `cooldown_until = NULL, backoff_level = 0, credits_exhausted = 0`,
-		where: `tenant_id = ? AND (cooldown_until IS NOT NULL OR backoff_level != 0 OR credits_exhausted != 0)`,
-		args:  []any{tenantID}})
+	return r.clearCooldownsOn(ctx, tx, tenantCooldownClear(tenantID, time.Now()))
+}
+
+// ClearAccountCooldownsOnTx clears dispatcher cooldown state for one account
+// within an existing transaction, counting only rows that were actively
+// parked. Unparked accounts are left untouched (updated_at included).
+func (r *AccountRepo) ClearAccountCooldownsOnTx(ctx context.Context, tx *sql.Tx, accountID string) (int64, error) {
+	return r.clearCooldownsOn(ctx, tx, accountCooldownClear(accountID, time.Now()))
 }
 
 func (r *AccountRepo) clearCooldownsOn(ctx context.Context, ex sqlExec, c cooldownClear) (int64, error) {
@@ -228,10 +259,7 @@ func (r *AccountRepo) ClearProviderCooldowns(ctx context.Context, tenantID, prov
 // needs_reconnect, disabled, and health history are deliberately untouched.
 // Returns the number of accounts cleared.
 func (r *AccountRepo) ClearTenantCooldowns(ctx context.Context, tenantID string) (int64, error) {
-	return r.clearCooldowns(ctx, cooldownClear{op: "tenant",
-		set:   `cooldown_until = NULL, backoff_level = 0, credits_exhausted = 0`,
-		where: `tenant_id = ? AND (cooldown_until IS NOT NULL OR backoff_level != 0 OR credits_exhausted != 0)`,
-		args:  []any{tenantID}})
+	return r.clearCooldowns(ctx, tenantCooldownClear(tenantID, time.Now()))
 }
 
 // Delete removes an account.

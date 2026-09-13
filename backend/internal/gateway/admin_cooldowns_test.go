@@ -182,6 +182,14 @@ func TestAdminResetTenantCooldowns(t *testing.T) {
 	seedCooldownAccount(t, db, cooldownSeed{id: "acc-b", tenant: adminTenant, parked: true})
 	seedCooldownAccount(t, db, cooldownSeed{id: "acc-clean", tenant: adminTenant})
 	seedCooldownAccount(t, db, cooldownSeed{id: "acc-foreign", tenant: "foreign", parked: true})
+	// An already-expired cooldown must not count as cleared: only actively
+	// parked rows match the reset predicate.
+	expired := time.Now().Add(-time.Hour)
+	require.NoError(t, db.Accounts().Create(ctx, store.Account{
+		ID: "acc-stale", TenantID: adminTenant, Provider: "openai",
+		AuthKind: store.AuthAPIKey, CooldownUntil: &expired,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}))
 
 	code, counts := serveCooldownReset(t, db, http.MethodPost, "/api/health/cooldowns/reset")
 	require.Equal(t, http.StatusOK, code)
@@ -205,6 +213,11 @@ func TestAdminResetTenantCooldowns(t *testing.T) {
 	foreign, err := db.Accounts().Get(ctx, "acc-foreign")
 	require.NoError(t, err)
 	require.NotNil(t, foreign.CooldownUntil, "foreign cooldown must survive a tenant reset")
+
+	// The stale expired cooldown was not part of the reset and survives.
+	stale, err := db.Accounts().Get(ctx, "acc-stale")
+	require.NoError(t, err)
+	require.NotNil(t, stale.CooldownUntil, "expired cooldown must survive a tenant reset (GC sweeps it)")
 
 	// Second run is a no-op with zero counts.
 	code, counts = serveCooldownReset(t, db, http.MethodPost, "/api/health/cooldowns/reset")

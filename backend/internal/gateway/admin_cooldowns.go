@@ -4,11 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"net/http"
-	"time"
 
 	"github.com/go-chi/chi/v5"
-
-	"github.com/mydisha/keirouter/backend/internal/store"
 )
 
 // adminResetAccountCooldown clears dispatcher cooldown state for one account:
@@ -24,42 +21,24 @@ func (s *Server) adminResetAccountCooldown(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusNotFound, "account not found")
 		return
 	}
-	parked := cooldownParked(acc, time.Now())
-	clearedModels, err := s.resetAccountCooldown(ctx, acc.ID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "internal server error"))
+	var clearedAccounts, clearedModels int64
+	txErr := s.withTx(ctx, func(tx *sql.Tx) error {
+		var err error
+		clearedAccounts, err = s.accounts.ClearAccountCooldownsOnTx(ctx, tx, acc.ID)
+		if err != nil {
+			return err
+		}
+		clearedModels, err = s.db.Routing().ClearAccountModelCooldownsOnTx(ctx, tx, acc.ID)
+		return err
+	})
+	if txErr != nil {
+		writeError(w, http.StatusInternalServerError, sanitizeError(s.log, txErr, "internal server error"))
 		return
-	}
-	var clearedAccounts int64
-	if parked {
-		clearedAccounts = 1
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"cleared_accounts": clearedAccounts,
 		"cleared_models":   clearedModels,
 	})
-}
-
-// cooldownParked reports whether an account currently sits on dispatcher
-// cooldown. An already-expired cooldown_until does not count.
-func cooldownParked(acc store.Account, now time.Time) bool {
-	return acc.BackoffLevel != 0 || acc.CreditsExhausted ||
-		(acc.CooldownUntil != nil && acc.CooldownUntil.After(now))
-}
-
-// resetAccountCooldown clears one account's backoff state and active model
-// cooldowns in a single transaction.
-func (s *Server) resetAccountCooldown(ctx context.Context, accountID string) (int64, error) {
-	var clearedModels int64
-	err := s.withTx(ctx, func(tx *sql.Tx) error {
-		if err := s.accounts.ResetBackoffLevelOnTx(ctx, tx, accountID); err != nil {
-			return err
-		}
-		var err error
-		clearedModels, err = s.db.Routing().ClearAccountModelCooldownsOnTx(ctx, tx, accountID)
-		return err
-	})
-	return clearedModels, err
 }
 
 // adminResetTenantCooldowns clears dispatcher cooldown state for every parked

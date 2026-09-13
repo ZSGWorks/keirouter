@@ -379,6 +379,20 @@ func TestClassify429_GLM1310Quota_NoReset(t *testing.T) {
 	require.Equal(t, 30*time.Minute, retryAfter)
 }
 
+// A header/body retry-after hint intentionally beats the parsed calendar
+// reset stamp for a 1310 quota body.
+func TestClassify429_GLM1310Quota_HintWinsOverReset(t *testing.T) {
+	resp := &http.Response{Header: http.Header{}}
+	resp.Header.Set("Retry-After", "120")
+	reset := time.Now().Add(36 * time.Hour).UTC().Format("2006-01-02 15:04:05")
+	body := []byte(`{"error":{"type":"rate_limit_error","code":"1310","message":"[1310][Weekly/Monthly Limit Exhausted. Your limit will reset at ` + reset + `][abc]"}}`)
+
+	kind, retryAfter, _ := classify429(resp, body)
+
+	require.Equal(t, core.ErrQuotaExhausted, kind)
+	require.Equal(t, 120*time.Second, retryAfter)
+}
+
 // Malformed reset stamps fall back to the default instead of parking forever.
 func TestClassify429_GLM1310Quota_BadReset(t *testing.T) {
 	resp := &http.Response{Header: http.Header{}}
