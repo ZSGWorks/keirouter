@@ -18,6 +18,12 @@ type ConnectorSource interface {
 	Get(provider string) (core.Connector, error)
 }
 
+// CooldownSource reports dispatcher model cooldowns so probes skip parked
+// targets instead of burning quota on them. Implemented by *store.RoutingRepo.
+type CooldownSource interface {
+	ActiveCooldowns(ctx context.Context, accountIDs []string, model string) (map[string]bool, error)
+}
+
 // Config controls the background health checker.
 type Config struct {
 	Enabled              bool
@@ -38,6 +44,7 @@ type Checker struct {
 	health   *store.HealthRepo
 	conns    ConnectorSource
 	vault    *vault.Vault
+	cools    CooldownSource
 }
 
 // New builds a Checker.
@@ -69,12 +76,20 @@ func New(cfg Config, log *slog.Logger, accounts *store.AccountRepo, health *stor
 	return &Checker{cfg: cfg, log: log, accounts: accounts, health: health, conns: conns, vault: vault}
 }
 
+// SetCooldownSource attaches the dispatcher cooldown view so billable probes
+// skip parked targets. Without it every probe runs as before.
+func (c *Checker) SetCooldownSource(s CooldownSource) {
+	if c != nil {
+		c.cools = s
+	}
+}
+
 // Run starts periodic probes until ctx is cancelled.
 func (c *Checker) Run(ctx context.Context, tenantID string) {
 	if c == nil || !c.cfg.Enabled {
 		return
 	}
-	c.CheckOnce(ctx, tenantID)
+	c.CheckOnce(ctx, tenantID, false)
 	ticker := time.NewTicker(c.cfg.Interval)
 	defer ticker.Stop()
 	for {
@@ -82,13 +97,17 @@ func (c *Checker) Run(ctx context.Context, tenantID string) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			c.CheckOnce(ctx, tenantID)
+			c.CheckOnce(ctx, tenantID, false)
 		}
 	}
 }
 
-// CheckOnce probes all enabled accounts for a tenant.
-func (c *Checker) CheckOnce(ctx context.Context, tenantID string) {
+// CheckOnce probes all enabled accounts for a tenant. Billable per-model
+// probes skip targets under an active dispatcher cooldown (account or model
+// level) so exhausted quotas are not hammered; skipped probes write nothing.
+// Cheap "__all__" credential validations always run as an early recovery
+// signal. force bypasses the cooldown skips for deliberate operator re-probes.
+func (c *Checker) CheckOnce(ctx context.Context, tenantID string, force bool) {
 	if c == nil || c.accounts == nil || c.health == nil || c.conns == nil || c.vault == nil {
 		return
 	}
@@ -97,15 +116,11 @@ func (c *Checker) CheckOnce(ctx context.Context, tenantID string) {
 		c.log.Warn("health check: list accounts failed", "err", err)
 		return
 	}
-	recent, _ := c.health.RecentAccountModels(ctx, tenantID, time.Now().Add(-c.cfg.RecentModelWindow), len(accounts)*c.cfg.MaxModelsPerProvider)
+	now := time.Now()
+	recent, _ := c.health.RecentAccountModels(ctx, tenantID, now.Add(-c.cfg.RecentModelWindow), len(accounts)*c.cfg.MaxModelsPerProvider)
 
-	modelsByAccount := map[string][]string{}
-	for _, h := range recent {
-		if len(modelsByAccount[h.AccountID]) >= c.cfg.MaxModelsPerProvider {
-			continue
-		}
-		modelsByAccount[h.AccountID] = appendUnique(modelsByAccount[h.AccountID], h.Model)
-	}
+	modelsByAccount, modelAccounts := groupProbeModels(recent, c.cfg.MaxModelsPerProvider)
+	cooled := c.snapshotCooldowns(ctx, modelAccounts, force)
 
 	sem := make(chan struct{}, c.cfg.MaxParallel)
 	var wg sync.WaitGroup
@@ -118,6 +133,9 @@ func (c *Checker) CheckOnce(ctx context.Context, tenantID string) {
 			models = []string{"__all__"}
 		}
 		for _, model := range models {
+			if c.skipProbe(acc, model, force, now, cooled) {
+				continue
+			}
 			acc := acc
 			model := model
 			wg.Add(1)
@@ -134,6 +152,61 @@ func (c *Checker) CheckOnce(ctx context.Context, tenantID string) {
 		}
 	}
 	wg.Wait()
+}
+
+// groupProbeModels splits recent traffic into per-account probe lists plus a
+// per-model account grouping, so each billable model costs one cooldown
+// lookup. "__all__" entries only join the per-account lists: credential
+// validations are cheap and always run.
+func groupProbeModels(recent []store.AccountHealth, maxPerAccount int) (byAccount, byModel map[string][]string) {
+	byAccount = map[string][]string{}
+	byModel = map[string][]string{}
+	for _, h := range recent {
+		if len(byAccount[h.AccountID]) >= maxPerAccount {
+			continue
+		}
+		byAccount[h.AccountID] = appendUnique(byAccount[h.AccountID], h.Model)
+		if h.Model != "__all__" {
+			byModel[h.Model] = append(byModel[h.Model], h.AccountID)
+		}
+	}
+	return byAccount, byModel
+}
+
+// snapshotCooldowns reads active model cooldowns per probed model. Fail-open:
+// a lookup error probes as before rather than silencing health.
+func (c *Checker) snapshotCooldowns(ctx context.Context, modelAccounts map[string][]string, force bool) map[string]map[string]bool {
+	cooled := map[string]map[string]bool{}
+	if force || c.cools == nil {
+		return cooled
+	}
+	for model, ids := range modelAccounts {
+		set, err := c.cools.ActiveCooldowns(ctx, ids, model)
+		if err != nil {
+			c.log.Debug("health check: cooldown lookup failed, probing anyway", "model", model, "err", err)
+			continue
+		}
+		cooled[model] = set
+	}
+	return cooled
+}
+
+// skipProbe reports whether a per-model probe must be skipped. Forced runs
+// and cheap credential validations always proceed; cooled-down targets pause.
+func (c *Checker) skipProbe(acc store.Account, model string, force bool, now time.Time, cooled map[string]map[string]bool) bool {
+	if force || model == "__all__" {
+		return false
+	}
+	return c.probeCooling(acc, model, now, cooled)
+}
+
+// probeCooling reports whether a billable per-model probe must be skipped:
+// the account sits on a dispatcher cooldown, or the account+model pair does.
+func (c *Checker) probeCooling(acc store.Account, model string, now time.Time, cooled map[string]map[string]bool) bool {
+	if acc.CooldownUntil != nil && acc.CooldownUntil.After(now) {
+		return true
+	}
+	return cooled[model][acc.ID]
 }
 
 func (c *Checker) probe(ctx context.Context, acc store.Account, model string) {
