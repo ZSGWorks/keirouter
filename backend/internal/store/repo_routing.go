@@ -40,11 +40,51 @@ func (r *RoutingRepo) ClearModelCooldown(ctx context.Context, accountID, model s
 	return err
 }
 
-// ClearAccountModelCooldowns removes all model cooldowns for an account.
-func (r *RoutingRepo) ClearAccountModelCooldowns(ctx context.Context, accountID string) error {
-	q := r.db.rebind(`DELETE FROM model_cooldowns WHERE account_id = ?`)
-	_, err := r.db.sql.ExecContext(ctx, q, accountID)
-	return err
+// ClearAccountModelCooldowns removes active model cooldowns for an account.
+// Already-expired rows are left for ExpireModelCooldowns garbage collection.
+// Returns the number of rows removed.
+func (r *RoutingRepo) ClearAccountModelCooldowns(ctx context.Context, accountID string) (int64, error) {
+	return r.clearAccountModelCooldownsOn(ctx, r.db.sql, accountID)
+}
+
+// ClearAccountModelCooldownsOnTx removes active model cooldowns for an
+// account within an existing transaction.
+func (r *RoutingRepo) ClearAccountModelCooldownsOnTx(ctx context.Context, tx *sql.Tx, accountID string) (int64, error) {
+	return r.clearAccountModelCooldownsOn(ctx, tx, accountID)
+}
+
+func (r *RoutingRepo) clearAccountModelCooldownsOn(ctx context.Context, ex sqlExec, accountID string) (int64, error) {
+	q := r.db.rebind(`DELETE FROM model_cooldowns WHERE account_id = ? AND cooldown_until > ?`)
+	res, err := ex.ExecContext(ctx, q, accountID, formatTime(time.Now()))
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
+// ClearTenantModelCooldowns removes active model cooldowns parked on accounts
+// of a tenant. Manual reset path; model_cooldowns carries no tenant column so
+// accounts are scoped via subquery. Expired rows are left for garbage
+// collection. Returns the number of rows removed.
+func (r *RoutingRepo) ClearTenantModelCooldowns(ctx context.Context, tenantID string) (int64, error) {
+	return r.clearTenantModelCooldownsOn(ctx, r.db.sql, tenantID)
+}
+
+// ClearTenantModelCooldownsOnTx removes tenant model cooldowns within an
+// existing transaction.
+func (r *RoutingRepo) ClearTenantModelCooldownsOnTx(ctx context.Context, tx *sql.Tx, tenantID string) (int64, error) {
+	return r.clearTenantModelCooldownsOn(ctx, tx, tenantID)
+}
+
+func (r *RoutingRepo) clearTenantModelCooldownsOn(ctx context.Context, ex sqlExec, tenantID string) (int64, error) {
+	q := r.db.rebind(`DELETE FROM model_cooldowns WHERE cooldown_until > ? AND account_id IN (SELECT id FROM accounts WHERE tenant_id = ?)`)
+	res, err := ex.ExecContext(ctx, q, formatTime(time.Now()), tenantID)
+	if err != nil {
+		return 0, fmt.Errorf("store: clear tenant model cooldowns: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
 }
 
 // IsModelCooldownActive checks if a specific model on an account is still

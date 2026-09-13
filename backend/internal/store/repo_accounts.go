@@ -33,8 +33,17 @@ func (r *AccountRepo) SetBackoffLevel(ctx context.Context, id string, level int)
 // cooldown and the credits-exhausted flag, called on a successful request
 // (a success proves the balance covers traffic again).
 func (r *AccountRepo) ResetBackoffLevel(ctx context.Context, id string) error {
+	return r.resetBackoffLevelOn(ctx, r.db.sql, id)
+}
+
+// ResetBackoffLevelOnTx resets backoff state within an existing transaction.
+func (r *AccountRepo) ResetBackoffLevelOnTx(ctx context.Context, tx *sql.Tx, id string) error {
+	return r.resetBackoffLevelOn(ctx, tx, id)
+}
+
+func (r *AccountRepo) resetBackoffLevelOn(ctx context.Context, ex sqlExec, id string) error {
 	q := r.db.rebind(`UPDATE accounts SET backoff_level = 0, cooldown_until = NULL, credits_exhausted = 0, updated_at = ? WHERE id = ?`)
-	_, err := r.db.sql.ExecContext(ctx, q, formatTime(time.Now()), id)
+	_, err := ex.ExecContext(ctx, q, formatTime(time.Now()), id)
 	return err
 }
 
@@ -154,17 +163,51 @@ func (r *AccountRepo) Update(ctx context.Context, a Account) error {
 	return err
 }
 
+// cooldownClear describes one dispatcher-cooldown UPDATE: the columns to
+// reset plus the parked-row predicate. Bundled so the shared clear helpers
+// stay within argument-count limits.
+type cooldownClear struct {
+	op    string
+	set   string
+	where string
+	args  []any
+}
+
+// clearCooldowns resets dispatcher cooldown columns on accounts matching
+// where. It is the shared implementation behind the expired, reconnect, and
+// manual reset paths so their UPDATE shapes cannot drift apart.
+func (r *AccountRepo) clearCooldowns(ctx context.Context, c cooldownClear) (int64, error) {
+	return r.clearCooldownsOn(ctx, r.db.sql, c)
+}
+
+// ClearTenantCooldownsOnTx clears tenant cooldown state within an existing
+// transaction.
+func (r *AccountRepo) ClearTenantCooldownsOnTx(ctx context.Context, tx *sql.Tx, tenantID string) (int64, error) {
+	return r.clearCooldownsOn(ctx, tx, cooldownClear{op: "tenant",
+		set:   `cooldown_until = NULL, backoff_level = 0, credits_exhausted = 0`,
+		where: `tenant_id = ? AND (cooldown_until IS NOT NULL OR backoff_level != 0 OR credits_exhausted != 0)`,
+		args:  []any{tenantID}})
+}
+
+func (r *AccountRepo) clearCooldownsOn(ctx context.Context, ex sqlExec, c cooldownClear) (int64, error) {
+	q := r.db.rebind(`UPDATE accounts SET ` + c.set + `, updated_at = ? WHERE ` + c.where)
+	full := append([]any{formatTime(time.Now())}, c.args...)
+	res, err := ex.ExecContext(ctx, q, full...)
+	if err != nil {
+		return 0, fmt.Errorf("store: clear cooldowns (%s): %w", c.op, err)
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
 // ClearExpiredCooldowns resets cooldown and backoff for all accounts whose
 // cooldown has already expired. Called on startup so stale cooldowns from a
 // previous session don't block fresh requests.
 func (r *AccountRepo) ClearExpiredCooldowns(ctx context.Context) (int64, error) {
-	q := r.db.rebind(`UPDATE accounts SET cooldown_until = NULL, backoff_level = 0, credits_exhausted = 0, updated_at = ? WHERE cooldown_until IS NOT NULL AND cooldown_until < ?`)
-	res, err := r.db.sql.ExecContext(ctx, q, formatTime(time.Now()), formatTime(time.Now()))
-	if err != nil {
-		return 0, fmt.Errorf("store: clear expired cooldowns: %w", err)
-	}
-	n, _ := res.RowsAffected()
-	return n, nil
+	return r.clearCooldowns(ctx, cooldownClear{op: "expired",
+		set:   `cooldown_until = NULL, backoff_level = 0, credits_exhausted = 0`,
+		where: `cooldown_until IS NOT NULL AND cooldown_until < ?`,
+		args:  []any{formatTime(time.Now())}})
 }
 
 // ClearProviderCooldowns clears cooldown and backoff for all accounts of a
@@ -173,14 +216,22 @@ func (r *AccountRepo) ClearExpiredCooldowns(ctx context.Context) (int64, error) 
 // Also clears needs_reconnect since a successful reconnect means the provider
 // is accessible again.
 func (r *AccountRepo) ClearProviderCooldowns(ctx context.Context, tenantID, provider string) error {
-	q := r.db.rebind(`UPDATE accounts SET cooldown_until = NULL, backoff_level = 0,
-		needs_reconnect = 0, credits_exhausted = 0, updated_at = ?
-		WHERE tenant_id = ? AND provider = ? AND (cooldown_until IS NOT NULL OR needs_reconnect != 0 OR credits_exhausted != 0)`)
-	_, err := r.db.sql.ExecContext(ctx, q, formatTime(time.Now()), tenantID, provider)
-	if err != nil {
-		return fmt.Errorf("store: clear provider cooldowns: %w", err)
-	}
-	return nil
+	_, err := r.clearCooldowns(ctx, cooldownClear{op: "provider",
+		set:   `cooldown_until = NULL, backoff_level = 0, needs_reconnect = 0, credits_exhausted = 0`,
+		where: `tenant_id = ? AND provider = ? AND (cooldown_until IS NOT NULL OR needs_reconnect != 0 OR credits_exhausted != 0)`,
+		args:  []any{tenantID, provider}})
+	return err
+}
+
+// ClearTenantCooldowns clears dispatcher cooldown state (cooldown, backoff,
+// credits-exhausted) for all parked accounts of a tenant. Manual reset path:
+// needs_reconnect, disabled, and health history are deliberately untouched.
+// Returns the number of accounts cleared.
+func (r *AccountRepo) ClearTenantCooldowns(ctx context.Context, tenantID string) (int64, error) {
+	return r.clearCooldowns(ctx, cooldownClear{op: "tenant",
+		set:   `cooldown_until = NULL, backoff_level = 0, credits_exhausted = 0`,
+		where: `tenant_id = ? AND (cooldown_until IS NOT NULL OR backoff_level != 0 OR credits_exhausted != 0)`,
+		args:  []any{tenantID}})
 }
 
 // Delete removes an account.
