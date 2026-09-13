@@ -590,6 +590,8 @@ func (a *App) startBackgroundWorkers(ctx context.Context) {
 		a.meter.StartAsync(ctx)
 	}
 	if a.healthChecker != nil {
+		// Skip billable probes against dispatcher-cooled targets.
+		a.healthChecker.SetCooldownSource(a.db.Routing())
 		a.bg.Add(1)
 		go func() {
 			defer a.bg.Done()

@@ -1703,9 +1703,34 @@ export const api = {
 
   runHealthProbe: (input: { provider: string; provider_account_id?: string; model: string; capability?: string }) =>
     request<HealthProbeResult>("POST", "/health/probes/run", input),
+
+  resetAccountCooldown: (id: string) =>
+    request<CooldownResetResult>("POST", `/accounts/${pathSegment(id)}/cooldown/reset`),
+
+  resetAllCooldowns: () =>
+    request<CooldownResetResult>("POST", "/health/cooldowns/reset"),
 };
 
 // ---- Provider health types ----
+
+// CooldownResetResult is returned by the dispatcher-cooldown reset endpoints.
+// Both counts are idempotent: resetting with nothing parked returns zeros.
+export interface CooldownResetResult {
+  cleared_accounts: number;
+  cleared_models: number;
+}
+
+// formatCooldownReset renders a human-readable summary of a cooldown reset
+// result. Shared by the per-account and tenant-wide reset actions so both
+// report cleared counts identically (including the idempotent zero case).
+export function formatCooldownReset(res: CooldownResetResult): { title: string; message: string } {
+  if (res.cleared_accounts === 0 && res.cleared_models === 0) {
+    return { title: "No active cooldowns", message: "Nothing was parked — nothing to clear." };
+  }
+  const accounts = `${res.cleared_accounts} account${res.cleared_accounts === 1 ? "" : "s"}`;
+  const models = `${res.cleared_models} model cooldown${res.cleared_models === 1 ? "" : "s"}`;
+  return { title: "Cooldowns reset", message: `Cleared ${accounts} and ${models}.` };
+}
 
 export type HealthStatus = "healthy" | "degraded" | "unhealthy" | "unknown" | "disabled";
 

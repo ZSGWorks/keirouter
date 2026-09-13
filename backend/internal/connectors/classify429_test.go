@@ -343,3 +343,111 @@ func TestHTTPStatusError_401GenuineAuthErrorStaysAuth(t *testing.T) {
 	require.Equal(t, core.ErrAuth, pe.Kind)
 	require.Equal(t, core.FailureScopeAccount, pe.EffectiveScope())
 }
+
+// GLM code 1310 with calendar limit-exhausted wording is quota exhaustion,
+// not a transient rate limit, even though GLM reports it as rate_limit_error.
+func TestClassify429_GLM1310Quota(t *testing.T) {
+	resp := &http.Response{Header: http.Header{}}
+	body := []byte(`{"type":"error","error":{"type":"rate_limit_error","code":"1310","message":"[1310][Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-09-15 03:35:24][202609131722497a2d0a50d5604d21]"},"request_id":"202609131722497a2d0a50d5604d21"}`)
+
+	kind, _, credits := classify429(resp, body)
+
+	require.Equal(t, core.ErrQuotaExhausted, kind)
+	require.False(t, credits, "1310 is a resettable quota, not a depleted balance")
+}
+
+// The GLM reset timestamp in the message becomes the cooldown.
+func TestClassify429_GLM1310Quota_ParsedReset(t *testing.T) {
+	resp := &http.Response{Header: http.Header{}}
+	reset := time.Now().Add(36 * time.Hour).UTC().Format("2006-01-02 15:04:05")
+	body := []byte(`{"error":{"type":"rate_limit_error","code":"1310","message":"[1310][Weekly/Monthly Limit Exhausted. Your limit will reset at ` + reset + `][abc]"}}`)
+
+	kind, retryAfter, _ := classify429(resp, body)
+
+	require.Equal(t, core.ErrQuotaExhausted, kind)
+	require.WithinDuration(t, time.Now().Add(36*time.Hour), time.Now().Add(retryAfter), 5*time.Minute)
+}
+
+// Without a parseable reset stamp the 30m quota default applies.
+func TestClassify429_GLM1310Quota_NoReset(t *testing.T) {
+	resp := &http.Response{Header: http.Header{}}
+	body := []byte(`{"error":{"type":"rate_limit_error","code":"1310","message":"[1310][Monthly Limit Exhausted]"}}`)
+
+	kind, retryAfter, _ := classify429(resp, body)
+
+	require.Equal(t, core.ErrQuotaExhausted, kind)
+	require.Equal(t, 30*time.Minute, retryAfter)
+}
+
+// A header/body retry-after hint intentionally beats the parsed calendar
+// reset stamp for a 1310 quota body.
+func TestClassify429_GLM1310Quota_HintWinsOverReset(t *testing.T) {
+	resp := &http.Response{Header: http.Header{}}
+	resp.Header.Set("Retry-After", "120")
+	reset := time.Now().Add(36 * time.Hour).UTC().Format("2006-01-02 15:04:05")
+	body := []byte(`{"error":{"type":"rate_limit_error","code":"1310","message":"[1310][Weekly/Monthly Limit Exhausted. Your limit will reset at ` + reset + `][abc]"}}`)
+
+	kind, retryAfter, _ := classify429(resp, body)
+
+	require.Equal(t, core.ErrQuotaExhausted, kind)
+	require.Equal(t, 120*time.Second, retryAfter)
+}
+
+// Malformed reset stamps fall back to the default instead of parking forever.
+func TestClassify429_GLM1310Quota_BadReset(t *testing.T) {
+	resp := &http.Response{Header: http.Header{}}
+	body := []byte(`{"error":{"type":"rate_limit_error","code":"1310","message":"[1310][Weekly Limit Exhausted. Your limit will reset at soon]"}}`)
+
+	kind, retryAfter, _ := classify429(resp, body)
+
+	require.Equal(t, core.ErrQuotaExhausted, kind)
+	require.Equal(t, 30*time.Minute, retryAfter)
+}
+
+// Code 1310 alone, without limit-exhausted wording, keeps transient behavior.
+func TestClassify429_GLM1310_WithoutWordingStaysRateLimit(t *testing.T) {
+	resp := &http.Response{Header: http.Header{}}
+	body := []byte(`{"error":{"type":"rate_limit_error","code":"1310","message":"too many requests"}}`)
+
+	kind, retryAfter, _ := classify429(resp, body)
+
+	require.Equal(t, core.ErrRateLimit, kind)
+	require.Equal(t, 5*time.Second, retryAfter)
+}
+
+// Calendar wording without the 1310 code keeps the generic path: the
+// rate_limit tie-breaker still wins when both wordings are present.
+func TestClassify429_QuotaWordingWithout1310Unchanged(t *testing.T) {
+	resp := &http.Response{Header: http.Header{}}
+	body := []byte(`{"error":{"type":"rate_limit_error","message":"Weekly limit exhausted, rate limit exceeded"}}`)
+
+	kind, _, _ := classify429(resp, body)
+
+	require.Equal(t, core.ErrRateLimit, kind)
+}
+
+// A depleted balance takes precedence over the 1310 quota branch.
+func TestClassify429_GLM1310_CreditsWins(t *testing.T) {
+	resp := &http.Response{Header: http.Header{}}
+	body := []byte(`{"error":{"type":"rate_limit_error","code":"1310","message":"[1310][Weekly Limit Exhausted. Please top up your account.]"}}`)
+
+	kind, _, credits := classify429(resp, body)
+
+	require.Equal(t, core.ErrQuotaExhausted, kind)
+	require.True(t, credits, "a dry balance must park the account")
+}
+
+// End to end: the incident body is quota with account scope over HTTP 429.
+func TestHTTPStatusError_429GLM1310IsQuota(t *testing.T) {
+	resp := &http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header:     http.Header{},
+	}
+	body := []byte(`{"type":"error","error":{"type":"rate_limit_error","code":"1310","message":"[1310][Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-09-15 03:35:24][202609131722497a2d0a50d5604d21]"},"request_id":"202609131722497a2d0a50d5604d21"}`)
+
+	pe := core.AsProviderError(httpStatusError("glm", "glm-5.3", resp, body))
+
+	require.Equal(t, core.ErrQuotaExhausted, pe.Kind)
+	require.Equal(t, core.FailureScopeAccount, pe.EffectiveScope())
+	require.True(t, pe.Fallbackable(), "quota exhaustion must fall back to the next chain target")
+}

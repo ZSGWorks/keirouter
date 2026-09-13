@@ -1,9 +1,10 @@
 import { useState, type ReactNode } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
-import { useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
-import { ArrowLeft, Lightbulb, Play, RefreshCw } from "lucide-react";
+import { useQuery, useMutation, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
+import { ArrowLeft, Lightbulb, Play, RefreshCw, TimerOff } from "lucide-react";
 import {
   api,
+  formatCooldownReset,
   type HealthStatus,
   type HealthSummary,
   type HealthProviderRow,
@@ -23,6 +24,7 @@ import {
   TablePagination,
   useClientPagination,
 } from "../components/ui";
+import { CooldownResetModal } from "../components/CooldownResetModal";
 import { HealthStatusBadge, HealthScoreRing, fmtIssue } from "../components/HealthBadge";
 import {
   ErrorBreakdownChart,
@@ -88,6 +90,23 @@ function Overview() {
   const range = params.get("range") ?? "1h";
   const status = params.get("status") ?? "";
   const [tab, setTab] = useState<Tab>("providers");
+  const qc = useQueryClient();
+  const toast = useToast();
+
+  // Tenant-wide cooldown reset: confirm first (modal below), then report
+  // what was cleared. Failures surface inline in the modal for retry.
+  const [resetOpen, setResetOpen] = useState(false);
+  const resetAll = useMutation({
+    mutationFn: () => api.resetAllCooldowns(),
+    onSuccess: (res) => {
+      const { title, message } = formatCooldownReset(res);
+      toast.success(title, message);
+      qc.invalidateQueries({ queryKey: ["health-overview"] });
+      qc.invalidateQueries({ queryKey: ["accounts"] });
+      qc.invalidateQueries({ queryKey: ["providers"] });
+      setResetOpen(false);
+    },
+  });
 
   const setRange = (v: string) => setParams((p) => { p.set("range", v); return p; }, { replace: true });
   const setStatus = (v: string) => setParams((p) => { if (v) p.set("status", v); else p.delete("status"); return p; }, { replace: true });
@@ -122,6 +141,13 @@ function Overview() {
           <div className="flex flex-wrap items-center gap-2">
             <SegmentedControl value={range} onChange={setRange} options={RANGES} />
             <button
+              onClick={() => setResetOpen(true)}
+              title="Clear all dispatcher cooldowns (tenant-wide)"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] px-2.5 py-2 text-xs font-medium hover:bg-[var(--bg-subtle)]"
+            >
+              <TimerOff className="h-3.5 w-3.5" /> Reset cooldowns
+            </button>
+            <button
               onClick={() => overview.refetch()}
               className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] px-2.5 py-2 text-xs font-medium hover:bg-[var(--bg-subtle)]"
             >
@@ -129,6 +155,17 @@ function Overview() {
             </button>
           </div>
         }
+      />
+
+      <CooldownResetModal
+        open={resetOpen}
+        title="Reset all dispatcher cooldowns?"
+        subtitle="Every parked account and active model cooldown is released so routing can use them again. Probe history is kept."
+        confirmLabel="Reset all cooldowns"
+        pending={resetAll.isPending}
+        error={resetAll.error instanceof Error ? resetAll.error.message : undefined}
+        onClose={() => { resetAll.reset(); setResetOpen(false); }}
+        onConfirm={() => resetAll.mutate()}
       />
 
       {overview.isLoading ? (

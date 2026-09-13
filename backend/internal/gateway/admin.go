@@ -33,34 +33,8 @@ func (s *Server) mountAdmin(r chi.Router) {
 	r.Patch("/keys/{id}", s.adminUpdateKey)
 	r.Delete("/keys/{id}", s.adminDeleteKey)
 
-	r.Get("/accounts", s.adminListAccounts)
-	r.Post("/accounts", s.adminCreateAccount)
-	r.Post("/accounts/bulk", s.adminBulkCreateAccounts)
-	r.Post("/validate-key", s.adminValidateKey)
-	r.Patch("/accounts/{id}", s.adminUpdateAccount)
-	r.Delete("/accounts/{id}", s.adminDeleteAccount)
-	r.Post("/accounts/{id}/test", s.adminTestAccount)
-	r.Get("/accounts/{id}/quota", s.adminAccountQuota)
-	r.Get("/accounts/{id}/codex-reset-credits", s.adminCodexResetCredits)
-	r.Post("/accounts/{id}/codex-consume-credit", s.adminCodexConsumeCredit)
-	r.Get("/accounts/{id}/codex-usage-details", s.adminCodexUsageDetails)
-
-	r.Get("/chains", s.adminListChains)
-	r.Post("/chains", s.adminCreateChain)
-	r.Patch("/chains/{id}", s.adminUpdateChain)
-	r.Delete("/chains/{id}", s.adminDeleteChain)
-
-	r.Get("/plans", s.adminListPlans)
-	r.Post("/plans", s.adminCreatePlan)
-	r.Patch("/plans/{id}", s.adminUpdatePlan)
-	r.Delete("/plans/{id}", s.adminDeletePlan)
-	r.Get("/plans/{id}/keys", s.adminListPlanKeys)
-
-	r.Get("/budgets", s.adminListBudgets)
-	r.Get("/budgets/status", s.adminBudgetStatus)
-	r.Post("/budgets", s.adminCreateBudget)
-	r.Patch("/budgets/{id}", s.adminUpdateBudget)
-	r.Delete("/budgets/{id}", s.adminDeleteBudget)
+	s.mountAccountRoutes(r)
+	s.mountCatalogRoutes(r)
 
 	r.Get("/usage", s.adminUsageSummary)
 	r.Get("/usage/insights", s.adminUsageInsights)
@@ -69,6 +43,7 @@ func (s *Server) mountAdmin(r chi.Router) {
 	r.Get("/quota", s.adminQuotaUsage)
 	r.Get("/health/accounts", s.adminListAccountHealth)
 	r.Post("/health/check-now", s.adminRunHealthCheck)
+	r.Post("/health/cooldowns/reset", s.adminResetTenantCooldowns)
 	r.Post("/pricing/refresh", s.adminRefreshPricing)
 	s.mountProviderHealth(r)
 	r.Get("/console", s.adminConsoleLog)
@@ -141,6 +116,44 @@ func (s *Server) mountAdmin(r chi.Router) {
 }
 
 const adminTenant = store.DefaultTenantID
+
+// mountAccountRoutes registers provider account endpoints: CRUD, credential
+// validation, connection testing, quota, and dispatcher cooldown reset.
+func (s *Server) mountAccountRoutes(r chi.Router) {
+	r.Get("/accounts", s.adminListAccounts)
+	r.Post("/accounts", s.adminCreateAccount)
+	r.Post("/accounts/bulk", s.adminBulkCreateAccounts)
+	r.Post("/validate-key", s.adminValidateKey)
+	r.Patch("/accounts/{id}", s.adminUpdateAccount)
+	r.Delete("/accounts/{id}", s.adminDeleteAccount)
+	r.Post("/accounts/{id}/test", s.adminTestAccount)
+	r.Post("/accounts/{id}/cooldown/reset", s.adminResetAccountCooldown)
+	r.Get("/accounts/{id}/quota", s.adminAccountQuota)
+	r.Get("/accounts/{id}/codex-reset-credits", s.adminCodexResetCredits)
+	r.Post("/accounts/{id}/codex-consume-credit", s.adminCodexConsumeCredit)
+	r.Get("/accounts/{id}/codex-usage-details", s.adminCodexUsageDetails)
+}
+
+// mountCatalogRoutes registers routing catalog endpoints: chains, plans,
+// and budgets.
+func (s *Server) mountCatalogRoutes(r chi.Router) {
+	r.Get("/chains", s.adminListChains)
+	r.Post("/chains", s.adminCreateChain)
+	r.Patch("/chains/{id}", s.adminUpdateChain)
+	r.Delete("/chains/{id}", s.adminDeleteChain)
+
+	r.Get("/plans", s.adminListPlans)
+	r.Post("/plans", s.adminCreatePlan)
+	r.Patch("/plans/{id}", s.adminUpdatePlan)
+	r.Delete("/plans/{id}", s.adminDeletePlan)
+	r.Get("/plans/{id}/keys", s.adminListPlanKeys)
+
+	r.Get("/budgets", s.adminListBudgets)
+	r.Get("/budgets/status", s.adminBudgetStatus)
+	r.Post("/budgets", s.adminCreateBudget)
+	r.Patch("/budgets/{id}", s.adminUpdateBudget)
+	r.Delete("/budgets/{id}", s.adminDeleteBudget)
+}
 
 // ---- providers --------------------------------------------------------------
 

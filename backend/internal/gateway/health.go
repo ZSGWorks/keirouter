@@ -32,7 +32,9 @@ func (s *Server) adminRunHealthCheck(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := contextWithTimeout(r, s.cfg.Health.Timeout*time.Duration(max(1, s.cfg.Health.MaxParallel)))
 	defer cancel()
-	s.healthChecker.CheckOnce(ctx, adminTenant)
+	// force=true deliberately re-probes dispatcher-cooled targets.
+	force := r.URL.Query().Get("force") == "true"
+	s.healthChecker.CheckOnce(ctx, adminTenant, force)
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 }
 
