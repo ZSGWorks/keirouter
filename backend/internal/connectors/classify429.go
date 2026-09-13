@@ -47,6 +47,73 @@ var creditsPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)payment required`),
 }
 
+// glmQuotaCode matches the Zhipu GLM calendar quota-exhaustion code (1310),
+// reported either as a JSON code field or in the bracketed message prefix.
+var glmQuotaCode = regexp.MustCompile(`(?i)(?:"code"\s*:\s*"?1310"?|\[1310\])`)
+
+// glmResetAtRe extracts the reset timestamp from GLM quota messages such as
+// "[1310][Weekly/Monthly Limit Exhausted. Your limit will reset at
+// 2026-09-15 03:35:24]". GLM emits the timestamp in UTC without an offset.
+var glmResetAtRe = regexp.MustCompile(`(?i)reset\s+at\s+(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})`)
+
+// maxGLMQuotaReset bounds a parsed GLM reset timestamp so a misparsed date
+// can never park an account for longer than ~a month. Genuine monthly
+// windows fit inside the bound.
+const maxGLMQuotaReset = 31 * 24 * time.Hour
+
+// glmQuotaCooldown resolves the cooldown for a Zhipu GLM calendar quota body
+// (code 1310). Both anchors are required: the numeric code and calendar
+// limit-exhausted wording, so unrelated GLM errors never route here. It
+// reports whether body is a genuine 1310 quota exhaustion; when so,
+// header/body hints win, then the message reset timestamp, then the 30m
+// quota default.
+func glmQuotaCooldown(body []byte, hint time.Duration) (time.Duration, bool) {
+	bodyStr := string(body)
+	if bodyStr == "" || !glmQuotaCode.MatchString(bodyStr) {
+		return 0, false
+	}
+	quota := false
+	for _, re := range quotaPatterns {
+		if re.MatchString(bodyStr) {
+			quota = true
+			break
+		}
+	}
+	if !quota {
+		return 0, false
+	}
+	if hint > 0 {
+		return hint, true
+	}
+	if wait := parseGLMQuotaReset(bodyStr); wait > 0 {
+		return wait, true
+	}
+	return 30 * time.Minute, true
+}
+
+// parseGLMQuotaReset extracts the upstream reset timestamp from a GLM quota
+// message and returns the duration until it resets. Returns 0 when absent,
+// unparseable, or in the past.
+func parseGLMQuotaReset(body string) time.Duration {
+	m := glmResetAtRe.FindStringSubmatch(body)
+	if m == nil {
+		return 0
+	}
+	for _, layout := range []string{"2006-01-02 15:04:05", "2006-01-02T15:04:05"} {
+		if at, err := time.ParseInLocation(layout, m[1], time.UTC); err == nil {
+			wait := time.Until(at)
+			if wait <= 0 {
+				return 0
+			}
+			if wait > maxGLMQuotaReset {
+				return maxGLMQuotaReset
+			}
+			return wait
+		}
+	}
+	return 0
+}
+
 // looksLikeCreditsExhausted reports whether the provider error body indicates
 // a depleted paid balance rather than a resettable quota or transient rate
 // limit. Used to classify errors into a terminal credits-exhausted state.
@@ -259,6 +326,14 @@ func classify429(resp *http.Response, body []byte) (kind core.ErrorKind, retryAf
 	// quota-window cooldown.
 	if looksLikeCreditsExhausted(bodyStr) {
 		return core.ErrQuotaExhausted, retryAfter, true
+	}
+
+	// Zhipu GLM calendar quota exhaustion (code 1310) is reported as a
+	// rate_limit_error, so the generic tie-breaker below would mistreat it
+	// as a transient throttle. The dual-anchored matcher keeps this scoped
+	// to genuine 1310 quota bodies.
+	if wait, ok := glmQuotaCooldown(body, retryAfter); ok {
+		return core.ErrQuotaExhausted, wait, false
 	}
 
 	// Hard quota exhaustion next: long cooldown, no point retrying before the
