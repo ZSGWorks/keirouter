@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState, useMemo } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Plus, Trash2, Plug, X, Zap, ArrowUp, ArrowDown, CheckCircle, ToggleLeft, ToggleRight, Search, Route, AlertCircle, AlertTriangle, RefreshCw, Globe, Copy, Check, Upload, Loader2, XCircle, Layers, FileText, Download, ChevronDown, Clock3, Package } from "lucide-react";
-import { api, type DeviceCode, type OAuthProvider, type Provider, type ProviderModel, type Account, type ProxyPool, type UpstreamQuota, type ProviderRoutingSettings, type BulkAccountResult } from "../lib/api";
+import { ArrowLeft, Plus, Trash2, Plug, X, Zap, ArrowUp, ArrowDown, CheckCircle, ToggleLeft, ToggleRight, Search, Route, AlertCircle, AlertTriangle, RefreshCw, Globe, Copy, Check, Upload, Loader2, XCircle, Layers, FileText, Download, ChevronDown, Clock3, Package, TimerOff } from "lucide-react";
+import { api, type DeviceCode, type OAuthProvider, type Provider, type ProviderModel, type Account, type ProxyPool, type UpstreamQuota, type ProviderRoutingSettings, type BulkAccountResult, type CooldownResetResult, formatCooldownReset } from "../lib/api";
 import { ModelCapabilityIcons } from "../components/ModelCapabilityIcons";
+import { CooldownResetModal } from "../components/CooldownResetModal";
 import { ModelDetailsModal } from "../components/ModelDetailsModal";
 import { KiroConnectModal } from "../components/KiroConnectModal";
 import { QoderConnectModal } from "../components/QoderConnectModal";
@@ -244,6 +245,22 @@ export function ProviderDetailPage() {
   // message). Drives the inline status badge in each account row.
   const [testResults, setTestResults] = useState<Record<string, { status: "testing" | "ok" | "error"; message?: string }>>({});
   const [testingAll, setTestingAll] = useState(false);
+
+  // resetTarget holds the account awaiting cooldown-reset confirmation.
+  // The confirm dialog replaces the native confirm() per codebase convention.
+  const [resetTarget, setResetTarget] = useState<Account | null>(null);
+
+  const resetCooldowns = useMutation({
+    mutationFn: (accountId: string) => api.resetAccountCooldown(accountId),
+    onSuccess: (res: CooldownResetResult) => {
+      qc.invalidateQueries({ queryKey: ["accounts"] });
+      qc.invalidateQueries({ queryKey: ["providers"] });
+      setResetTarget(null);
+      const { title, message } = formatCooldownReset(res);
+      toast.success(title, message);
+    },
+    onError: (e: Error) => toast.error("Cooldown reset failed", e.message),
+  });
 
   // runTest probes a single account's credentials and records the result.
   // Returns true when the credential is valid. On failure, refetches the
@@ -745,6 +762,7 @@ export function ProviderDetailPage() {
                     onMoveUp={() => moveAccount(account.id, "up")}
                     onMoveDown={() => moveAccount(account.id, "down")}
                     onTest={() => runTest(account.id)}
+                    onReset={() => setResetTarget(account)}
                     onUpdateProxy={(patch) => updateAccount.mutate({ id: account.id, patch })}
                     testResult={testResults[account.id]}
                     disabledByBatch={testingAll}
@@ -1039,6 +1057,18 @@ export function ProviderDetailPage() {
         </div>
       </Modal>
 
+      {/* Reset dispatcher cooldowns confirmation */}
+      <CooldownResetModal
+        open={resetTarget !== null}
+        title={`Reset cooldowns for ${resetTarget?.label || resetTarget?.provider || "account"}?`}
+        subtitle="Parked backoff and active model cooldowns are released so routing can use this account again. Probe history is kept."
+        confirmLabel="Reset cooldowns"
+        pending={resetCooldowns.isPending}
+        error={resetCooldowns.error instanceof Error ? resetCooldowns.error.message : undefined}
+        onClose={() => { resetCooldowns.reset(); setResetTarget(null); }}
+        onConfirm={() => { if (resetTarget) resetCooldowns.mutate(resetTarget.id); }}
+      />
+
       {/* Delete custom provider confirmation */}
       <Modal
         open={deleteProviderOpen}
@@ -1260,6 +1290,15 @@ function RoutingControls({
   );
 }
 
+function TestErrorBanner({ message }: Readonly<{ message: string }>) {
+  return (
+    <div role="alert" className="ml-6 mt-2 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 dark:border-red-900/40 dark:bg-red-900/15">
+      <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-red-500 dark:text-red-400" />
+      <p className="break-words text-xs leading-5 text-red-700 dark:text-red-300">{message}</p>
+    </div>
+  );
+}
+
 function AccountBadges({
   account: a,
   testResult,
@@ -1376,6 +1415,7 @@ function AccountActions({
   testing,
   disabledByBatch,
   onTest,
+  onReset,
   onUpdateProxy,
   onDelete,
 }: Readonly<{
@@ -1383,6 +1423,7 @@ function AccountActions({
   testing: boolean;
   disabledByBatch?: boolean;
   onTest: () => void;
+  onReset: () => void;
   onUpdateProxy: (patch: { disabled?: boolean }) => void;
   onDelete: () => void;
 }>) {
@@ -1398,6 +1439,16 @@ function AccountActions({
         aria-label={`Test ${a.label || a.provider}`}
       >
         {testing ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle className="h-4 w-4" />}
+      </button>
+      <button
+        type="button"
+        onClick={onReset}
+        disabled={disabledByBatch}
+        className={`${iconButtonClass} hover:bg-[var(--bg-subtle)] hover:text-[var(--text)] disabled:cursor-not-allowed disabled:opacity-40 disabled:active:scale-100`}
+        title="Reset dispatcher cooldowns for this account"
+        aria-label={`Reset cooldowns for ${a.label || a.provider}`}
+      >
+        <TimerOff className="h-4 w-4" />
       </button>
       <button
         type="button"
@@ -1432,6 +1483,7 @@ function AccountRow({
   onMoveUp,
   onMoveDown,
   onTest,
+  onReset,
   onUpdateProxy,
   testResult,
   disabledByBatch,
@@ -1446,6 +1498,7 @@ function AccountRow({
   onMoveUp: () => void;
   onMoveDown: () => void;
   onTest: () => void;
+  onReset: () => void;
   onUpdateProxy: (patch: { priority?: number; proxy_pool_id?: string; disabled?: boolean }) => void;
   testResult?: { status: "testing" | "ok" | "error"; message?: string };
   disabledByBatch?: boolean;
@@ -1518,16 +1571,14 @@ function AccountRow({
           testing={testing}
           disabledByBatch={disabledByBatch}
           onTest={onTest}
+          onReset={onReset}
           onUpdateProxy={onUpdateProxy}
           onDelete={onDelete}
         />
       </div>
 
       {testResult?.status === "error" && testResult.message && (
-        <div role="alert" className="ml-6 mt-2 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 dark:border-red-900/40 dark:bg-red-900/15">
-          <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-red-500 dark:text-red-400" />
-          <p className="break-words text-xs leading-5 text-red-700 dark:text-red-300">{testResult.message}</p>
-        </div>
+        <TestErrorBanner message={testResult.message} />
       )}
 
       {hasExpandableDetails && (
