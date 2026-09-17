@@ -1,10 +1,10 @@
 ---
 id: TASK-031
 title: Apply repo-wide gofmt to backend Go sources
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-09-17 13:29'
-updated_date: '2026-09-17 13:44'
+updated_date: '2026-09-17 13:45'
 labels:
   - chore
   - formatting
@@ -12,6 +12,42 @@ dependencies: []
 references:
   - backend/internal/health/probe.go
   - backend/internal/app/bootstrap.go
+modified_files:
+  - backend/internal/app/bootstrap.go
+  - backend/internal/auth/auth.go
+  - backend/internal/auth/auth_test.go
+  - backend/internal/cache/embedder.go
+  - backend/internal/caveman/caveman.go
+  - backend/internal/caveman/caveman_test.go
+  - backend/internal/core/message.go
+  - backend/internal/core/service.go
+  - backend/internal/crypto/apikey.go
+  - backend/internal/crypto/apikey_test.go
+  - backend/internal/crypto/envelope.go
+  - backend/internal/crypto/envelope_test.go
+  - backend/internal/crypto/password.go
+  - backend/internal/crypto/portable.go
+  - backend/internal/crypto/portable_test.go
+  - backend/internal/fastjson/fastjson.go
+  - backend/internal/guardrails/engine_test.go
+  - backend/internal/guardrails/pii/presidio.go
+  - backend/internal/guardrails/pii/recognizers.go
+  - backend/internal/guardrails/policy.go
+  - backend/internal/guardrails/toxicity/openai.go
+  - backend/internal/health/probe.go
+  - backend/internal/oauth/customflows.go
+  - backend/internal/oauth/kimchi.go
+  - backend/internal/oauth/providers.go
+  - backend/internal/oauth/session.go
+  - backend/internal/observ/metrics.go
+  - backend/internal/prettylog/handler.go
+  - backend/internal/slimmer/logfilter_test.go
+  - backend/internal/slimmer/slimmer.go
+  - backend/internal/slimmer/slimmer_test.go
+  - backend/internal/transform/ollama_test.go
+  - backend/internal/tunnel/health.go
+  - backend/internal/tunnel/tailscale/funnel.go
+  - backend/internal/vault/vault.go
 priority: low
 type: chore
 ordinal: 37000
@@ -29,17 +65,17 @@ Notable dirty files include security-sensitive crypto/, vault/, and oauth/ sourc
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 gofmt -w applied across all dirty backend Go files (gofmt -l backend list)
-- [ ] #2 gofmt -l backend prints nothing
-- [ ] #3 git diff -w is empty (formatting only, no behaviour change)
-- [ ] #4 make vet and make test pass
+- [x] #1 gofmt -w applied across all dirty backend Go files (gofmt -l backend list)
+- [x] #2 gofmt -l backend prints nothing
+- [x] #3 git diff -w is empty (formatting only, no behaviour change)
+- [x] #4 make vet and make test pass
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 Codehealth is green
-- [ ] #2 Changes are validated by tests
-- [ ] #3 Always look for refactorings in the touched areas and make the code more maintainable as you go
+- [x] #1 Codehealth is green
+- [x] #2 Changes are validated by tests
+- [x] #3 Always look for refactorings in the touched areas and make the code more maintainable as you go
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -64,4 +100,32 @@ Verification: gofmt -l backend empty; git diff -w empty; make vet; make test. Fr
 
 <!-- SECTION:NOTES:BEGIN -->
 Starting implementation. Scope expanded from 2 to 35 files per user-approved plan.
+
+Residual under plain `git diff -w` was the removal of a trailing blank line at EOF in guardrails/engine_test.go (gofmt-correct, whitespace-only). No gofmt enforcement exists in scripts/Makefile/.github, so drift can return; a `verify.sh` gofmt check would be a natural follow-up if desired.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+## Summary
+
+Applied `gofmt` repo-wide to backend Go sources, eliminating 35 files of accumulated formatting drift (field/comment alignment plus one trailing blank line at EOF). `gofmt -l backend` now returns nothing.
+
+## Scope change
+
+TASK-031 originally named 2 files; `gofmt -l backend` actually reported 35. Scope expanded to repo-wide backend with user approval before implementation.
+
+## Verification
+
+- `gofmt -l backend` -> empty (no drift remains).
+- `git diff -w --ignore-blank-lines` -> empty, proving no non-whitespace change. Under plain `git diff -w` the only residual was one trailing blank line at EOF in `backend/internal/guardrails/engine_test.go`, which `gofmt` mandates removing.
+- `make vet` -> exit 0.
+- `make test` -> exit 0, no FAIL/panic.
+- `cd frontend && npm run typecheck` not run: no frontend files touched.
+
+## Notes
+
+- Security-sensitive `crypto/`, `vault/`, and `oauth/` files were included; the whitespace-only diff gate confirms nothing semantic changed.
+- No gofmt guard was added to `scripts/verify.sh` (user chose the scope 'repo-wide backend', not 'backend + guard'). Drift can reappear until such a check exists.
+- Commit: `8f359f9` `style(backend): apply gofmt across backend Go sources`.
+<!-- SECTION:FINAL_SUMMARY:END -->

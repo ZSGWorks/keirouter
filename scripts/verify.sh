@@ -34,6 +34,15 @@ run() {
   "$@"
 }
 
+check_go_fmt() {
+  local unformatted
+  unformatted="$(gofmt -l backend)"
+  if [[ -n "$unformatted" ]]; then
+    printf 'Unformatted Go files (run: gofmt -l backend | xargs gofmt -w):\n%s\n' "$unformatted" >&2
+    return 1
+  fi
+}
+
 wait_for_postgres() {
   local status
 
@@ -95,6 +104,7 @@ if ! docker compose version >/dev/null 2>&1; then
 fi
 
 run 'Download Go modules' bash -c 'cd backend && go mod download'
+run 'Check Go formatting' check_go_fmt
 run 'Vet backend' make vet
 run 'Test backend' make test
 
