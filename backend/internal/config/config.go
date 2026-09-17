@@ -213,6 +213,9 @@ type ProviderHealthConfig struct {
 	SnapshotInterval time.Duration `koanf:"snapshot_interval"`
 	// RollingWindow is the lookback for current-state aggregation.
 	RollingWindow time.Duration `koanf:"rolling_window"`
+	// MaxHistoryWindow caps how long in-memory minute buckets are retained
+	// for dashboard range queries; requests beyond it are clamped to it.
+	MaxHistoryWindow time.Duration `koanf:"max_history_window"`
 	// LatencyThresholds maps capability to its p95 threshold in ms.
 	LatencyThresholds map[string]int `koanf:"latency_thresholds"`
 	// Capabilities controls which capability types are auto-probed.
@@ -344,28 +347,35 @@ func Default() Config {
 			RecentModelWindow:    24 * time.Hour,
 			MaxModelsPerProvider: 8,
 		},
-		ProviderHealth: ProviderHealthConfig{
-			Enabled:              true,
-			ProbeInterval:        60 * time.Second,
-			ProbeTimeout:         15 * time.Second,
-			FailureThreshold:     3,
-			QueueSize:            5000,
-			CurrentFlushInterval: 30 * time.Second,
-			SnapshotInterval:     60 * time.Second,
-			RollingWindow:        15 * time.Minute,
-			LatencyThresholds: map[string]int{
-				"chat_completions": 10_000,
-				"embeddings":       5_000,
-				"image_generation": 60_000,
-				"audio":            60_000,
-				"search":           15_000,
-			},
-			Capabilities: ProviderHealthCapabilityConfig{
-				ChatCompletions: ProviderHealthProbeConfig{Enabled: true, MaxTokens: 5, Prompt: "Reply with OK only."},
-				Embeddings:      ProviderHealthProbeConfig{Enabled: true, Input: "health check"},
-			},
+		ProviderHealth: defaultProviderHealthConfig(),
+		Log:            LogConfig{Level: "info", Format: "text"},
+	}
+}
+
+// defaultProviderHealthConfig holds the provider-health defaults, kept out of
+// Default so the top-level literal stays readable.
+func defaultProviderHealthConfig() ProviderHealthConfig {
+	return ProviderHealthConfig{
+		Enabled:              true,
+		ProbeInterval:        60 * time.Second,
+		ProbeTimeout:         15 * time.Second,
+		FailureThreshold:     3,
+		QueueSize:            5000,
+		CurrentFlushInterval: 30 * time.Second,
+		SnapshotInterval:     60 * time.Second,
+		RollingWindow:        15 * time.Minute,
+		MaxHistoryWindow:     24 * time.Hour,
+		LatencyThresholds: map[string]int{
+			"chat_completions": 10_000,
+			"embeddings":       5_000,
+			"image_generation": 60_000,
+			"audio":            60_000,
+			"search":           15_000,
 		},
-		Log: LogConfig{Level: "info", Format: "text"},
+		Capabilities: ProviderHealthCapabilityConfig{
+			ChatCompletions: ProviderHealthProbeConfig{Enabled: true, MaxTokens: 5, Prompt: "Reply with OK only."},
+			Embeddings:      ProviderHealthProbeConfig{Enabled: true, Input: "health check"},
+		},
 	}
 }
 

@@ -81,6 +81,9 @@ type Config struct {
 	SnapshotInterval time.Duration
 	// RollingWindow is the lookback for current-state aggregation.
 	RollingWindow time.Duration
+	// MaxHistoryWindow caps how long minute buckets are retained in memory
+	// for dashboard range queries. Also bounds chain bucket growth.
+	MaxHistoryWindow time.Duration
 	// MaxSamplesPerBucket caps latency/TTFT samples kept per minute bucket.
 	MaxSamplesPerBucket int
 	// LatencyThresholds per capability (ms).
@@ -152,29 +155,19 @@ type minuteBucket struct {
 	latencies           []int
 	ttfts               []int
 	errCounts           map[ProviderErrorType]int64
+
+	// Frozen percentile markers replace the raw sample arrays once a bucket
+	// ages past the rolling window and has been persisted, bounding memory
+	// for the longer retained history window.
+	frozen                    bool
+	latP50, latP95, latP99    int
+	ttftP50, ttftP95, ttftP99 int
 }
 
 // New builds a health telemetry Service. The caller must call Start to launch
 // the background aggregator and Close on shutdown.
 func New(cfg Config, log *slog.Logger, repo *store.ProviderHealthRepo) *Service {
-	if cfg.QueueSize <= 0 {
-		cfg.QueueSize = 5000
-	}
-	if cfg.CurrentFlushInterval <= 0 {
-		cfg.CurrentFlushInterval = 30 * time.Second
-	}
-	if cfg.SnapshotInterval <= 0 {
-		cfg.SnapshotInterval = 60 * time.Second
-	}
-	if cfg.RollingWindow <= 0 {
-		cfg.RollingWindow = 15 * time.Minute
-	}
-	if cfg.MaxSamplesPerBucket <= 0 {
-		cfg.MaxSamplesPerBucket = 500
-	}
-	if cfg.LatencyThresholds == nil {
-		cfg.LatencyThresholds = DefaultLatencyThresholds()
-	}
+	cfg = normalizeConfig(cfg)
 	if log == nil {
 		log = slog.Default()
 	}
@@ -187,6 +180,36 @@ func New(cfg Config, log *slog.Logger, repo *store.ProviderHealthRepo) *Service 
 		states: make(map[string]*keyState),
 		chains: make(map[string]*chainState),
 	}
+}
+
+// normalizeConfig fills zero-value defaults and enforces invariants so the rest
+// of the service can assume a fully populated config.
+func normalizeConfig(cfg Config) Config {
+	if cfg.QueueSize <= 0 {
+		cfg.QueueSize = 5000
+	}
+	if cfg.CurrentFlushInterval <= 0 {
+		cfg.CurrentFlushInterval = 30 * time.Second
+	}
+	if cfg.SnapshotInterval <= 0 {
+		cfg.SnapshotInterval = 60 * time.Second
+	}
+	if cfg.RollingWindow <= 0 {
+		cfg.RollingWindow = 15 * time.Minute
+	}
+	if cfg.MaxHistoryWindow <= 0 {
+		cfg.MaxHistoryWindow = 24 * time.Hour
+	}
+	if cfg.MaxHistoryWindow < cfg.RollingWindow {
+		cfg.MaxHistoryWindow = cfg.RollingWindow
+	}
+	if cfg.MaxSamplesPerBucket <= 0 {
+		cfg.MaxSamplesPerBucket = 500
+	}
+	if cfg.LatencyThresholds == nil {
+		cfg.LatencyThresholds = DefaultLatencyThresholds()
+	}
+	return cfg
 }
 
 // Record enqueues a telemetry event. Non-blocking: when the queue is full the
@@ -226,6 +249,20 @@ func (s *Service) RollingWindow() time.Duration {
 	return s.cfg.RollingWindow
 }
 
+// EffectiveWindow clamps a requested lookback to the minute buckets actually
+// retained in memory, so responses can report the applied span instead of
+// implying unbounded history. Non-positive requests resolve to the full
+// retained window.
+func (s *Service) EffectiveWindow(requested time.Duration) time.Duration {
+	if s == nil {
+		return 0
+	}
+	if requested <= 0 || requested > s.cfg.MaxHistoryWindow {
+		return s.cfg.MaxHistoryWindow
+	}
+	return requested
+}
+
 // ChainStat is the rolled-up health of one routing chain over the rolling
 // window, used by the chain-impact view.
 type ChainStat struct {
@@ -240,23 +277,104 @@ type ChainStat struct {
 	LastUpdated      time.Time
 }
 
-// ChainStats returns rolled-up per-chain stats over the rolling window. Chains
-// with no recent telemetry are omitted.
+// ProviderStat is one provider dimension key's rolled-up traffic over a
+// lookback window, used by the dashboard's range-scoped views.
+type ProviderStat struct {
+	Provider          string
+	ProviderAccountID string
+	Model             string
+	Capability        string
+	Requests          int64
+	Successes         int64
+	Failures          int64
+	Fallbacks         int64
+	FinalFailures     int64
+	LatencyP95Ms      int
+	TTFTP95Ms         int
+}
+
+// ProviderStatsSince returns per-key traffic aggregates over the given
+// lookback (clamped to the retained history window). Latency/TTFT p95 pools
+// raw samples for minutes inside the rolling window and takes the max of
+// frozen per-minute percentiles for older minutes. Keys with no traffic in the
+// window are omitted.
+func (s *Service) ProviderStatsSince(window time.Duration) []ProviderStat {
+	if s == nil {
+		return nil
+	}
+	windowStart := time.Now().UTC().Add(-s.EffectiveWindow(window)).Truncate(time.Minute)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]ProviderStat, 0, len(s.states))
+	for _, ks := range s.states {
+		if st, ok := providerStatFor(ks, windowStart); ok {
+			out = append(out, st)
+		}
+	}
+	return out
+}
+
+// providerStatFor aggregates one key's buckets at or after windowStart,
+// reporting false when the key has no traffic in the window.
+func providerStatFor(ks *keyState, windowStart time.Time) (ProviderStat, bool) {
+	var st ProviderStat
+	st.Provider = ks.provider
+	st.ProviderAccountID = ks.account
+	st.Model = ks.model
+	st.Capability = ks.capability
+	var latencies, ttfts []int
+	var maxFrozenLat, maxFrozenTTFT int
+	for _, b := range ks.buckets {
+		if b.minute.Before(windowStart) {
+			continue
+		}
+		st.Requests += b.requests
+		st.Successes += b.successes
+		st.Failures += b.failures
+		st.Fallbacks += b.fallbacks
+		st.FinalFailures += b.finalFails
+		if b.frozen {
+			maxFrozenLat = max(maxFrozenLat, b.latP95)
+			maxFrozenTTFT = max(maxFrozenTTFT, b.ttftP95)
+		} else {
+			latencies = append(latencies, b.latencies...)
+			ttfts = append(ttfts, b.ttfts...)
+		}
+	}
+	st.LatencyP95Ms = max(percentileOf(latencies, 95), maxFrozenLat)
+	st.TTFTP95Ms = max(percentileOf(ttfts, 95), maxFrozenTTFT)
+	if st.Requests == 0 && st.Fallbacks == 0 {
+		return st, false
+	}
+	return st, true
+}
+
+// ChainStats returns rolled-up per-chain stats over the rolling window.
 func (s *Service) ChainStats() []ChainStat {
 	if s == nil {
 		return nil
 	}
-	windowStart := time.Now().UTC().Add(-s.cfg.RollingWindow).Truncate(time.Minute)
+	return s.ChainStatsSince(s.cfg.RollingWindow)
+}
+
+// ChainStatsSince returns rolled-up per-chain stats over the given lookback
+// (clamped to the retained history window). Chains with no telemetry in that
+// window are omitted.
+func (s *Service) ChainStatsSince(window time.Duration) []ChainStat {
+	if s == nil {
+		return nil
+	}
+	windowStart := time.Now().UTC().Add(-s.EffectiveWindow(window)).Truncate(time.Minute)
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	out := make([]ChainStat, 0, len(s.chains))
 	for id, cs := range s.chains {
 		var agg ChainStat
 		agg.ChainID = id
-		for m, b := range cs.buckets {
+		for _, b := range cs.buckets {
 			if b.minute.Before(windowStart) {
 				continue
 			}
-			_ = m
 			agg.Requests += b.requests
 			agg.Successes += b.successes
 			agg.Failures += b.failures
@@ -272,7 +390,6 @@ func (s *Service) ChainStats() []ChainStat {
 			out = append(out, agg)
 		}
 	}
-	s.mu.Unlock()
 	return out
 }
 
@@ -339,94 +456,133 @@ func (s *Service) run(ctx context.Context) {
 func (s *Service) ingest(ev ProviderTelemetryEvent) {
 	min := ev.Timestamp.UTC().Truncate(time.Minute)
 	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	// A final-failure marker exists only to close the chain-level request. The
-	// concrete provider attempt was already recorded immediately before it;
-	// aggregating the marker again would double-count failed requests and create
-	// a second account-less provider row.
-	if ev.FinalFailure && ev.Provider != "" {
-		key := store.HealthKey(ev.Provider, ev.ProviderAccountID, ev.Model, ev.Capability)
-		if ks, ok := s.states[key]; ok {
-			if bucket, ok := ks.buckets[min.Unix()]; ok {
-				bucket.finalFails++
-				bucket.revision++
-			}
-		}
+	if ev.FinalFailure {
+		s.markFinalFailure(ev, min)
+	} else if ev.Provider != "" {
+		s.recordProviderAttempt(ev, min)
 	}
-	if !ev.FinalFailure && ev.Provider != "" {
-		key := store.HealthKey(ev.Provider, ev.ProviderAccountID, ev.Model, ev.Capability)
-		ks, ok := s.states[key]
-		if !ok {
-			ks = &keyState{
-				provider:   ev.Provider,
-				account:    ev.ProviderAccountID,
-				model:      ev.Model,
-				capability: ev.Capability,
-				buckets:    make(map[int64]*minuteBucket),
-			}
-			s.states[key] = ks
-		}
-		bucket, ok := ks.buckets[min.Unix()]
-		if !ok {
-			bucket = &minuteBucket{minute: min, errCounts: make(map[ProviderErrorType]int64)}
-			ks.buckets[min.Unix()] = bucket
-		}
-		bucket.requests++
-		bucket.inputTokens += int64(ev.InputTokens)
-		bucket.outputTokens += int64(ev.OutputTokens)
-		bucket.costMicros += ev.CostMicroUSD
-		if ev.Status == "success" {
-			bucket.successes++
-			ks.consecutiveFailures = 0
-			now := ev.Timestamp
-			ks.lastSuccess = &now
-		} else {
-			bucket.failures++
-			bucket.errCounts[ev.ErrorType]++
-			ks.consecutiveFailures++
-			now := ev.Timestamp
-			ks.lastFailure = &now
-		}
-		if ev.FallbackTriggered && ev.Status == "failed" {
-			bucket.fallbacks++
-		}
-		if ev.LatencyMs > 0 && len(bucket.latencies) < s.cfg.MaxSamplesPerBucket {
-			bucket.latencies = append(bucket.latencies, ev.LatencyMs)
-		}
-		if ev.TTFTMs > 0 && len(bucket.ttfts) < s.cfg.MaxSamplesPerBucket {
-			bucket.ttfts = append(bucket.ttfts, ev.TTFTMs)
-		}
+	if ev.ChainID != "" {
+		s.recordChainEvent(ev, min)
+	}
+}
+
+// markFinalFailure folds a final-failure marker into the already-recorded
+// provider attempt. The marker exists only to close the chain-level request:
+// the concrete attempt was recorded immediately before it, and counting it
+// again would double-count the failure and create a second account-less row.
+// Caller holds s.mu.
+func (s *Service) markFinalFailure(ev ProviderTelemetryEvent, min time.Time) {
+	if ev.Provider == "" {
+		return
+	}
+	key := store.HealthKey(ev.Provider, ev.ProviderAccountID, ev.Model, ev.Capability)
+	ks, ok := s.states[key]
+	if !ok {
+		return
+	}
+	if bucket, ok := ks.buckets[min.Unix()]; ok {
+		bucket.finalFails++
 		bucket.revision++
 	}
+}
 
-	// Chain-level rollup: only terminal events (success or FinalFailure)
-	// count as requests. Non-terminal per-attempt failures are ignored here.
-	if ev.ChainID != "" {
-		cs, ok := s.chains[ev.ChainID]
-		if !ok {
-			cs = &chainState{chainID: ev.ChainID, buckets: make(map[int64]*chainBucket)}
-			s.chains[ev.ChainID] = cs
-		}
-		cb, ok := cs.buckets[min.Unix()]
-		if !ok {
-			cb = &chainBucket{minute: min}
-			cs.buckets[min.Unix()] = cb
-		}
-		if ev.Status == "success" || ev.FinalFailure {
-			cb.requests++
-			if ev.Status == "success" {
-				cb.successes++
-			} else {
-				cb.failures++
-				cb.finalFails++
-			}
-			if ev.FallbackTriggered {
-				cb.fallbacks++
-			}
-		}
-		cs.lastUpdated = ev.Timestamp
+// recordProviderAttempt folds one provider attempt into its minute bucket,
+// creating the key/bucket on first sight. Caller holds s.mu.
+func (s *Service) recordProviderAttempt(ev ProviderTelemetryEvent, min time.Time) {
+	key := store.HealthKey(ev.Provider, ev.ProviderAccountID, ev.Model, ev.Capability)
+	ks := s.keyState(key, ev)
+	pos := min.Unix()
+	bucket, ok := ks.buckets[pos]
+	if !ok {
+		bucket = &minuteBucket{minute: min, errCounts: make(map[ProviderErrorType]int64)}
+		ks.buckets[pos] = bucket
 	}
-	s.mu.Unlock()
+	bucket.requests++
+	bucket.inputTokens += int64(ev.InputTokens)
+	bucket.outputTokens += int64(ev.OutputTokens)
+	bucket.costMicros += ev.CostMicroUSD
+	if ev.Status == "success" {
+		bucket.successes++
+		ks.consecutiveFailures = 0
+		now := ev.Timestamp
+		ks.lastSuccess = &now
+	} else {
+		bucket.failures++
+		bucket.errCounts[ev.ErrorType]++
+		ks.consecutiveFailures++
+		now := ev.Timestamp
+		ks.lastFailure = &now
+	}
+	if ev.FallbackTriggered && ev.Status == "failed" {
+		bucket.fallbacks++
+	}
+	s.appendSamples(bucket, ev)
+	bucket.revision++
+}
+
+// keyState returns the keyState for the event's health key, creating it when
+// absent. Caller holds s.mu.
+func (s *Service) keyState(key string, ev ProviderTelemetryEvent) *keyState {
+	ks, ok := s.states[key]
+	if ok {
+		return ks
+	}
+	ks = &keyState{
+		provider:   ev.Provider,
+		account:    ev.ProviderAccountID,
+		model:      ev.Model,
+		capability: ev.Capability,
+		buckets:    make(map[int64]*minuteBucket),
+	}
+	s.states[key] = ks
+	return ks
+}
+
+// appendSamples records latency/TTFT samples for percentile pooling. Frozen
+// buckets keep only their percentile markers; a late sample cannot extend the
+// already-persisted snapshot anyway.
+func (s *Service) appendSamples(bucket *minuteBucket, ev ProviderTelemetryEvent) {
+	if bucket.frozen {
+		return
+	}
+	if ev.LatencyMs > 0 && len(bucket.latencies) < s.cfg.MaxSamplesPerBucket {
+		bucket.latencies = append(bucket.latencies, ev.LatencyMs)
+	}
+	if ev.TTFTMs > 0 && len(bucket.ttfts) < s.cfg.MaxSamplesPerBucket {
+		bucket.ttfts = append(bucket.ttfts, ev.TTFTMs)
+	}
+}
+
+// recordChainEvent rolls a terminal chain event into its minute bucket. Only
+// terminal events (success or final failure) count as requests; non-terminal
+// per-attempt failures are ignored here. Caller holds s.mu.
+func (s *Service) recordChainEvent(ev ProviderTelemetryEvent, min time.Time) {
+	cs, ok := s.chains[ev.ChainID]
+	if !ok {
+		cs = &chainState{chainID: ev.ChainID, buckets: make(map[int64]*chainBucket)}
+		s.chains[ev.ChainID] = cs
+	}
+	pos := min.Unix()
+	cb, ok := cs.buckets[pos]
+	if !ok {
+		cb = &chainBucket{minute: min}
+		cs.buckets[pos] = cb
+	}
+	if ev.Status == "success" || ev.FinalFailure {
+		cb.requests++
+		if ev.Status == "success" {
+			cb.successes++
+		} else {
+			cb.failures++
+			cb.finalFails++
+		}
+		if ev.FallbackTriggered {
+			cb.fallbacks++
+		}
+	}
+	cs.lastUpdated = ev.Timestamp
 }
 
 // flushCurrent recomputes provider_health_current for every active key from its
@@ -464,40 +620,78 @@ func (s *Service) flushCurrent(ctx context.Context) {
 }
 
 // flushSnapshots persists completed minute buckets while retaining them through
-// the rolling window used by provider_health_current. A revision marker avoids
-// rewriting unchanged buckets; late events make a retained bucket dirty and
-// replace the same persisted snapshot on the next flush.
+// the history window used for dashboard range queries (the current-state
+// aggregation still reads only its shorter rolling window). A revision marker
+// avoids rewriting unchanged buckets; late events make a retained bucket dirty
+// and replace the same persisted snapshot on the next flush.
+// snapshotWrite is one pending bucket persistence produced by
+// collectSnapshotWrites and consumed by persistSnapshots.
+type snapshotWrite struct {
+	ks       *keyState
+	minute   int64
+	original *minuteBucket
+	bucket   *minuteBucket
+	revision uint64
+}
+
 func (s *Service) flushSnapshots(ctx context.Context, flushAll bool) {
 	if s.repo == nil {
 		return
 	}
 	s.mu.Lock()
 	now := time.Now().UTC()
+	historyStart := now.Add(-s.cfg.MaxHistoryWindow).Truncate(time.Minute)
+	toWrite := s.collectSnapshotWrites(now, flushAll)
+	s.mu.Unlock()
+
+	s.persistSnapshots(ctx, toWrite, historyStart)
+}
+
+// collectSnapshotWrites selects dirty completed buckets to persist and
+// freezes/prunes aged ones, returning the writes to perform. Caller holds s.mu.
+func (s *Service) collectSnapshotWrites(now time.Time, flushAll bool) []snapshotWrite {
 	currentMinute := now.Truncate(time.Minute).Unix()
 	windowStart := now.Add(-s.cfg.RollingWindow).Truncate(time.Minute)
-	type pending struct {
-		ks       *keyState
-		minute   int64
-		original *minuteBucket
-		bucket   *minuteBucket
-		revision uint64
-	}
-	var toWrite []pending
+	historyStart := now.Add(-s.cfg.MaxHistoryWindow).Truncate(time.Minute)
+	var toWrite []snapshotWrite
 	for _, ks := range s.states {
 		for m, b := range ks.buckets {
 			completed := m < currentMinute || flushAll
 			if completed && b.revision != b.snapshottedRevision {
-				toWrite = append(toWrite, pending{
+				toWrite = append(toWrite, snapshotWrite{
 					ks: ks, minute: m, original: b, bucket: cloneMinuteBucket(b), revision: b.revision,
 				})
 			}
 			if b.minute.Before(windowStart) && b.revision == b.snapshottedRevision {
-				delete(ks.buckets, m)
+				// Persisted and past the rolling window: freeze raw samples
+				// into percentile markers, then keep the counter-only bucket
+				// until it ages out of the retained history window.
+				s.freezeMinuteBucket(b)
+				if b.minute.Before(historyStart) {
+					delete(ks.buckets, m)
+				}
 			}
 		}
 	}
-	s.mu.Unlock()
+	s.pruneChainBuckets(historyStart)
+	return toWrite
+}
 
+// pruneChainBuckets drops counter-only chain buckets past the retained history
+// window so chain memory stays bounded. Caller holds s.mu.
+func (s *Service) pruneChainBuckets(historyStart time.Time) {
+	for _, cs := range s.chains {
+		for m, cb := range cs.buckets {
+			if cb.minute.Before(historyStart) {
+				delete(cs.buckets, m)
+			}
+		}
+	}
+}
+
+// persistSnapshots writes cloned buckets and marks the exact revision persisted
+// so that a newer revision is retried. Caller must NOT hold s.mu.
+func (s *Service) persistSnapshots(ctx context.Context, toWrite []snapshotWrite, historyStart time.Time) {
 	for _, p := range toWrite {
 		if err := s.writeSnapshot(ctx, p.ks, p.bucket); err != nil {
 			s.log.Warn("health snapshot write failed", "err", err,
@@ -509,7 +703,7 @@ func (s *Service) flushSnapshots(ctx context.Context, flushAll bool) {
 		// the exact revision persisted so that a newer revision is retried.
 		if cur, ok := p.ks.buckets[p.minute]; ok && cur == p.original && cur.revision == p.revision {
 			cur.snapshottedRevision = p.revision
-			if cur.minute.Before(windowStart) {
+			if cur.minute.Before(historyStart) {
 				delete(p.ks.buckets, p.minute)
 			}
 		}
@@ -637,12 +831,8 @@ func (s *Service) writeSnapshot(ctx context.Context, ks *keyState, b *minuteBuck
 		successRate = float64(b.successes) / float64(b.requests)
 	}
 	dominant := dominantErrorType(b.errCounts)
-	p50Lat := percentileOf(b.latencies, 50)
-	p95Lat := percentileOf(b.latencies, 95)
-	p99Lat := percentileOf(b.latencies, 99)
-	p50TTFT := percentileOf(b.ttfts, 50)
-	p95TTFT := percentileOf(b.ttfts, 95)
-	p99TTFT := percentileOf(b.ttfts, 99)
+	p50Lat, p95Lat, p99Lat := bucketLatencyPercentiles(b)
+	p50TTFT, p95TTFT, p99TTFT := bucketTTFTPercentiles(b)
 	threshold := s.cfg.LatencyThresholds.ThresholdFor(ks.capability)
 
 	score := ComputeScore(ScoreInput{
@@ -693,6 +883,38 @@ func (s *Service) writeSnapshot(ctx context.Context, ks *keyState, b *minuteBuck
 		snap.MainIssue = &mainIssue
 	}
 	return s.repo.InsertSnapshot(ctx, snap)
+}
+
+// freezeMinuteBucket replaces raw latency/TTFT samples with their percentiles
+// once a bucket has aged past the rolling window and been persisted. Called
+// with s.mu held. Late events stop appending samples to frozen buckets.
+func (s *Service) freezeMinuteBucket(b *minuteBucket) {
+	if b.frozen {
+		return
+	}
+	b.frozen = true
+	b.latP50, b.latP95, b.latP99 = percentileOf(b.latencies, 50), percentileOf(b.latencies, 95), percentileOf(b.latencies, 99)
+	b.ttftP50, b.ttftP95, b.ttftP99 = percentileOf(b.ttfts, 50), percentileOf(b.ttfts, 95), percentileOf(b.ttfts, 99)
+	b.latencies = nil
+	b.ttfts = nil
+}
+
+// bucketLatencyPercentiles resolves a bucket's latency percentiles, reading
+// frozen markers once raw samples have been discarded.
+func bucketLatencyPercentiles(b *minuteBucket) (p50, p95, p99 int) {
+	if b.frozen {
+		return b.latP50, b.latP95, b.latP99
+	}
+	return percentileOf(b.latencies, 50), percentileOf(b.latencies, 95), percentileOf(b.latencies, 99)
+}
+
+// bucketTTFTPercentiles resolves a bucket's TTFT percentiles, reading frozen
+// markers once raw samples have been discarded.
+func bucketTTFTPercentiles(b *minuteBucket) (p50, p95, p99 int) {
+	if b.frozen {
+		return b.ttftP50, b.ttftP95, b.ttftP99
+	}
+	return percentileOf(b.ttfts, 50), percentileOf(b.ttfts, 95), percentileOf(b.ttfts, 99)
 }
 
 func dominantErrorType(counts map[ProviderErrorType]int64) ProviderErrorType {

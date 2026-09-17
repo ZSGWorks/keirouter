@@ -52,3 +52,43 @@ func TestChainStats_Counting(t *testing.T) {
 		t.Errorf("fallback rate = %v, want %v", st.FallbackRate, wantRate)
 	}
 }
+
+// TestChainStatsSince_Window verifies ChainStatsSince scopes aggregation to the
+// requested lookback: a 20-minute-old terminal event is counted at 1h but
+// excluded at 5m, and ChainStats keeps using the rolling window.
+func TestChainStatsSince_Window(t *testing.T) {
+	svc := New(Config{
+		Enabled:          true,
+		RollingWindow:    5 * time.Minute,
+		MaxHistoryWindow: time.Hour,
+	}, nil, nil)
+	defer svc.Close(time.Second)
+
+	now := time.Now()
+	svc.ingest(ProviderTelemetryEvent{Timestamp: now.Add(-20 * time.Minute), ChainID: "coding", Status: "success"})
+	svc.ingest(ProviderTelemetryEvent{Timestamp: now.Add(-time.Minute), ChainID: "coding", Status: "success"})
+
+	recent := svc.ChainStatsSince(5 * time.Minute)
+	if len(recent) != 1 {
+		t.Fatalf("5m: expected 1 chain, got %d", len(recent))
+	}
+	if recent[0].Requests != 1 {
+		t.Errorf("5m requests = %d, want 1", recent[0].Requests)
+	}
+
+	full := svc.ChainStatsSince(time.Hour)
+	if len(full) != 1 {
+		t.Fatalf("1h: expected 1 chain, got %d", len(full))
+	}
+	if full[0].Requests != 2 {
+		t.Errorf("1h requests = %d, want 2", full[0].Requests)
+	}
+
+	rolling := svc.ChainStats()
+	if len(rolling) != 1 {
+		t.Fatalf("rolling: expected 1 chain, got %d", len(rolling))
+	}
+	if rolling[0].Requests != 1 {
+		t.Errorf("rolling requests = %d, want 1 (rolling window is 5m)", rolling[0].Requests)
+	}
+}

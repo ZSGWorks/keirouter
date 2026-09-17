@@ -189,14 +189,7 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 
 	// Actionable provider health dashboard: real-traffic telemetry aggregation
 	// + synthetic probe runner. Best-effort, never blocks the request path.
-	healthSvc := health.New(health.Config{
-		Enabled:              cfg.ProviderHealth.Enabled,
-		QueueSize:            cfg.ProviderHealth.QueueSize,
-		CurrentFlushInterval: cfg.ProviderHealth.CurrentFlushInterval,
-		SnapshotInterval:     cfg.ProviderHealth.SnapshotInterval,
-		RollingWindow:        cfg.ProviderHealth.RollingWindow,
-		LatencyThresholds:    cfg.ProviderHealth.LatencyThresholds,
-	}, log, db.ProviderHealth())
+	healthSvc := health.New(buildProviderHealthConfig(cfg), log, db.ProviderHealth())
 	probeRunner := health.NewProbeRunner(log, db.ProviderHealth(), db.Accounts(), connRegistry, v,
 		cfg.ProviderHealth.LatencyThresholds, cfg.ProviderHealth.ProbeTimeout)
 
@@ -302,6 +295,20 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 	seedFreeAccounts(ctx, db.Accounts(), log)
 
 	return &App{cfg: cfg, log: log, db: db, accounts: db.Accounts(), server: srv, keepAlive: keepAlive, guardrailAudit: guardrails.audit, guardrailRetention: guardrails.retention, meter: mtr, healthChecker: healthChecker, providerHealth: healthSvc, probeRunner: probeRunner, pricingFetcher: pricingFetcher, reloadPricing: reloadPricing, refreshPricingCatalog: refreshPricingCatalog, gw: gw, dispatcher: disp}, nil
+}
+
+// buildProviderHealthConfig maps config into the health telemetry service's
+// config, keeping the large Build function readable.
+func buildProviderHealthConfig(cfg config.Config) health.Config {
+	return health.Config{
+		Enabled:              cfg.ProviderHealth.Enabled,
+		QueueSize:            cfg.ProviderHealth.QueueSize,
+		CurrentFlushInterval: cfg.ProviderHealth.CurrentFlushInterval,
+		SnapshotInterval:     cfg.ProviderHealth.SnapshotInterval,
+		RollingWindow:        cfg.ProviderHealth.RollingWindow,
+		MaxHistoryWindow:     cfg.ProviderHealth.MaxHistoryWindow,
+		LatencyThresholds:    cfg.ProviderHealth.LatencyThresholds,
+	}
 }
 
 // initAuth constructs the auth service, optionally resetting the dashboard

@@ -45,6 +45,10 @@ const RANGES = [
   { value: "7d", label: "7d" },
 ];
 
+// OVERVIEW_RANGES omits 7d: the tenant-wide overview aggregates in-memory
+// minute buckets capped at MaxHistoryWindow (24h), so 7d would silently clamp.
+const OVERVIEW_RANGES = RANGES.filter((r) => r.value !== "7d");
+
 const STATUS_FILTERS = [
   { value: "", label: "All" },
   { value: "healthy", label: "Healthy" },
@@ -139,7 +143,7 @@ function Overview() {
         description="Monitor the health of every AI provider connected to KeiRouter. See which are failing or slow, why, which routing chains are affected, and what to do next."
         action={
           <div className="flex flex-wrap items-center gap-2">
-            <SegmentedControl value={range} onChange={setRange} options={RANGES} />
+            <SegmentedControl value={range} onChange={setRange} options={OVERVIEW_RANGES} />
             <button
               onClick={() => setResetOpen(true)}
               title="Clear all dispatcher cooldowns (tenant-wide)"
@@ -192,7 +196,7 @@ function Overview() {
               <ProviderTable rows={overview.data.providers} status={status} onStatus={setStatus} />
             )}
             {tab === "models" && <ModelTable query={models} />}
-            {tab === "chains" && <ChainTable query={chains} />}
+            {tab === "chains" && <ChainTable query={chains} range={range} />}
             {tab === "probes" && <ProbeHistoryTable range={range} />}
           </div>
         </>
@@ -395,7 +399,7 @@ function ModelTableInner({ rows }: { rows: HealthModelRow[] }) {
   );
 }
 
-function ChainTable({ query }: { query: UseQueryResult<{ chains: HealthChainRow[] }> }) {
+function ChainTable({ query, range }: { query: UseQueryResult<{ chains: HealthChainRow[] }>; range: string }) {
   const [selected, setSelected] = useState<string | null>(null);
   if (query.isLoading) return <Spinner />;
   if (query.isError) return <ErrorCard message="Failed to load chain impact." />;
@@ -404,7 +408,7 @@ function ChainTable({ query }: { query: UseQueryResult<{ chains: HealthChainRow[
   return (
     <div className="space-y-4">
       <ChainTableInner rows={rows} onSelect={setSelected} />
-      {selected && <ChainDetail id={selected} onClose={() => setSelected(null)} />}
+      {selected && <ChainDetail id={selected} range={range} onClose={() => setSelected(null)} />}
     </div>
   );
 }
@@ -448,10 +452,10 @@ function ChainTableInner({ rows, onSelect }: { rows: HealthChainRow[]; onSelect:
   );
 }
 
-function ChainDetail({ id, onClose }: { id: string; onClose: () => void }) {
+function ChainDetail({ id, range, onClose }: { id: string; range: string; onClose: () => void }) {
   const q = useQuery({
-    queryKey: ["health-chain", id],
-    queryFn: () => api.healthChainDetail(id),
+    queryKey: ["health-chain", id, range],
+    queryFn: () => api.healthChainDetail(id, range),
     staleTime: 15_000,
   });
   return (

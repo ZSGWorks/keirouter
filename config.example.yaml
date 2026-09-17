@@ -114,6 +114,9 @@ provider_health:
   current_flush_interval: 30s
   snapshot_interval: 60s
   rolling_window: 15m
+  # How long in-memory minute buckets are kept for dashboard range queries.
+  # Ranges larger than this are clamped to it (default 24h).
+  max_history_window: 24h
   latency_thresholds:
     chat_completions: 10000
     embeddings: 5000

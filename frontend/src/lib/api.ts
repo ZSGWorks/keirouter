@@ -1686,8 +1686,11 @@ export const api = {
       `/health/chains?range=${encodeURIComponent(range)}`,
     ),
 
-  healthChainDetail: (id: string) =>
-    request<HealthChainDetail>("GET", `/health/chains/${encodeURIComponent(id)}`),
+  healthChainDetail: (id: string, range = "1h") =>
+    request<HealthChainDetail>(
+      "GET",
+      `/health/chains/${encodeURIComponent(id)}?range=${encodeURIComponent(range)}`,
+    ),
 
   healthProbeHistory: (params: { provider?: string; range?: string; page?: number; limit?: number } = {}) => {
     const qs = new URLSearchParams();
@@ -1798,7 +1801,7 @@ export interface HealthProviderRow {
 }
 
 export interface HealthOverviewWindow {
-  kind: "rolling_current";
+  kind: "rolling_current" | "in_memory_history" | "unavailable";
   duration_seconds: number;
   requested_range: string;
   generated_at: string;

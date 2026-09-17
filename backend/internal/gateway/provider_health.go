@@ -61,10 +61,60 @@ func parseRangeDuration(raw string) time.Duration {
 	return time.Hour
 }
 
+// healthProviderStatus rolls up live status signals for one provider from
+// provider_health_current. Traffic metrics are kept separately because they
+// follow the requested range, not the live rolling window.
+type healthProviderStatus struct {
+	provider       string
+	status         string
+	score          int
+	accounts       map[string]struct{}
+	models         map[string]struct{}
+	lastProbe      *time.Time
+	mainIssue      string
+	recommendation string
+}
+
+// healthOverviewSummary is the summary-card block of /health/overview.
+type healthOverviewSummary struct {
+	Healthy               int64  `json:"healthy"`
+	Degraded              int64  `json:"degraded"`
+	Unhealthy             int64  `json:"unhealthy"`
+	Unknown               int64  `json:"unknown"`
+	Disabled              int64  `json:"disabled"`
+	Fallbacks             int64  `json:"fallbacks"`
+	AvgP95LatencyMs       int    `json:"avg_p95_latency_ms"`
+	TelemetryDropped      uint64 `json:"telemetry_dropped"`
+	TelemetryDroppedScope string `json:"telemetry_dropped_scope"`
+}
+
+// healthProviderEntry is one row in the overview's provider table.
+type healthProviderEntry struct {
+	Provider        string     `json:"provider"`
+	Status          string     `json:"status"`
+	Score           int        `json:"score"`
+	Accounts        int        `json:"accounts"`
+	ModelsMonitored int        `json:"models_monitored"`
+	SuccessRate     float64    `json:"success_rate"`
+	ErrorRate       float64    `json:"error_rate"`
+	LatencyP95Ms    int        `json:"latency_p95_ms"`
+	TTFTP95Ms       int        `json:"ttft_p95_ms"`
+	FallbackCount   int64      `json:"fallback_count"`
+	MainIssue       string     `json:"main_issue"`
+	Recommendation  string     `json:"recommendation"`
+	LastProbeAt     *time.Time `json:"last_probe_at,omitempty"`
+}
+
+// healthOverviewResponse is the typed /health/overview payload.
+type healthOverviewResponse struct {
+	Window    healthWindow          `json:"window"`
+	Summary   healthOverviewSummary `json:"summary"`
+	Providers []healthProviderEntry `json:"providers"`
+}
+
 // adminHealthOverview returns summary cards + a per-provider status table.
-// provider_health_current is computed by the telemetry service over its
-// configured rolling window. The response publishes that effective window so
-// callers never mistake an arbitrary query range for historical aggregation.
+// Status/score/main issue are live signals from provider_health_current;
+// traffic metrics cover the requested range from in-memory telemetry stats.
 func (s *Server) adminHealthOverview(w http.ResponseWriter, r *http.Request) {
 	if s.db == nil {
 		writeError(w, http.StatusServiceUnavailable, "provider health not configured")
@@ -78,29 +128,14 @@ func (s *Server) adminHealthOverview(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "internal server error"))
 		return
 	}
+	metrics := s.metricsByProvider(rows, s.resolveHealthRange(requestedRange))
 
 	// Aggregate account/model/capability keys into one truthful provider row.
-	type provAgg struct {
-		provider       string
-		status         string
-		score          int
-		accounts       map[string]struct{}
-		models         map[string]struct{}
-		requests       int64
-		successes      float64
-		failures       float64
-		fallbacks      int64
-		latencyP95     int
-		ttftP95        int
-		lastProbe      *time.Time
-		mainIssue      string
-		recommendation string
-	}
-	byProvider := map[string]*provAgg{}
+	byProvider := map[string]*healthProviderStatus{}
 	for _, current := range rows {
 		agg, ok := byProvider[current.Provider]
 		if !ok {
-			agg = &provAgg{
+			agg = &healthProviderStatus{
 				provider: current.Provider,
 				accounts: map[string]struct{}{},
 				models:   map[string]struct{}{},
@@ -135,16 +170,6 @@ func (s *Server) adminHealthOverview(w http.ResponseWriter, r *http.Request) {
 		if current.Model != "" {
 			agg.models[current.Model] = struct{}{}
 		}
-		agg.requests += current.RequestCount
-		agg.successes += float64(current.RequestCount) * current.SuccessRate
-		agg.failures += float64(current.RequestCount) * current.ErrorRate
-		agg.fallbacks += current.FallbackCount
-		if current.LatencyP95Ms != nil && *current.LatencyP95Ms > agg.latencyP95 {
-			agg.latencyP95 = *current.LatencyP95Ms
-		}
-		if current.TTFTP95Ms != nil && *current.TTFTP95Ms > agg.ttftP95 {
-			agg.ttftP95 = *current.TTFTP95Ms
-		}
 		if current.LastProbeAt != nil && (agg.lastProbe == nil || current.LastProbeAt.After(*agg.lastProbe)) {
 			agg.lastProbe = current.LastProbeAt
 		}
@@ -156,71 +181,60 @@ func (s *Server) adminHealthOverview(w http.ResponseWriter, r *http.Request) {
 	}
 	sort.Strings(providerIDs)
 
-	summary := map[string]int64{
-		"healthy": 0, "degraded": 0, "unhealthy": 0, "unknown": 0, "disabled": 0,
-		"fallbacks": 0,
-	}
+	summary := healthOverviewSummary{TelemetryDroppedScope: "process_lifetime"}
 	if s.providerHealth != nil {
-		summary["telemetry_dropped"] = int64(s.providerHealth.DroppedEvents())
+		summary.TelemetryDropped = s.providerHealth.DroppedEvents()
 	}
-	providers := make([]map[string]any, 0, len(byProvider))
+	providers := make([]healthProviderEntry, 0, len(byProvider))
 	var totalProviderP95 int
 	var providerP95Count int
 	for _, provider := range providerIDs {
 		agg := byProvider[provider]
-		summary[agg.status]++
-		summary["fallbacks"] += agg.fallbacks
-		if agg.latencyP95 > 0 {
-			totalProviderP95 += agg.latencyP95
+		switch agg.status {
+		case health.StatusHealthy:
+			summary.Healthy++
+		case health.StatusDegraded:
+			summary.Degraded++
+		case health.StatusUnhealthy:
+			summary.Unhealthy++
+		case health.StatusUnknown:
+			summary.Unknown++
+		case health.StatusDisabled:
+			summary.Disabled++
+		}
+		m := metrics[provider]
+		summary.Fallbacks += m.fallbacks
+		if m.latencyP95 > 0 {
+			totalProviderP95 += m.latencyP95
 			providerP95Count++
 		}
 		if statusFilter != "" && agg.status != statusFilter {
 			continue
 		}
-		successRate, errorRate := 0.0, 0.0
-		if agg.requests > 0 {
-			successRate = agg.successes / float64(agg.requests) * 100
-			errorRate = agg.failures / float64(agg.requests) * 100
-		}
-		entry := map[string]any{
-			"provider":         agg.provider,
-			"status":           agg.status,
-			"score":            agg.score,
-			"accounts":         len(agg.accounts),
-			"models_monitored": len(agg.models),
-			"success_rate":     successRate,
-			"error_rate":       errorRate,
-			"latency_p95_ms":   agg.latencyP95,
-			"ttft_p95_ms":      agg.ttftP95,
-			"fallback_count":   agg.fallbacks,
-			"main_issue":       agg.mainIssue,
-			"recommendation":   agg.recommendation,
-		}
-		if agg.lastProbe != nil {
-			entry["last_probe_at"] = *agg.lastProbe
-		}
-		providers = append(providers, entry)
+		providers = append(providers, healthProviderEntry{
+			Provider:        agg.provider,
+			Status:          agg.status,
+			Score:           agg.score,
+			Accounts:        len(agg.accounts),
+			ModelsMonitored: len(agg.models),
+			SuccessRate:     m.successRate(),
+			ErrorRate:       m.errorRate(),
+			LatencyP95Ms:    m.latencyP95,
+			TTFTP95Ms:       m.ttftP95,
+			FallbackCount:   m.fallbacks,
+			MainIssue:       agg.mainIssue,
+			Recommendation:  agg.recommendation,
+			LastProbeAt:     agg.lastProbe,
+		})
 	}
 
-	avgP95 := 0
 	if providerP95Count > 0 {
-		avgP95 = totalProviderP95 / providerP95Count
+		summary.AvgP95LatencyMs = totalProviderP95 / providerP95Count
 	}
-	window := s.healthWindow(requestedRange)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"window": window,
-		"summary": map[string]any{
-			"healthy":                 summary["healthy"],
-			"degraded":                summary["degraded"],
-			"unhealthy":               summary["unhealthy"],
-			"unknown":                 summary["unknown"],
-			"disabled":                summary["disabled"],
-			"fallbacks":               summary["fallbacks"],
-			"avg_p95_latency_ms":      avgP95,
-			"telemetry_dropped":       summary["telemetry_dropped"],
-			"telemetry_dropped_scope": "process_lifetime",
-		},
-		"providers": providers,
+	writeJSON(w, http.StatusOK, healthOverviewResponse{
+		Window:    s.healthWindow(requestedRange),
+		Summary:   summary,
+		Providers: providers,
 	})
 }
 
@@ -239,19 +253,12 @@ func (s *Server) adminHealthProviderDetail(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	var requests, fallbacks int64
-	var successes, failures int64
 	var score int = 100
 	status := health.StatusHealthy
 	var mainIssue, recommendation string
 	errBreakdown := map[string]int64{}
-	var lp95, ttft95 int
 
 	for _, c := range rows {
-		requests += c.RequestCount
-		successes += int64(float64(c.RequestCount) * c.SuccessRate)
-		failures += int64(float64(c.RequestCount) * c.ErrorRate)
-		fallbacks += c.FallbackCount
 		if c.HealthScore < score {
 			score = c.HealthScore
 		}
@@ -264,13 +271,11 @@ func (s *Server) adminHealthProviderDetail(w http.ResponseWriter, r *http.Reques
 		if c.Recommendation != nil && *c.Recommendation != "" && recommendation == "" {
 			recommendation = *c.Recommendation
 		}
-		if c.LatencyP95Ms != nil && *c.LatencyP95Ms > lp95 {
-			lp95 = *c.LatencyP95Ms
-		}
-		if c.TTFTP95Ms != nil && *c.TTFTP95Ms > ttft95 {
-			ttft95 = *c.TTFTP95Ms
-		}
 	}
+
+	// Traffic metrics cover the requested range from in-memory telemetry
+	// stats, falling back to the rolling current table when telemetry is off.
+	metrics := s.metricsByProvider(rows, s.resolveHealthRange(r.URL.Query().Get("range")))[provider]
 
 	snaps, _ := s.db.ProviderHealth().ListSnapshots(r.Context(), provider, "", "", "", since)
 	for _, sn := range snaps {
@@ -290,12 +295,12 @@ func (s *Server) adminHealthProviderDetail(w http.ResponseWriter, r *http.Reques
 		"main_issue":     mainIssue,
 		"recommendation": recommendation,
 		"metrics": map[string]any{
-			"requests":       requests,
-			"success_rate":   pct(successes, requests),
-			"error_rate":     pct(failures, requests),
-			"latency_p95_ms": lp95,
-			"ttft_p95_ms":    ttft95,
-			"fallback_count": fallbacks,
+			"requests":       metrics.requests,
+			"success_rate":   metrics.successRate(),
+			"error_rate":     metrics.errorRate(),
+			"latency_p95_ms": metrics.latencyP95,
+			"ttft_p95_ms":    metrics.ttftP95,
+			"fallback_count": metrics.fallbacks,
 		},
 		"error_breakdown": errBreakdown,
 		"models":          rows,
@@ -303,7 +308,30 @@ func (s *Server) adminHealthProviderDetail(w http.ResponseWriter, r *http.Reques
 	})
 }
 
-// adminHealthModels returns the model-level health matrix.
+// healthModelEntry is one row in the models matrix.
+type healthModelEntry struct {
+	Provider      string    `json:"provider"`
+	Model         string    `json:"model"`
+	Capability    string    `json:"capability"`
+	Status        string    `json:"status"`
+	Score         int       `json:"score"`
+	SuccessRate   float64   `json:"success_rate"`
+	ErrorRate     float64   `json:"error_rate"`
+	FallbackCount int64     `json:"fallback_count"`
+	LastUpdatedAt time.Time `json:"last_updated_at"`
+	LatencyP95Ms  int       `json:"latency_p95_ms,omitempty"`
+	TTFTP95Ms     int       `json:"ttft_p95_ms,omitempty"`
+	MainIssue     string    `json:"main_issue,omitempty"`
+}
+
+// healthModelsResponse is the typed /health/models payload.
+type healthModelsResponse struct {
+	Models []healthModelEntry `json:"models"`
+}
+
+// adminHealthModels returns the model-level health matrix. Status and score
+// are live signals from provider_health_current; traffic metrics cover the
+// requested range from in-memory telemetry stats.
 func (s *Server) adminHealthModels(w http.ResponseWriter, r *http.Request) {
 	statusFilter := r.URL.Query().Get("status")
 	rows, err := s.db.ProviderHealth().ListCurrent(r.Context(), statusFilter)
@@ -311,82 +339,242 @@ func (s *Server) adminHealthModels(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "internal server error"))
 		return
 	}
-	out := make([]map[string]any, 0, len(rows))
+	metrics := s.metricsByModel(rows, s.resolveHealthRange(r.URL.Query().Get("range")))
+
+	out := make([]healthModelEntry, 0, len(rows))
 	for _, c := range rows {
 		if c.Model == "" {
 			continue
 		}
-		entry := map[string]any{
-			"provider":        c.Provider,
-			"model":           c.Model,
-			"capability":      c.Capability,
-			"status":          c.HealthStatus,
-			"score":           c.HealthScore,
-			"success_rate":    pct(int64(float64(c.RequestCount)*c.SuccessRate), c.RequestCount),
-			"error_rate":      pct(int64(float64(c.RequestCount)*c.ErrorRate), c.RequestCount),
-			"fallback_count":  c.FallbackCount,
-			"last_updated_at": c.LastUpdatedAt,
-		}
-		if c.LatencyP95Ms != nil {
-			entry["latency_p95_ms"] = *c.LatencyP95Ms
-		}
-		if c.TTFTP95Ms != nil {
-			entry["ttft_p95_ms"] = *c.TTFTP95Ms
+		m := metrics[modelKey{c.Provider, c.Model}]
+		entry := healthModelEntry{
+			Provider:      c.Provider,
+			Model:         c.Model,
+			Capability:    c.Capability,
+			Status:        c.HealthStatus,
+			Score:         c.HealthScore,
+			SuccessRate:   m.successRate(),
+			ErrorRate:     m.errorRate(),
+			FallbackCount: m.fallbacks,
+			LastUpdatedAt: c.LastUpdatedAt,
+			LatencyP95Ms:  m.latencyP95,
+			TTFTP95Ms:     m.ttftP95,
 		}
 		if c.MainIssue != nil {
-			entry["main_issue"] = *c.MainIssue
+			entry.MainIssue = *c.MainIssue
 		}
 		out = append(out, entry)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"models": out})
+	writeJSON(w, http.StatusOK, healthModelsResponse{Models: out})
 }
 
-// healthWindow builds the rolling-current window descriptor shared by the
-// chain health endpoints. It mirrors adminHealthOverview so dashboards always
-// see the real collector window instead of mistaking the requested range for
-// an applied aggregation span.
-func (s *Server) healthWindow(requestedRange string) map[string]any {
+// ---- range resolution + window descriptor ----------------------------------
+
+// resolveHealthRange maps a ?range= value to the in-memory lookback actually
+// applied by the telemetry service, clamped to its retained history window.
+// Returns zero when telemetry is disabled.
+func (s *Server) resolveHealthRange(raw string) time.Duration {
+	d := parseRangeDuration(raw)
+	if d <= 0 {
+		d = time.Hour
+	}
+	if s.providerHealth == nil {
+		return 0
+	}
+	return s.providerHealth.EffectiveWindow(d)
+}
+
+// Window kinds describing how a response's aggregation span was sourced.
+const (
+	windowKindHistory     = "in_memory_history"
+	windowKindUnavailable = "unavailable"
+)
+
+// healthWindow describes the aggregation span a response actually covers: the
+// requested range clamped to the telemetry service's retained history.
+type healthWindow struct {
+	Kind            string     `json:"kind"`
+	DurationSeconds int64      `json:"duration_seconds"`
+	RequestedRange  string     `json:"requested_range"`
+	GeneratedAt     time.Time  `json:"generated_at"`
+	Since           *time.Time `json:"since,omitempty"`
+}
+
+func (s *Server) healthWindow(requestedRange string) healthWindow {
 	generatedAt := time.Now().UTC()
-	windowDuration := time.Duration(0)
-	if s.providerHealth != nil {
-		windowDuration = s.providerHealth.RollingWindow()
+	window := healthWindow{
+		Kind:           windowKindUnavailable,
+		RequestedRange: requestedRange,
+		GeneratedAt:    generatedAt,
 	}
-	window := map[string]any{
-		"kind":             "rolling_current",
-		"duration_seconds": int64(windowDuration.Seconds()),
-		"requested_range":  requestedRange,
-		"generated_at":     generatedAt,
+	if s.providerHealth == nil {
+		return window
 	}
-	if windowDuration > 0 {
-		window["since"] = generatedAt.Add(-windowDuration)
+	applied := s.providerHealth.EffectiveWindow(parseRangeDuration(requestedRange))
+	if applied <= 0 {
+		return window
 	}
+	window.Kind = windowKindHistory
+	window.DurationSeconds = int64(applied.Seconds())
+	since := generatedAt.Add(-applied)
+	window.Since = &since
 	return window
+}
+
+// ---- shared traffic metrics -------------------------------------------------
+
+// providerMetrics carries traffic metrics for one rollup (provider, model, or
+// a single provider's detail view) regardless of whether they were sourced
+// from in-memory range stats or the rolling current table.
+type providerMetrics struct {
+	requests, successes, failures, fallbacks int64
+	latencyP95, ttftP95                      int
+}
+
+func (m providerMetrics) successRate() float64 {
+	if m.requests <= 0 {
+		return 0
+	}
+	return float64(m.successes) / float64(m.requests) * 100
+}
+
+func (m providerMetrics) errorRate() float64 {
+	if m.requests <= 0 {
+		return 0
+	}
+	return float64(m.failures) / float64(m.requests) * 100
+}
+
+// addRow folds one provider_health_current row into the metrics, weighting
+// rates by the row's request count.
+func (m *providerMetrics) addRow(c store.ProviderHealthCurrent) {
+	m.requests += c.RequestCount
+	m.successes += int64(float64(c.RequestCount) * c.SuccessRate)
+	m.failures += int64(float64(c.RequestCount) * c.ErrorRate)
+	m.fallbacks += c.FallbackCount
+	if c.LatencyP95Ms != nil && *c.LatencyP95Ms > m.latencyP95 {
+		m.latencyP95 = *c.LatencyP95Ms
+	}
+	if c.TTFTP95Ms != nil && *c.TTFTP95Ms > m.ttftP95 {
+		m.ttftP95 = *c.TTFTP95Ms
+	}
+}
+
+// addStat folds one in-memory range stat into the metrics.
+func (m *providerMetrics) addStat(st health.ProviderStat) {
+	m.requests += st.Requests
+	m.successes += st.Successes
+	m.failures += st.Failures
+	m.fallbacks += st.Fallbacks
+	if st.LatencyP95Ms > m.latencyP95 {
+		m.latencyP95 = st.LatencyP95Ms
+	}
+	if st.TTFTP95Ms > m.ttftP95 {
+		m.ttftP95 = st.TTFTP95Ms
+	}
+}
+
+// modelKey identifies one provider+model pair in the models matrix.
+type modelKey struct {
+	provider string
+	model    string
+}
+
+// metricsByProvider returns per-provider traffic metrics for the applied
+// range. When telemetry is disabled it falls back to the rolling current
+// table so the dashboard still shows approximate numbers.
+func (s *Server) metricsByProvider(rows []store.ProviderHealthCurrent, applied time.Duration) map[string]providerMetrics {
+	byProvider := map[string]providerMetrics{}
+	if s.providerHealth != nil {
+		for _, st := range s.providerHealth.ProviderStatsSince(applied) {
+			m := byProvider[st.Provider]
+			m.addStat(st)
+			byProvider[st.Provider] = m
+		}
+		return byProvider
+	}
+	for _, c := range rows {
+		m := byProvider[c.Provider]
+		m.addRow(c)
+		byProvider[c.Provider] = m
+	}
+	return byProvider
+}
+
+// metricsByModel returns per provider+model traffic metrics for the applied
+// range, with the same current-table fallback as metricsByProvider.
+func (s *Server) metricsByModel(rows []store.ProviderHealthCurrent, applied time.Duration) map[modelKey]providerMetrics {
+	byModel := map[modelKey]providerMetrics{}
+	if s.providerHealth != nil {
+		for _, st := range s.providerHealth.ProviderStatsSince(applied) {
+			key := modelKey{st.Provider, st.Model}
+			m := byModel[key]
+			m.addStat(st)
+			byModel[key] = m
+		}
+		return byModel
+	}
+	for _, c := range rows {
+		if c.Model == "" {
+			continue
+		}
+		key := modelKey{c.Provider, c.Model}
+		m := byModel[key]
+		m.addRow(c)
+		byModel[key] = m
+	}
+	return byModel
+}
+
+// chainStatsByChainID returns per-chain telemetry for the applied range,
+// keyed by chain ID.
+func (s *Server) chainStatsByChainID(applied time.Duration) map[string]health.ChainStat {
+	byID := map[string]health.ChainStat{}
+	if s.providerHealth == nil {
+		return byID
+	}
+	for _, st := range s.providerHealth.ChainStatsSince(applied) {
+		byID[st.ChainID] = st
+	}
+	return byID
+}
+
+// healthChainEntry is one row in the chains table.
+type healthChainEntry struct {
+	ChainID           string  `json:"chain_id"`
+	Name              string  `json:"name"`
+	Status            string  `json:"status"`
+	AffectedProvider  string  `json:"affected_provider"`
+	AffectedModel     string  `json:"affected_model"`
+	MainIssue         string  `json:"main_issue"`
+	StepCount         int     `json:"step_count"`
+	Requests          int64   `json:"requests"`
+	FallbackRate      float64 `json:"fallback_rate"`
+	FinalFailureCount int64   `json:"final_failure_count"`
+	FallbackCount     int64   `json:"fallback_count"`
+	Recommendation    string  `json:"recommendation"`
+}
+
+// healthChainsResponse is the typed /health/chains payload.
+type healthChainsResponse struct {
+	Chains []healthChainEntry `json:"chains"`
+	Window healthWindow       `json:"window"`
 }
 
 // adminHealthChains returns chain health: fallback rate, final failures, and
 // affected providers, derived from real-traffic telemetry joined with chain
-// config + current provider health.
+// config + current provider health. Telemetry covers the requested range.
 func (s *Server) adminHealthChains(w http.ResponseWriter, r *http.Request) {
+	requestedRange := r.URL.Query().Get("range")
 	chains, err := s.chains.ListByTenant(r.Context(), adminTenant)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, sanitizeError(s.log, err, "internal server error"))
 		return
 	}
 	healthRows, _ := s.db.ProviderHealth().ListCurrent(r.Context(), "")
-	healthByKey := map[string]store.ProviderHealthCurrent{}
-	for _, h := range healthRows {
-		healthByKey[store.HealthKey(h.Provider, h.ProviderAccountID, h.Model, h.Capability)] = h
-	}
+	chainStats := s.chainStatsByChainID(s.resolveHealthRange(requestedRange))
 
-	// Real-traffic chain stats from the telemetry aggregator (rolling window).
-	chainStats := map[string]health.ChainStat{}
-	if s.providerHealth != nil {
-		for _, st := range s.providerHealth.ChainStats() {
-			chainStats[st.ChainID] = st
-		}
-	}
-
-	out := make([]map[string]any, 0, len(chains))
+	out := make([]healthChainEntry, 0, len(chains))
 	for _, c := range chains {
 		worstStatus := health.StatusHealthy
 		var affectedProvider, affectedModel, mainIssue string
@@ -405,32 +593,27 @@ func (s *Server) adminHealthChains(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		entry := map[string]any{
-			"chain_id":          c.ID,
-			"name":              c.Name,
-			"status":            worstStatus,
-			"affected_provider": affectedProvider,
-			"affected_model":    affectedModel,
-			"main_issue":        mainIssue,
-			"step_count":        len(c.Steps),
+		entry := healthChainEntry{
+			ChainID:          c.ID,
+			Name:             c.Name,
+			Status:           worstStatus,
+			AffectedProvider: affectedProvider,
+			AffectedModel:    affectedModel,
+			MainIssue:        mainIssue,
+			StepCount:        len(c.Steps),
 		}
 		if st, ok := chainStats[c.ID]; ok {
-			entry["requests"] = st.Requests
-			entry["fallback_rate"] = st.FallbackRate * 100
-			entry["final_failure_count"] = st.FinalFailures
-			entry["fallback_count"] = st.Fallbacks
-		} else {
-			entry["requests"] = 0
-			entry["fallback_rate"] = 0.0
-			entry["final_failure_count"] = 0
-			entry["fallback_count"] = 0
+			entry.Requests = st.Requests
+			entry.FallbackRate = st.FallbackRate * 100
+			entry.FinalFailureCount = st.FinalFailures
+			entry.FallbackCount = st.Fallbacks
 		}
-		entry["recommendation"] = chainRecommendation(worstStatus, mainIssue, affectedProvider, affectedModel)
+		entry.Recommendation = chainRecommendation(worstStatus, mainIssue, affectedProvider, affectedModel)
 		out = append(out, entry)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"chains": out,
-		"window": s.healthWindow(r.URL.Query().Get("range")),
+	writeJSON(w, http.StatusOK, healthChainsResponse{
+		Chains: out,
+		Window: s.healthWindow(requestedRange),
 	})
 }
 
@@ -443,12 +626,7 @@ func (s *Server) adminHealthChainDetail(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	healthRows, _ := s.db.ProviderHealth().ListCurrent(r.Context(), "")
-	chainStats := map[string]health.ChainStat{}
-	if s.providerHealth != nil {
-		for _, st := range s.providerHealth.ChainStats() {
-			chainStats[st.ChainID] = st
-		}
-	}
+	chainStats := s.chainStatsByChainID(s.resolveHealthRange(r.URL.Query().Get("range")))
 
 	steps := make([]map[string]any, 0, len(c.Steps))
 	for _, step := range c.Steps {
@@ -635,11 +813,4 @@ func rank(status string) int {
 		return 1
 	}
 	return 0
-}
-
-func pct(n, total int64) float64 {
-	if total <= 0 {
-		return 0
-	}
-	return float64(n) / float64(total) * 100
 }
