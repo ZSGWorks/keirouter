@@ -1427,7 +1427,7 @@ function ForeignImportSettings() {
                 </label>
                 <label className="flex items-start gap-2 text-xs text-[var(--text)]">
                   <input type="radio" name="n9mode" value="overwrite" checked={sqliteOptions.mode === "overwrite"} onChange={() => setSqliteOptions((o) => ({ ...o, mode: "overwrite" }))} className="mt-0.5" />
-                  <span>Overwrite <span className="text-[var(--text-muted)]">— remove previous 9router imports, then re-import (clean sync)</span></span>
+                  <span>Overwrite <span className="text-[var(--text-muted)]">— remove previous 9router imports, then re-import (clean sync; settings are merged, not replaced)</span></span>
                 </label>
                 <label className="flex items-start gap-2 text-xs text-[var(--text)]">
                   <input type="radio" name="n9mode" value="wipe" checked={sqliteOptions.mode === "wipe"} onChange={() => setSqliteOptions((o) => ({ ...o, mode: "wipe" }))} className="mt-0.5" />

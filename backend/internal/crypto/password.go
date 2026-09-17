@@ -1,7 +1,5 @@
 package crypto
 
-import "strings"
-
 // HashPassword produces an argon2id verifier for a dashboard password, using
 // the same parameters as API key hashing. Passwords are never stored in
 // plaintext; only this hash is persisted.
@@ -15,7 +13,7 @@ func HashPassword(plaintext string) (string, error) {
 // compatibility with 9router/foreign imports. The caller can re-hash a
 // bcrypt match by calling HashPassword + persisting the new argon2id hash.
 func VerifyPassword(plaintext, encodedHash string) (bool, error) {
-	if strings.HasPrefix(encodedHash, "$2a$") || strings.HasPrefix(encodedHash, "$2b$") {
+	if IsLegacyBcrypt(encodedHash) {
 		return verifyBcrypt(plaintext, encodedHash)
 	}
 	return VerifyAPIKey(plaintext, encodedHash)

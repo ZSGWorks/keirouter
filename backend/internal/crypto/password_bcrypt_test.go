@@ -48,3 +48,31 @@ func TestVerifyPasswordBcryptCompatibilityAndLegacyDetection(t *testing.T) {
 		t.Fatal("VerifyPassword returned false for correct argon2id password")
 	}
 }
+
+func TestVerifyPasswordAccepts2yBcrypt(t *testing.T) {
+	hash, err := bcrypt.GenerateFromPassword([]byte("hunter2"), bcrypt.DefaultCost)
+	if err != nil {
+		t.Fatalf("GenerateFromPassword: %v", err)
+	}
+	encoded := "$2y$" + string(hash)[len("$2a$"):]
+
+	if !IsLegacyBcrypt(encoded) {
+		t.Fatalf("IsLegacyBcrypt(%q) = false, want true for $2y$ hash", encoded)
+	}
+
+	ok, err := VerifyPassword("hunter2", encoded)
+	if err != nil {
+		t.Fatalf("VerifyPassword (2y match): %v", err)
+	}
+	if !ok {
+		t.Fatal("VerifyPassword returned false for correct $2y$ bcrypt password")
+	}
+
+	ok, err = VerifyPassword("wrong", encoded)
+	if err != nil {
+		t.Fatalf("VerifyPassword (2y mismatch): %v", err)
+	}
+	if ok {
+		t.Fatal("VerifyPassword returned true for wrong $2y$ bcrypt password")
+	}
+}

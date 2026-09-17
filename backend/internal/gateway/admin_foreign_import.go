@@ -386,7 +386,8 @@ func (s *Server) importN9routerConnections(ctx context.Context, doc map[string]j
 
 		now := time.Now()
 		acc := store.Account{
-			// Deterministic id: re-imports upsert instead of duplicating, and
+			// Deterministic id: re-imports that already imported this connection
+			// hit the PK and are counted as Skipped (merge semantics), and
 			// usage_records.account_id (carrying the raw 9router connectionId)
 			// resolves to this row.
 			ID:        n9IDPrefix + c.ID,

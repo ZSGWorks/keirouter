@@ -245,7 +245,7 @@ func (s *Server) adminImport9routerSQLite(w http.ResponseWriter, r *http.Request
 		s.importN9router(ctx, doc, res) // nodes + connections + keys + combos + pools + aliases + custom models
 	}
 	if opts.Usage {
-		s.import9routerUsageHistory(ctx, doc, res)
+		s.import9routerUsageHistory(ctx, doc, res, opts)
 	}
 	if opts.Settings {
 		s.import9routerSettings(ctx, doc, res, opts.Password)
@@ -304,9 +304,12 @@ func (s *Server) delete9routerRows(ctx context.Context, opts n9routerImportOptio
 	if opts.Chains {
 		del("chains", "id")
 	}
-	if opts.Settings {
-		// Settings are keyed, not prefixed; reset the imported keys so the
-		// incoming blob lands cleanly.
+	if opts.Settings && opts.Mode == "wipe" {
+		// Wipe mode only: settings are keyed, not n9-scoped, so overwrite must
+		// not touch them (it would destroy fork-authored keys such as the
+		// dashboard password hash and provider routing overrides written by
+		// settings.go, with no safety backup). The safety backup is taken
+		// before wipe deletions, so a full reset is safe here.
 		for _, k := range []string{endpointSettingsKey, "auth.password_hash"} {
 			_ = s.settings.Delete(ctx, k)
 		}
@@ -502,7 +505,7 @@ func decode9routerJSONCol(raw json.RawMessage, target any) error {
 // usage_records. Cost is converted USD → nanos (authoritative) and micros
 // (compatibility). Provider ids are transformed to KeiRouter's custom-provider
 // naming. Rows are inserted in batches via RecordBatch.
-func (s *Server) import9routerUsageHistory(ctx context.Context, doc map[string]json.RawMessage, res *foreignImportResult) {
+func (s *Server) import9routerUsageHistory(ctx context.Context, doc map[string]json.RawMessage, res *foreignImportResult, opts n9routerImportOptions) {
 	raw, ok := doc["usageHistory"]
 	if !ok {
 		return
@@ -519,7 +522,9 @@ func (s *Server) import9routerUsageHistory(ctx context.Context, doc map[string]j
 	records := make([]store.UsageRecord, 0, len(rows))
 	for _, r := range rows {
 		rec := store.UsageRecord{
-			ID:       strconv.FormatInt(r.ID, 10),
+			// n9:-prefixed deterministic id: lets overwrite mode clear previous
+			// imports and keeps account_id linkage (also n9: + connectionId).
+			ID:       n9IDPrefix + strconv.FormatInt(r.ID, 10),
 			TenantID: adminTenant,
 			Provider: xform9routerProvider(r.Provider),
 			Model:    r.Model,
@@ -589,6 +594,24 @@ func (s *Server) import9routerUsageHistory(ctx context.Context, doc map[string]j
 		records = append(records, rec)
 	}
 
+	// Merge mode skips rows already imported (documented "skip existing"
+	// semantics); overwrite mode deleted the n9: rows beforehand. KeiRouter
+	// native rows use non-n9 ids, so the prefix filter cannot collide.
+	existing := map[string]struct{}{}
+	if opts.Mode == "merge" {
+		idRows, err := s.db.SQL().QueryContext(ctx,
+			"SELECT id FROM usage_records WHERE id LIKE '"+n9IDPrefix+"%'")
+		if err == nil {
+			for idRows.Next() {
+				var id string
+				if err := idRows.Scan(&id); err == nil {
+					existing[id] = struct{}{}
+				}
+			}
+			_ = idRows.Close()
+		}
+	}
+
 	// Insert in chunks so each transaction stays short: one 60k-row
 	// transaction holds the SQLite write lock for the whole import and starves
 	// background writers (health checks, resource samples) with SQLITE_BUSY.
@@ -598,7 +621,21 @@ func (s *Server) import9routerUsageHistory(ctx context.Context, doc map[string]j
 	imported := 0
 	for start := 0; start < len(records); start += chunkSize {
 		end := min(start+chunkSize, len(records))
-		if err := s.usage.RecordBatch(ctx, records[start:end]); err != nil {
+		chunk := records[start:end]
+		if len(existing) > 0 {
+			filtered := make([]store.UsageRecord, 0, len(chunk))
+			for _, rec := range chunk {
+				if _, dup := existing[rec.ID]; !dup {
+					filtered = append(filtered, rec)
+				}
+			}
+			chunk = filtered
+		}
+		if len(chunk) == 0 {
+			imported = end
+			continue
+		}
+		if err := s.usage.RecordBatch(ctx, chunk); err != nil {
 			res.Errors = append(res.Errors, fmt.Sprintf("usageHistory: %d/%d rows: %v", start, len(records), err))
 			break
 		}
