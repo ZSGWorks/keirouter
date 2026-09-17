@@ -25,9 +25,9 @@ type LoginResult struct {
 
 // FunnelResult holds the result of starting a funnel.
 type FunnelResult struct {
-	TunnelURL       string `json:"tunnelUrl,omitempty"`
-	FunnelNotEnabled bool  `json:"funnelNotEnabled,omitempty"`
-	EnableURL       string `json:"enableUrl,omitempty"`
+	TunnelURL        string `json:"tunnelUrl,omitempty"`
+	FunnelNotEnabled bool   `json:"funnelNotEnabled,omitempty"`
+	EnableURL        string `json:"enableUrl,omitempty"`
 }
 
 // StartLogin runs `tailscale up` and captures the auth URL for browser login.

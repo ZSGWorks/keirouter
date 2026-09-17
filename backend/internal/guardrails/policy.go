@@ -37,7 +37,7 @@ const (
 	PIIStrategyReplace   PIIStrategy = "replace"   // replace with <EMAIL_ADDRESS>
 	PIIStrategyMask      PIIStrategy = "mask"      // keep first/last N chars
 	PIIStrategyHash      PIIStrategy = "hash"      // sha256 short tag
-	PIIStrategyBlock     PIIStrategy = "block"    // refuse the request
+	PIIStrategyBlock     PIIStrategy = "block"     // refuse the request
 	PIIStrategyAnonymize PIIStrategy = "anonymize" // alias of replace, Presidio naming
 )
 

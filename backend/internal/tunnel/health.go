@@ -11,8 +11,8 @@ import (
 
 // HealthConfig holds timing parameters for health checks.
 type HealthConfig struct {
-	IntervalMs    time.Duration // Poll interval
-	TimeoutMs     time.Duration // Total timeout
+	IntervalMs     time.Duration // Poll interval
+	TimeoutMs      time.Duration // Total timeout
 	FetchTimeoutMs time.Duration // Per-fetch timeout
 	DNSTimeoutMs   time.Duration // DNS resolution timeout
 }

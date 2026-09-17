@@ -112,16 +112,16 @@ type moderationResult struct {
 // openaiCategoryMap collapses OpenAI's granular category names into our
 // internal set. Subcategories (e.g. hate/threatening) fold into the parent.
 var openaiCategoryMap = map[string]string{
-	"hate":                "hate",
-	"hate/threatening":    "hate",
-	"harassment":          "harassment",
+	"hate":                   "hate",
+	"hate/threatening":       "hate",
+	"harassment":             "harassment",
 	"harassment/threatening": "harassment",
-	"violence":            "violence",
-	"violence/graphic":    "violence",
-	"sexual":              "sexual",
-	"sexual/minors":       "sexual",
-	"self-harm":           "harassment", // closest internal bucket
-	"self-harm/intent":    "harassment",
+	"violence":               "violence",
+	"violence/graphic":       "violence",
+	"sexual":                 "sexual",
+	"sexual/minors":          "sexual",
+	"self-harm":              "harassment", // closest internal bucket
+	"self-harm/intent":       "harassment",
 	"self-harm/instructions": "harassment",
 }
 

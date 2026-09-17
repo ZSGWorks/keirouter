@@ -58,11 +58,11 @@ func NewPresidioEngine(cfg PresidioConfig) *PresidioEngine {
 
 // presidioRequest mirrors the Presidio /analyze POST body.
 type presidioRequest struct {
-	Text            string   `json:"text"`
-	Language        string   `json:"language"`
-	Entities        []string `json:"entities,omitempty"`
-	ScoreThreshold  float64  `json:"score_threshold,omitempty"`
-	ReturnDecision  bool     `json:"return_decision_process,omitempty"`
+	Text           string   `json:"text"`
+	Language       string   `json:"language"`
+	Entities       []string `json:"entities,omitempty"`
+	ScoreThreshold float64  `json:"score_threshold,omitempty"`
+	ReturnDecision bool     `json:"return_decision_process,omitempty"`
 }
 
 // presidioFinding mirrors one row in the Presidio /analyze response.

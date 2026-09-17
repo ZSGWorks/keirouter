@@ -133,7 +133,7 @@ func (r *ProbeRunner) Run(ctx context.Context, req ProbeRequest) (ProbeResult, e
 		probeReq := &core.ChatRequest{
 			Model: req.Model,
 			Messages: []core.Message{{
-				Role: core.RoleUser,
+				Role:    core.RoleUser,
 				Content: []core.ContentPart{{Type: core.PartText, Text: "Reply with OK only."}},
 			}},
 			MaxTokens: &maxTok,

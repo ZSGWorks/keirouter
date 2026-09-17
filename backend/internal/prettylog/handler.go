@@ -33,12 +33,12 @@ type Options struct {
 // Handler is a slog.Handler that renders colorized, compact output when
 // writing to a terminal, and falls back to plain text otherwise.
 type Handler struct {
-	w       io.Writer
-	level   slog.Level
-	pretty  bool
-	mu      *sync.Mutex
-	attrs   []slog.Attr
-	groups  []string
+	w      io.Writer
+	level  slog.Level
+	pretty bool
+	mu     *sync.Mutex
+	attrs  []slog.Attr
+	groups []string
 }
 
 // NewHandler creates a handler. If w's file descriptor is a terminal, pretty

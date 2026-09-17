@@ -116,4 +116,3 @@ func TestEngine_NilSafe(t *testing.T) {
 		t.Errorf("nil engine should ActionAllow, got %s", res.Action)
 	}
 }
-

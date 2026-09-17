@@ -16,16 +16,16 @@ import (
 type Entity string
 
 const (
-	EntityEmail       Entity = "EMAIL_ADDRESS"
-	EntityPhone       Entity = "PHONE_NUMBER"
-	EntityCreditCard  Entity = "CREDIT_CARD"
-	EntityIBAN        Entity = "IBAN_CODE"
-	EntityIP          Entity = "IP_ADDRESS"
-	EntityURL         Entity = "URL"
-	EntityPerson      Entity = "PERSON"
-	EntityIDNIK       Entity = "ID_NIK"        // Indonesia: 16-digit national ID
-	EntityIDNPWP      Entity = "ID_NPWP"       // Indonesia: tax ID
-	EntityIDPassport  Entity = "ID_PASSPORT"   // Indonesia: 1 letter + 7 digits
+	EntityEmail      Entity = "EMAIL_ADDRESS"
+	EntityPhone      Entity = "PHONE_NUMBER"
+	EntityCreditCard Entity = "CREDIT_CARD"
+	EntityIBAN       Entity = "IBAN_CODE"
+	EntityIP         Entity = "IP_ADDRESS"
+	EntityURL        Entity = "URL"
+	EntityPerson     Entity = "PERSON"
+	EntityIDNIK      Entity = "ID_NIK"      // Indonesia: 16-digit national ID
+	EntityIDNPWP     Entity = "ID_NPWP"     // Indonesia: tax ID
+	EntityIDPassport Entity = "ID_PASSPORT" // Indonesia: 1 letter + 7 digits
 )
 
 // AllEntities returns the catalog in display order. Used by the dashboard's
@@ -63,11 +63,11 @@ const contextWindow = 32
 
 // Match is a single recognized PII span.
 type Match struct {
-	Entity   Entity
-	Start    int
-	End      int
-	Text     string
-	Score    float64
+	Entity Entity
+	Start  int
+	End    int
+	Text   string
+	Score  float64
 }
 
 // defaultRecognizers builds the catalog. Patterns are intentionally tight to

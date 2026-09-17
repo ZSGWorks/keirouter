@@ -15,17 +15,17 @@ import (
 type Metrics struct {
 	registry *prometheus.Registry
 
-	RequestsTotal   *prometheus.CounterVec
-	RequestDuration *prometheus.HistogramVec
+	RequestsTotal    *prometheus.CounterVec
+	RequestDuration  *prometheus.HistogramVec
 	TimeToFirstToken *prometheus.HistogramVec
-	TokensTotal     *prometheus.CounterVec
-	CostMicros      *prometheus.CounterVec
-	Fallbacks       *prometheus.CounterVec
-	CacheHits       prometheus.Counter
-	CacheMisses     prometheus.Counter
-	CacheLatency    *prometheus.HistogramVec
-	CacheSize       prometheus.Gauge
-	UpstreamErrors  *prometheus.CounterVec
+	TokensTotal      *prometheus.CounterVec
+	CostMicros       *prometheus.CounterVec
+	Fallbacks        *prometheus.CounterVec
+	CacheHits        prometheus.Counter
+	CacheMisses      prometheus.Counter
+	CacheLatency     *prometheus.HistogramVec
+	CacheSize        prometheus.Gauge
+	UpstreamErrors   *prometheus.CounterVec
 
 	// Token-saving analytics.
 	SlimBytesSaved  *prometheus.CounterVec // by rule

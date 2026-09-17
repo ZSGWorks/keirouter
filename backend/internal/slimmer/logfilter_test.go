@@ -9,17 +9,17 @@ import (
 
 func TestCategorizeLogLine(t *testing.T) {
 	cases := map[string]logCategory{
-		"2024-01-15 ERROR failed to connect":   logError,
-		"FATAL: database crashed":              logError,
-		"PICNIC: not a real level":             logInfo,
-		"2024-01-15 WARN slow query detected":  logWarn,
-		"NOTICE: table vacuumed":               logWarn,
-		"2024-01-15 INFO request completed":    logInfo,
-		"just a plain log line":                logInfo,
-		"CRITICAL: out of memory":              logError,
-		"SEVERE: connection refused":           logError,
-		"ALERT: disk space low":                logError,
-		"EMERG: system unusable":               logError,
+		"2024-01-15 ERROR failed to connect":  logError,
+		"FATAL: database crashed":             logError,
+		"PICNIC: not a real level":            logInfo,
+		"2024-01-15 WARN slow query detected": logWarn,
+		"NOTICE: table vacuumed":              logWarn,
+		"2024-01-15 INFO request completed":   logInfo,
+		"just a plain log line":               logInfo,
+		"CRITICAL: out of memory":             logError,
+		"SEVERE: connection refused":          logError,
+		"ALERT: disk space low":               logError,
+		"EMERG: system unusable":              logError,
 	}
 	for line, want := range cases {
 		got := categorizeLogLine(line)
@@ -29,11 +29,11 @@ func TestCategorizeLogLine(t *testing.T) {
 
 func TestNormalizeLogLine(t *testing.T) {
 	cases := map[string]string{
-		"2024-01-15T10:30:45 error connecting":    "<TS> error connecting",
+		"2024-01-15T10:30:45 error connecting":         "<TS> error connecting",
 		"request 550e8400-e29b-41d4-a716-446655440000": "request <UUID>",
-		"address 0xDEADBEEF allocated":             "address <HEX> allocated",
-		"user 12345 logged in":                     "user <NUM> logged in",
-		"reading /var/log/app/server.log":          "reading <PATH>",
+		"address 0xDEADBEEF allocated":                 "address <HEX> allocated",
+		"user 12345 logged in":                         "user <NUM> logged in",
+		"reading /var/log/app/server.log":              "reading <PATH>",
 	}
 	for input, want := range cases {
 		got := normalizeLogLine(input)

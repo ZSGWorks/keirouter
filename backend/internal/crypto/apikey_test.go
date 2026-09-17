@@ -50,7 +50,7 @@ func TestVerifyAPIKey_MalformedHash(t *testing.T) {
 	cases := []string{
 		"",
 		"not-a-hash",
-		"$argon2i$v=19$m=1,t=1,p=1$c2FsdA$aGFzaA", // wrong variant
+		"$argon2i$v=19$m=1,t=1,p=1$c2FsdA$aGFzaA",  // wrong variant
 		"$argon2id$v=18$m=1,t=1,p=1$c2FsdA$aGFzaA", // wrong version
 		"$argon2id$v=19$bad$c2FsdA$aGFzaA",
 	}

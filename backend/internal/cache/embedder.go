@@ -70,7 +70,7 @@ func (h *HashEmbedder) Embed(_ context.Context, text string) ([]float32, error) 
 		sum := sha256.Sum256(append([]byte(text), seed[:]...))
 		// Map the first 4 bytes to a float in [-1, 1].
 		u := binary.LittleEndian.Uint32(sum[:4])
-		vec[i] = float32(int32(u))/float32(1<<31) // normalize to ~[-1,1]
+		vec[i] = float32(int32(u)) / float32(1<<31) // normalize to ~[-1,1]
 	}
 	return vec, nil
 }

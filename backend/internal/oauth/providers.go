@@ -92,12 +92,12 @@ var configs = map[string]ProviderConfig{
 		UserInfoURL:      "https://api.anthropic.com/v1/me",
 	},
 	"codex": {
-		Provider:                  "codex",
-		Flow:                      FlowAuthCodePKCE,
-		ClientID:                  "app_EMoamEEZ73f0CkXaXp7hrann",
-		AuthorizeURL:              "https://auth.openai.com/oauth/authorize",
-		TokenURL:                  "https://auth.openai.com/oauth/token",
-		Scopes:                    []string{"openid", "profile", "email", "offline_access"},
+		Provider:     "codex",
+		Flow:         FlowAuthCodePKCE,
+		ClientID:     "app_EMoamEEZ73f0CkXaXp7hrann",
+		AuthorizeURL: "https://auth.openai.com/oauth/authorize",
+		TokenURL:     "https://auth.openai.com/oauth/token",
+		Scopes:       []string{"openid", "profile", "email", "offline_access"},
 		// prompt=login forces a fresh Auth0 session per flow. Without it, a
 		// second Codex OAuth on the same browser reuses the first session and
 		// Auth0 invalidates the earlier account's refresh-token family as a
