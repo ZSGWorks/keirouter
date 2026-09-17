@@ -205,6 +205,38 @@ func (r *RoutingRepo) ExpireModelCooldowns(ctx context.Context) (int64, error) {
 	return res.RowsAffected()
 }
 
+// ListActiveModelCooldowns returns every unexpired model-level cooldown for a
+// tenant, joined to its account so callers can group by provider. A row whose
+// model is the "__all__" sentinel represents an account-wide lock. Expired
+// rows are excluded so the caller only sees actionable cooldowns.
+func (r *RoutingRepo) ListActiveModelCooldowns(ctx context.Context, tenantID string, now time.Time) ([]ModelCooldown, error) {
+	q := r.db.rebind(`SELECT mc.id, mc.account_id, mc.model, mc.cooldown_until, mc.created_at
+		FROM model_cooldowns mc
+		JOIN accounts a ON a.id = mc.account_id
+		WHERE a.tenant_id = ?
+		  AND mc.cooldown_until > ?
+		ORDER BY mc.account_id, mc.model`)
+
+	rows, err := r.db.sql.QueryContext(ctx, q, tenantID, formatTime(now))
+	if err != nil {
+		return nil, fmt.Errorf("store: list active model cooldowns: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]ModelCooldown, 0)
+	for rows.Next() {
+		var mc ModelCooldown
+		var until, created string
+		if err := rows.Scan(&mc.ID, &mc.AccountID, &mc.Model, &until, &created); err != nil {
+			return nil, fmt.Errorf("store: scan active model cooldown: %w", err)
+		}
+		mc.CooldownUntil = parseTime(until)
+		mc.CreatedAt = parseTime(created)
+		out = append(out, mc)
+	}
+	return out, rows.Err()
+}
+
 // Chain rotation ------------------------------------------------------------
 
 // GetChainRotation returns the persisted round-robin index for a chain.

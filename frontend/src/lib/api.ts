@@ -1709,6 +1709,8 @@ export const api = {
 
   resetAllCooldowns: () =>
     request<CooldownResetResult>("POST", "/health/cooldowns/reset"),
+
+  cooldowns: () => request<CooldownOverview>("GET", "/cooldowns"),
 };
 
 // ---- Provider health types ----
@@ -1718,6 +1720,39 @@ export const api = {
 export interface CooldownResetResult {
   cleared_accounts: number;
   cleared_models: number;
+}
+
+// CooldownScope describes whether an account is parked at the account level,
+// a specific model, or both.
+export type CooldownScope = "account" | "model" | "both";
+
+// CooldownReason is inferred server-side; no cooldown cause is persisted.
+export type CooldownReason = "credits_exhausted" | "model_rate_limit" | "rate_limit";
+
+// CooldownAccountRow is one parked account (account- and model-level cooldowns merged).
+export interface CooldownAccountRow {
+  account_id: string;
+  label: string;
+  scope: CooldownScope;
+  models: string[];
+  reason: CooldownReason;
+  reason_label: string;
+  backoff_level: number;
+  expires_at: string;
+  retry_after_seconds: number;
+}
+
+// CooldownProviderGroup groups parked accounts under their provider.
+export interface CooldownProviderGroup {
+  provider: string;
+  provider_name: string;
+  accounts: CooldownAccountRow[];
+}
+
+// CooldownOverview is the response of GET /cooldowns.
+export interface CooldownOverview {
+  generated_at: string;
+  providers: CooldownProviderGroup[];
 }
 
 // formatCooldownReset renders a human-readable summary of a cooldown reset

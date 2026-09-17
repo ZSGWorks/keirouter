@@ -34,6 +34,7 @@ import {
 } from "../lib/api";
 import { microsToUSD } from "../lib/format";
 import { PageHeader } from "../components/Layout";
+import { CooldownCard } from "../components/CooldownCard";
 import {
   Badge,
   Card,
@@ -221,6 +222,7 @@ function InsightsDashboard({ data }: { data: UsageInsights }) {
       </div>
 
       <TokenComposition data={data} />
+      <CooldownCard providers={providers} />
       <RecentActivityTable recent={recent} providers={providers} />
     </div>
   );

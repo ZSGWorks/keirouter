@@ -42,8 +42,7 @@ func seedCooldownAccount(t *testing.T, db *store.DB, s cooldownSeed) {
 	ctx := context.Background()
 	acc := store.Account{
 		ID: s.id, TenantID: s.tenant, Provider: "openai", Label: s.id,
-		AuthKind: store.AuthAPIKey, NeedsReconnect: true,
-		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		NeedsReconnect: true,
 	}
 	if s.parked {
 		until := time.Now().Add(time.Hour)
@@ -51,25 +50,34 @@ func seedCooldownAccount(t *testing.T, db *store.DB, s cooldownSeed) {
 		acc.BackoffLevel = 2
 		acc.CreditsExhausted = true
 	}
-	require.NoError(t, db.Accounts().Create(ctx, acc))
-	if s.parked {
-		require.NoError(t, db.Routing().SetModelCooldown(ctx, s.id, "gpt-4", time.Now().Add(time.Hour)))
-		require.NoError(t, db.Routing().SetModelCooldown(ctx, s.id, "gpt-5", time.Now().Add(time.Hour)))
-		require.NoError(t, db.Health().Upsert(ctx, store.AccountHealth{
-			ID: "h-" + s.id, TenantID: s.tenant, AccountID: s.id, Provider: "openai",
-			Model: "__all__", Status: "unhealthy", ConsecutiveFailures: 3,
-			LastCheckedAt: time.Now(), LastError: "boom", UpdatedAt: time.Now(),
-		}))
+	createCooldownAccount(t, db, acc)
+	if !s.parked {
+		return
 	}
+	require.NoError(t, db.Routing().SetModelCooldown(ctx, s.id, "gpt-4", time.Now().Add(time.Hour)))
+	require.NoError(t, db.Routing().SetModelCooldown(ctx, s.id, "gpt-5", time.Now().Add(time.Hour)))
+	require.NoError(t, db.Health().Upsert(ctx, store.AccountHealth{
+		ID: "h-" + s.id, TenantID: s.tenant, AccountID: s.id, Provider: "openai",
+		Model: "__all__", Status: "unhealthy", ConsecutiveFailures: 3,
+		LastCheckedAt: time.Now(), LastError: "boom", UpdatedAt: time.Now(),
+	}))
 }
 
-func serveCooldownReset(t *testing.T, db *store.DB, method, path string) (int, cooldownResetCounts) {
+// serveAdminRoute mounts the admin routes on a throwaway server and serves one
+// request, so each cooldown test only supplies its method and path.
+func serveAdminRoute(t *testing.T, db *store.DB, method, path string) *httptest.ResponseRecorder {
 	t.Helper()
 	s := &Server{db: db, accounts: db.Accounts()}
 	r := chi.NewRouter()
 	r.Route("/api", func(r chi.Router) { s.mountAdmin(r) })
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, httptest.NewRequest(method, path, nil))
+	return rec
+}
+
+func serveCooldownReset(t *testing.T, db *store.DB, method, path string) (int, cooldownResetCounts) {
+	t.Helper()
+	rec := serveAdminRoute(t, db, method, path)
 	var counts cooldownResetCounts
 	if rec.Code == http.StatusOK {
 		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &counts), "body=%s", rec.Body.String())
@@ -224,4 +232,180 @@ func TestAdminResetTenantCooldowns(t *testing.T) {
 	require.Equal(t, http.StatusOK, code)
 	require.Zero(t, counts.ClearedAccounts)
 	require.Zero(t, counts.ClearedModels)
+}
+
+type cooldownListEntry struct {
+	AccountID         string    `json:"account_id"`
+	Label             string    `json:"label"`
+	Scope             string    `json:"scope"`
+	Models            []string  `json:"models"`
+	Reason            string    `json:"reason"`
+	ReasonLabel       string    `json:"reason_label"`
+	BackoffLevel      int       `json:"backoff_level"`
+	ExpiresAt         time.Time `json:"expires_at"`
+	RetryAfterSeconds int64     `json:"retry_after_seconds"`
+}
+
+type cooldownListGroup struct {
+	Provider     string              `json:"provider"`
+	ProviderName string              `json:"provider_name"`
+	Accounts     []cooldownListEntry `json:"accounts"`
+}
+
+type cooldownListResponse struct {
+	GeneratedAt time.Time           `json:"generated_at"`
+	Providers   []cooldownListGroup `json:"providers"`
+}
+
+func serveCooldownList(t *testing.T, db *store.DB) (int, cooldownListResponse) {
+	t.Helper()
+	rec := serveAdminRoute(t, db, http.MethodGet, "/api/cooldowns")
+	var body cooldownListResponse
+	if rec.Code == http.StatusOK {
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body), "body=%s", rec.Body.String())
+	}
+	return rec.Code, body
+}
+
+func createCooldownAccount(t *testing.T, db *store.DB, acc store.Account) {
+	t.Helper()
+	if acc.TenantID == "" {
+		acc.TenantID = adminTenant
+	}
+	if acc.Provider == "" {
+		acc.Provider = "openai"
+	}
+	if acc.Label == "" {
+		acc.Label = acc.ID
+	}
+	if acc.AuthKind == "" {
+		acc.AuthKind = store.AuthAPIKey
+	}
+	if acc.CreatedAt.IsZero() {
+		acc.CreatedAt = time.Now()
+	}
+	if acc.UpdatedAt.IsZero() {
+		acc.UpdatedAt = time.Now()
+	}
+	require.NoError(t, db.Accounts().Create(context.Background(), acc))
+}
+
+func TestAdminListCooldownsMergesAccountAndModelLocks(t *testing.T) {
+	db := openCooldownTestDB(t)
+	ctx := context.Background()
+	until := time.Now().Add(time.Hour)
+
+	createCooldownAccount(t, db, store.Account{
+		ID: "acc-both", Provider: "openai", Label: "primary",
+		CooldownUntil: &until, BackoffLevel: 2, CreditsExhausted: true,
+	})
+	require.NoError(t, db.Routing().SetModelCooldown(ctx, "acc-both", "gpt-4", time.Now().Add(30*time.Minute)))
+	require.NoError(t, db.Routing().SetModelCooldown(ctx, "acc-both", "gpt-5", time.Now().Add(2*time.Hour)))
+
+	code, body := serveCooldownList(t, db)
+	require.Equal(t, http.StatusOK, code)
+	require.Len(t, body.Providers, 1)
+
+	group := body.Providers[0]
+	require.Equal(t, "openai", group.Provider)
+	require.Equal(t, "OpenAI", group.ProviderName)
+	require.Len(t, group.Accounts, 1)
+
+	row := group.Accounts[0]
+	require.Equal(t, "acc-both", row.AccountID)
+	require.Equal(t, "primary", row.Label)
+	require.Equal(t, "both", row.Scope)
+	require.ElementsMatch(t, []string{"gpt-4", "gpt-5"}, row.Models)
+	require.Equal(t, "credits_exhausted", row.Reason)
+	require.Equal(t, "Credits/quota exhausted", row.ReasonLabel)
+	require.Equal(t, 2, row.BackoffLevel)
+	require.Greater(t, row.RetryAfterSeconds, int64(0))
+	require.WithinDuration(t, time.Now().Add(2*time.Hour), row.ExpiresAt, time.Minute)
+}
+
+func TestAdminListCooldownsExcludesExpiredDisabledAndForeign(t *testing.T) {
+	db := openCooldownTestDB(t)
+	ctx := context.Background()
+	past := time.Now().Add(-time.Hour)
+	future := time.Now().Add(time.Hour)
+
+	createCooldownAccount(t, db, store.Account{ID: "acc-expired", Provider: "openai", CooldownUntil: &past})
+	require.NoError(t, db.Routing().SetModelCooldown(ctx, "acc-expired", "gpt-4", past))
+
+	createCooldownAccount(t, db, store.Account{ID: "acc-disabled", Provider: "openai", Disabled: true, CooldownUntil: &future})
+	require.NoError(t, db.Routing().SetModelCooldown(ctx, "acc-disabled", "gpt-4", future))
+
+	require.NoError(t, db.Tenants().Upsert(ctx, store.Tenant{ID: "tenant-other", Name: "Other", CreatedAt: time.Now()}))
+	createCooldownAccount(t, db, store.Account{ID: "acc-foreign", TenantID: "tenant-other", Provider: "openai", CooldownUntil: &future})
+	require.NoError(t, db.Routing().SetModelCooldown(ctx, "acc-foreign", "gpt-4", future))
+
+	code, body := serveCooldownList(t, db)
+	require.Equal(t, http.StatusOK, code)
+	require.Empty(t, body.Providers)
+	require.WithinDuration(t, time.Now(), body.GeneratedAt, time.Minute)
+}
+
+func TestAdminListCooldownsInfersReasonAndScope(t *testing.T) {
+	db := openCooldownTestDB(t)
+	ctx := context.Background()
+	future := time.Now().Add(time.Hour)
+
+	createCooldownAccount(t, db, store.Account{ID: "acc-model", Provider: "openai"})
+	require.NoError(t, db.Routing().SetModelCooldown(ctx, "acc-model", "gpt-4", future))
+
+	createCooldownAccount(t, db, store.Account{ID: "acc-sentinel", Provider: "openai"})
+	require.NoError(t, db.Routing().SetModelCooldown(ctx, "acc-sentinel", allModelsSentinel, future))
+
+	createCooldownAccount(t, db, store.Account{ID: "acc-rate", Provider: "anthropic", CooldownUntil: &future, BackoffLevel: 1})
+
+	code, body := serveCooldownList(t, db)
+	require.Equal(t, http.StatusOK, code)
+	require.Len(t, body.Providers, 2)
+	require.Equal(t, "anthropic", body.Providers[0].Provider)
+	require.Equal(t, "openai", body.Providers[1].Provider)
+
+	byLabel := map[string]cooldownListEntry{}
+	for _, group := range body.Providers {
+		for _, row := range group.Accounts {
+			byLabel[row.Label] = row
+		}
+	}
+
+	model := byLabel["acc-model"]
+	require.Equal(t, "model", model.Scope)
+	require.Equal(t, "model_rate_limit", model.Reason)
+	require.Equal(t, "Model rate limit", model.ReasonLabel)
+	require.Equal(t, []string{"gpt-4"}, model.Models)
+
+	sentinel := byLabel["acc-sentinel"]
+	require.Equal(t, "account", sentinel.Scope)
+	require.Equal(t, "rate_limit", sentinel.Reason)
+	require.Empty(t, sentinel.Models)
+
+	rate := byLabel["acc-rate"]
+	require.Equal(t, "account", rate.Scope)
+	require.Equal(t, "rate_limit", rate.Reason)
+	require.Equal(t, 1, rate.BackoffLevel)
+}
+
+func TestListActiveModelCooldownsScopesTenantAndExpiry(t *testing.T) {
+	db := openCooldownTestDB(t)
+	ctx := context.Background()
+	future := time.Now().Add(time.Hour)
+	past := time.Now().Add(-time.Hour)
+
+	createCooldownAccount(t, db, store.Account{ID: "acc-keep", Provider: "openai"})
+	require.NoError(t, db.Routing().SetModelCooldown(ctx, "acc-keep", "gpt-4", future))
+	require.NoError(t, db.Routing().SetModelCooldown(ctx, "acc-keep", "gpt-5", past))
+
+	require.NoError(t, db.Tenants().Upsert(ctx, store.Tenant{ID: "tenant-other", Name: "Other", CreatedAt: time.Now()}))
+	createCooldownAccount(t, db, store.Account{ID: "acc-foreign", TenantID: "tenant-other", Provider: "openai"})
+	require.NoError(t, db.Routing().SetModelCooldown(ctx, "acc-foreign", "gpt-4", future))
+
+	rows, err := db.Routing().ListActiveModelCooldowns(ctx, adminTenant, time.Now())
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	require.Equal(t, "acc-keep", rows[0].AccountID)
+	require.Equal(t, "gpt-4", rows[0].Model)
+	require.WithinDuration(t, future, rows[0].CooldownUntil, time.Minute)
 }

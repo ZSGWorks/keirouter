@@ -43,6 +43,7 @@ func (s *Server) mountAdmin(r chi.Router) {
 	r.Get("/quota", s.adminQuotaUsage)
 	r.Get("/health/accounts", s.adminListAccountHealth)
 	r.Post("/health/check-now", s.adminRunHealthCheck)
+	r.Get("/cooldowns", s.adminListCooldowns)
 	r.Post("/health/cooldowns/reset", s.adminResetTenantCooldowns)
 	r.Post("/pricing/refresh", s.adminRefreshPricing)
 	s.mountProviderHealth(r)
