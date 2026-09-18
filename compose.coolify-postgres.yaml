@@ -31,12 +31,14 @@ services:
     depends_on:
       headroom:
         condition: service_healthy
+        required: false
     networks:
       - coolify
       - headroom
 
   headroom:
-    image: ghcr.io/headroomlabs-ai/headroom:0.36.0
+    image: ghcr.io/headroomlabs-ai/headroom:0.37.0
+    profiles: ["headroom"]
     entrypoint: ["headroom", "proxy"]
     command: ["--host", "0.0.0.0", "--port", "8787"]
     restart: unless-stopped
@@ -50,6 +52,18 @@ services:
       HEADROOM_WORKSPACE_DIR: /tmp/headroom-home/.headroom
       HEADROOM_CONFIG_DIR: /tmp/headroom-home/.headroom/config
       HF_HOME: /tmp/headroom-home/.headroom/huggingface
+      # CPU-only performance tuning (no steady-state RSS growth). ONNX CPU
+      # arena and thread-spinning are deliberately left off: the arena retains
+      # memory and spinning pegs idle CPU. Embedding BLAS/OpenMP threads are
+      # already capped at 1 by Headroom itself. See deploy/README.md.
+      HEADROOM_KOMPRESS_BACKEND: "onnx"
+      HEADROOM_KOMPRESS_ONNX_FILENAME: "onnx/kompress-int8-wo.onnx"
+      HEADROOM_KOMPRESS_ONNX_INTER_THREADS: "1"
+      # Empty default keeps ONNX Runtime's automatic intra-op thread choice
+      # (physical cores), so the image stays portable across hosts.
+      HEADROOM_KOMPRESS_ONNX_INTRA_THREADS: "${KEIROUTER_HEADROOM_KOMPRESS_INTRA_THREADS:-}"
+      HEADROOM_KOMPRESS_MAX_CONCURRENT: "1"
+      HEADROOM_COMPRESSION_MAX_WORKERS: "6"
     volumes:
       - headroom-data:/tmp/headroom-home/.headroom
     healthcheck:

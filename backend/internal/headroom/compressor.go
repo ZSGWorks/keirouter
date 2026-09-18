@@ -76,7 +76,7 @@ type compressConfig struct {
 	CompressUserMessages bool `json:"compress_user_messages"`
 }
 
-// compressResponse is the Headroom v0.36 response. Token metrics are top-level
+// compressResponse is the Headroom v0.36–v0.37 response. Token metrics are top-level
 // fields; a nil/absent/empty Messages slice is a failure (fail-open), while
 // missing metrics simply leave their recorded values at zero.
 type compressResponse struct {

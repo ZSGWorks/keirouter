@@ -141,6 +141,11 @@ run 'Validate Coolify PostgreSQL Compose' env \
   KEIROUTER_MASTER_KEY=test-master-key \
   KEIROUTER_DATABASE__DSN='postgres://user:password@postgres:5432/keirouter?sslmode=disable' \
   docker compose -f compose.coolify-postgres.yaml config
+run 'Validate Coolify PostgreSQL Compose (headroom enabled)' env \
+  COMPOSE_PROFILES=headroom \
+  KEIROUTER_MASTER_KEY=test-master-key \
+  KEIROUTER_DATABASE__DSN='postgres://user:password@postgres:5432/keirouter?sslmode=disable' \
+  docker compose -f compose.coolify-postgres.yaml config
 run 'Build Docker image' docker build -f deploy/Dockerfile -t keirouter:test .
 
 run 'Start isolated Compose Headroom smoke stack' env KEIROUTER_PORT='127.0.0.1:' \
