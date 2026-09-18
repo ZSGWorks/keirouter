@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mydisha/keirouter/backend/internal/core"
@@ -83,10 +84,23 @@ var retryClient = &http.Client{
 	},
 }
 
+const (
+	proxyTransportCacheTTL        = 10 * time.Minute
+	proxyTransportCacheSweepEvery = time.Minute
+)
+
 // proxyTransportCache pools *http.Transport instances keyed by proxy config
-// string. This prevents creating a new transport (and its goroutine/buffer
-// pool) on every proxied request -- a significant memory leak.
-var proxyTransportCache sync.Map
+// string. Entries expire after inactivity so changing or removing proxy
+// configurations cannot retain idle connection pools indefinitely.
+var (
+	proxyTransportCache          sync.Map
+	proxyTransportCacheLastSweep atomic.Int64
+)
+
+type proxyTransportCacheEntry struct {
+	transport *http.Transport
+	lastUsed  atomic.Int64 // unix nanos
+}
 
 // clientFor returns an http.Client configured with proxy settings from creds.
 // When creds carry no proxy config, the shared client is returned. Proxy
@@ -96,8 +110,12 @@ func clientFor(creds core.Credentials) *http.Client {
 		return sharedClient
 	}
 	key := creds.ProxyURL + "|" + creds.RelayURL + "|" + creds.NoProxy
+	now := time.Now()
+	maybeSweepProxyTransports(now)
 	if v, ok := proxyTransportCache.Load(key); ok {
-		return &http.Client{Transport: v.(*http.Transport)}
+		entry := v.(*proxyTransportCacheEntry)
+		entry.lastUsed.Store(now.UnixNano())
+		return &http.Client{Transport: entry.transport}
 	}
 	t := &http.Transport{
 		MaxIdleConns:          200,
@@ -115,8 +133,33 @@ func clientFor(creds core.Credentials) *http.Client {
 			t.Proxy = proxyFunc(u, creds.NoProxy)
 		}
 	}
-	actual, _ := proxyTransportCache.LoadOrStore(key, t)
-	return &http.Client{Transport: actual.(*http.Transport)}
+	entry := &proxyTransportCacheEntry{transport: t}
+	entry.lastUsed.Store(now.UnixNano())
+	actual, _ := proxyTransportCache.LoadOrStore(key, entry)
+	cached := actual.(*proxyTransportCacheEntry)
+	cached.lastUsed.Store(now.UnixNano())
+	return &http.Client{Transport: cached.transport}
+}
+
+func maybeSweepProxyTransports(now time.Time) {
+	lastSweep := proxyTransportCacheLastSweep.Load()
+	if lastSweep != 0 && now.UnixNano()-lastSweep < proxyTransportCacheSweepEvery.Nanoseconds() {
+		return
+	}
+	if proxyTransportCacheLastSweep.CompareAndSwap(lastSweep, now.UnixNano()) {
+		evictStaleProxyTransports(now)
+	}
+}
+
+func evictStaleProxyTransports(now time.Time) {
+	staleBefore := now.Add(-proxyTransportCacheTTL).UnixNano()
+	proxyTransportCache.Range(func(key, value any) bool {
+		entry := value.(*proxyTransportCacheEntry)
+		if entry.lastUsed.Load() <= staleBefore && proxyTransportCache.CompareAndDelete(key, entry) {
+			entry.transport.CloseIdleConnections()
+		}
+		return true
+	})
 }
 
 // proxyFunc returns a proxy function that routes requests through proxyURL,
