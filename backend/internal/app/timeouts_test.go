@@ -2,7 +2,9 @@ package app
 
 import (
 	"context"
+
 	"errors"
+	"github.com/mydisha/keirouter/backend/internal/config"
 	"testing"
 	"time"
 )
@@ -68,5 +70,25 @@ func TestInitialTimeoutValuesSupportsPartialSettings(t *testing.T) {
 
 	if stall != 3*time.Minute || header != time.Minute || request != 5*time.Minute {
 		t.Fatalf("initialTimeoutValues() = (%v, %v, %v), want (3m, 1m, 5m)", stall, header, request)
+	}
+}
+
+func TestNewHTTPServerCarriesTimeoutAndHeaderConfig(t *testing.T) {
+	cfg := config.Default()
+	cfg.Server.IdleTimeout = 42 * time.Second
+	cfg.Server.MaxHeaderBytes = 777
+	srv := newHTTPServer(cfg, nil)
+
+	if srv.IdleTimeout != 42*time.Second {
+		t.Fatalf("IdleTimeout = %v, want 42s", srv.IdleTimeout)
+	}
+	if srv.MaxHeaderBytes != 777 {
+		t.Fatalf("MaxHeaderBytes = %d, want 777", srv.MaxHeaderBytes)
+	}
+	if srv.WriteTimeout != 0 {
+		t.Fatalf("WriteTimeout = %v, want unset (streaming)", srv.WriteTimeout)
+	}
+	if srv.ReadHeaderTimeout != 15*time.Second {
+		t.Fatalf("ReadHeaderTimeout = %v, want 15s", srv.ReadHeaderTimeout)
 	}
 }

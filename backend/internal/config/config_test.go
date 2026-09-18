@@ -106,3 +106,18 @@ func TestLoadMaxRequestBodyBytesFromEnv(t *testing.T) {
 		t.Fatalf("max request body from env = %d, want %d", got, int64(64<<20))
 	}
 }
+
+func TestServerConfigNormalizesIdleAndHeaderDefaults(t *testing.T) {
+	cfg := Default()
+	cfg.Server.IdleTimeout = 0
+	cfg.Server.MaxHeaderBytes = -1
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("validate() = %v", err)
+	}
+	if cfg.Server.IdleTimeout != DefaultIdleTimeout {
+		t.Fatalf("IdleTimeout = %v, want default", cfg.Server.IdleTimeout)
+	}
+	if cfg.Server.MaxHeaderBytes != DefaultMaxHeaderBytes {
+		t.Fatalf("MaxHeaderBytes = %d, want default", cfg.Server.MaxHeaderBytes)
+	}
+}
