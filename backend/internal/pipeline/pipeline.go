@@ -1911,8 +1911,8 @@ type safeBuffer struct {
 	headDone bool // true once head is full
 }
 
-const headCaptureSize = 4 * 1024   // 4 KiB — enough for message_start
-const tailCaptureSize = 256 * 1024 // 256 KiB — usage events are small
+const headCaptureSize = 4 * 1024  // 4 KiB — enough for message_start
+const tailCaptureSize = 64 * 1024 // 64 KiB — usage events are small
 
 func (b *safeBuffer) Write(p []byte) (int, error) {
 	b.mu.Lock()
@@ -2208,9 +2208,22 @@ func extractUsageFromSSEData(data []byte) *core.Usage {
 // handles both OpenAI and Anthropic streaming formats, merging usage across
 // multiple events (Anthropic splits input/output tokens across message_start
 // and message_delta).
+// streamScanBuffer sizes the explicit scanner buffer used for captured SSE
+// data. Default 64KB would silently drop frames larger than bufio.MaxScanTokenSize
+// behavior for oversized lines, losing usage events; 2MB matches the SSE
+// scanner cap used in the connectors.
+const streamScanInitial = 64 * 1024
+const streamScanMax = 2 * 1024 * 1024
+
+func streamScanner(raw []byte) *bufio.Scanner {
+	scanner := bufio.NewScanner(bytes.NewReader(raw))
+	scanner.Buffer(make([]byte, streamScanInitial), streamScanMax)
+	return scanner
+}
+
 func extractUsageFromStream(raw []byte) core.Usage {
 	var usage core.Usage
-	scanner := bufio.NewScanner(bytes.NewReader(raw))
+	scanner := streamScanner(raw)
 	for scanner.Scan() {
 		payload, ok := streamJSONPayload(scanner.Text())
 		if !ok {
@@ -2223,21 +2236,57 @@ func extractUsageFromStream(raw []byte) core.Usage {
 	return usage
 }
 
-func capturedStreamUsage(req *core.ChatRequest, raw []byte) core.Usage {
-	if usage := extractUsageFromStream(raw); usage.PromptTokens+usage.CompletionTokens > 0 {
-		return usage
-	}
-	return estimateStreamUsage(req, completionCharsFromStream(raw))
+// streamUsageAndChars is the single-pass result of scanning captured SSE data.
+type streamUsageAndChars struct {
+	usage core.Usage
+	chars int
 }
 
-func completionCharsFromStream(raw []byte) int {
-	var chars int
-	scanner := bufio.NewScanner(bytes.NewReader(raw))
+// extractStreamUsageAndChars scans the captured SSE data once, accumulating
+// provider usage (merged across events) and completion character counts in the
+// same loop, replacing the previous two-pass scan.
+func extractStreamUsageAndChars(raw []byte) streamUsageAndChars {
+	var out streamUsageAndChars
+	scanner := streamScanner(raw)
 	for scanner.Scan() {
 		payload, ok := streamJSONPayload(scanner.Text())
 		if !ok {
 			continue
 		}
+		if u := extractUsageFromSSEData([]byte(payload)); u != nil {
+			out.usage = mergeUsage(out.usage, *u)
+		}
+		out.chars += completionCharsFromPayload(payload)
+	}
+	return out
+}
+
+func capturedStreamUsage(req *core.ChatRequest, raw []byte) core.Usage {
+	scan := extractStreamUsageAndChars(raw)
+	if scan.usage.PromptTokens+scan.usage.CompletionTokens > 0 {
+		return scan.usage
+	}
+	return estimateStreamUsage(req, scan.chars)
+}
+
+func completionCharsFromStream(raw []byte) int {
+	var chars int
+	scanner := streamScanner(raw)
+	for scanner.Scan() {
+		payload, ok := streamJSONPayload(scanner.Text())
+		if !ok {
+			continue
+		}
+		chars += completionCharsFromPayload(payload)
+	}
+	return chars
+}
+
+// completionCharsFromPayload counts completion characters carried by one SSE
+// data payload (OpenAI delta choices, Gemini candidates, Anthropic deltas).
+func completionCharsFromPayload(payload string) int {
+	chars := 0
+	{
 		var envelope struct {
 			Delta   json.RawMessage `json:"delta"`
 			Message struct {
@@ -2259,7 +2308,7 @@ func completionCharsFromStream(raw []byte) int {
 			} `json:"candidates"`
 		}
 		if json.Unmarshal([]byte(payload), &envelope) != nil {
-			continue
+			return chars
 		}
 		for _, choice := range envelope.Choices {
 			chars += len(choice.Delta.Content) + len(choice.Delta.ReasoningContent)
