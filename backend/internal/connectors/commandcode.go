@@ -155,9 +155,12 @@ func (c *CommandCode) Stream(ctx context.Context, req *core.ChatRequest, creds c
 			}
 		}
 		if err := scanner.Err(); err != nil {
-			out <- core.StreamChunk{
+			select {
+			case out <- core.StreamChunk{
 				Type: core.ChunkError,
 				Err:  &core.ProviderError{Kind: core.ErrTimeout, Provider: c.id, Model: req.Model, Message: err.Error(), Cause: err},
+			}:
+			case <-ctx.Done():
 			}
 		}
 	}()
