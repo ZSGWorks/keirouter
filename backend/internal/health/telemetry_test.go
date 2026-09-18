@@ -2,6 +2,7 @@ package health
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -113,11 +114,63 @@ func TestHealthBucketFreezeAndPruneBoundsMemory(t *testing.T) {
 		Capability: "chat_completions", Status: "success", LatencyMs: 300,
 	})
 	prune.flushSnapshots(ctx, false)
+	// Second pass removes the now-empty key entry after bucket persistence.
+	prune.flushSnapshots(ctx, false)
 
 	pruneKey := store.HealthKey("openai", "", "gpt-4o", "chat_completions")
 	prune.mu.Lock()
 	prunedState := prune.states[pruneKey]
-	require.NotNil(t, prunedState)
-	require.Empty(t, prunedState.buckets, "bucket past MaxHistoryWindow must be pruned")
+	require.Nil(t, prunedState, "key left without retained buckets must be removed from memory")
 	prune.mu.Unlock()
+}
+
+func TestHealthTelemetryDropsQuietKeysAndChains(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(ctx, config.DatabaseConfig{Driver: "sqlite", DSN: ":memory:"}, t.TempDir())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	require.NoError(t, db.Migrate(ctx))
+	repo := db.ProviderHealth()
+
+	service := New(Config{
+		Enabled:          true,
+		RollingWindow:    5 * time.Minute,
+		MaxHistoryWindow: 10 * time.Minute,
+	}, nil, repo)
+
+	aged := time.Now().UTC().Add(-20 * time.Minute)
+	for i := 0; i < 25; i++ {
+		suffix := fmt.Sprintf("%02d", i)
+		service.ingest(ProviderTelemetryEvent{
+			Timestamp: aged, Provider: "provider", ProviderAccountID: "acct",
+			Model:      "model-" + suffix,
+			Capability: "chat_completions", Status: "success", LatencyMs: 100,
+			ChainID: "chain-" + suffix,
+		})
+	}
+	service.mu.Lock()
+	require.Len(t, service.states, 25)
+	require.Len(t, service.chains, 25)
+	service.mu.Unlock()
+
+	service.flushSnapshots(ctx, false)
+	// Second pass: buckets were snapshotted+dropped during persist; the next
+	// collect pass removes the now-empty key/chain entries.
+	service.flushSnapshots(ctx, false)
+
+	service.mu.Lock()
+	require.Empty(t, service.states, "quiet keys past the history window must be pruned")
+	require.Empty(t, service.chains, "quiet chains past the history window must be pruned")
+	service.mu.Unlock()
+	require.Empty(t, service.ProviderStatsSince(time.Hour))
+
+	// A live key keeps its state; flushCurrent iterates only live entries.
+	live := time.Now().UTC()
+	service.ingest(ProviderTelemetryEvent{
+		Timestamp: live, Provider: "openai", Model: "gpt-4o",
+		Capability: "chat_completions", Status: "success", LatencyMs: 50,
+	})
+	service.mu.Lock()
+	require.Len(t, service.states, 1)
+	service.mu.Unlock()
 }
