@@ -1326,6 +1326,7 @@ func (p *Pipeline) applyTokenSaving(ctx context.Context, req *core.ChatRequest, 
 	// downstream processing. This ensures Anthropic-compatible IDs and
 	// complete tool_use/tool_result pairs.
 	normalizer.Apply(req)
+	partsBeforeCompression := contentPartCount(req.Messages)
 
 	var stats *slimmer.Stats
 	if p.slimmer != nil && opts.Slimmer.Enabled {
@@ -1341,14 +1342,27 @@ func (p *Pipeline) applyTokenSaving(ctx context.Context, req *core.ChatRequest, 
 		hrStats = p.headroom.Compress(ctx, req, opts.Headroom)
 	}
 
-	// Compression may remove one side of a tool call/result pair. Reconcile the
-	// final message history again before it reaches a provider connector.
-	normalizer.Apply(req)
+	// Compression can orphan a tool call/result only when it removed a part.
+	if compressionRemovedParts(partsBeforeCompression, req.Messages) {
+		normalizer.Apply(req)
+	}
 
 	terse.Apply(req, opts.Terse)
 	caveman.Apply(req, opts.Caveman)
 	ponytail.Apply(req, opts.Ponytail)
 	return stats, hrStats
+}
+
+func contentPartCount(messages []core.Message) int {
+	count := 0
+	for _, message := range messages {
+		count += len(message.Content)
+	}
+	return count
+}
+
+func compressionRemovedParts(partsBefore int, messages []core.Message) bool {
+	return contentPartCount(messages) < partsBefore
 }
 
 // saveState captures which token-saving features were active and their results
@@ -1819,7 +1833,7 @@ func isStreamRequiredError(err error) bool {
 // streaming internally.
 func drainStream(stream <-chan core.StreamChunk, model string) (*core.ChatResponse, error) {
 	msg := core.Message{Role: core.RoleAssistant}
-	var text, thinking string
+	var text, thinking strings.Builder
 	toolCalls := map[string]*core.ToolCall{}
 	var toolOrder []string
 	finish := core.FinishStop
@@ -1828,9 +1842,9 @@ func drainStream(stream <-chan core.StreamChunk, model string) (*core.ChatRespon
 	for ch := range stream {
 		switch ch.Type {
 		case core.ChunkText:
-			text += ch.Delta
+			text.WriteString(ch.Delta)
 		case core.ChunkThinking:
-			thinking += ch.Delta
+			thinking.WriteString(ch.Delta)
 		case core.ChunkToolCall:
 			if ch.ToolCall != nil {
 				existing, ok := toolCalls[ch.ToolCall.ID]
@@ -1858,11 +1872,11 @@ func drainStream(stream <-chan core.StreamChunk, model string) (*core.ChatRespon
 		}
 	}
 
-	if thinking != "" {
-		msg.Content = append(msg.Content, core.ContentPart{Type: core.PartThinking, Text: thinking})
+	if thinking.Len() > 0 {
+		msg.Content = append(msg.Content, core.ContentPart{Type: core.PartThinking, Text: thinking.String()})
 	}
-	if text != "" {
-		msg.Content = append(msg.Content, core.ContentPart{Type: core.PartText, Text: text})
+	if text.Len() > 0 {
+		msg.Content = append(msg.Content, core.ContentPart{Type: core.PartText, Text: text.String()})
 	}
 	for _, id := range toolOrder {
 		tc := toolCalls[id]
