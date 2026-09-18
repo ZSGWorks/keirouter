@@ -1,6 +1,9 @@
 package pipeline
 
 import (
+	"bytes"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -229,5 +232,56 @@ func TestSafeBuffer_SmallStream(t *testing.T) {
 	got := buf.Bytes()
 	if string(got) != "hello world" {
 		t.Errorf("Bytes() = %q, want %q", got, "hello world")
+	}
+}
+
+// TestExtractUsageFromStream_LargeFrame verifies usage is still parsed when a
+// single SSE data frame exceeds the default 64KB scanner buffer.
+func TestExtractUsageFromStream_LargeFrame(t *testing.T) {
+	big := fmt.Sprintf(`{"id":"x","usage":{"prompt_tokens":11,"completion_tokens":22},"choices":[{"delta":{"content":"%s"}}]}`, strings.Repeat("z", 120*1024))
+	usage := extractUsageFromStream([]byte("data: " + big + "\n\n"))
+	if usage.PromptTokens != 11 || usage.CompletionTokens != 22 {
+		t.Fatalf("large-frame usage not parsed: %+v", usage)
+	}
+
+	scan := extractStreamUsageAndChars([]byte("data: " + big + "\n\n"))
+	if scan.usage.PromptTokens != 11 || scan.chars != 120*1024 {
+		t.Fatalf("single-pass result wrong: usage=%+v chars=%d", scan.usage, scan.chars)
+	}
+}
+
+// TestCapturedStreamUsage_SinglePassEquivalence pins that the merged scan
+// returns the same usage/chars as the two separate functions.
+func TestCapturedStreamUsage_SinglePassEquivalence(t *testing.T) {
+	raw := "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n" +
+		"data: {\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":7}}\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"content\":\"more\"}}]}\n\n"
+
+	scan := extractStreamUsageAndChars([]byte(raw))
+	wantUsage := extractUsageFromStream([]byte(raw))
+	wantChars := completionCharsFromStream([]byte(raw))
+	if scan.usage != wantUsage {
+		t.Fatalf("usage mismatch: %+v vs %+v", scan.usage, wantUsage)
+	}
+	if scan.chars != wantChars {
+		_ = wantChars
+	}
+	if scan.chars != completionCharsFromStream([]byte(raw)) {
+		t.Fatalf("chars mismatch: %d vs %d", scan.chars, completionCharsFromStream([]byte(raw)))
+	}
+}
+
+// TestSafeBufferTailBounded asserts the capture buffer stays within
+// head+tail bounds after writes far past the cap.
+func TestSafeBufferTailBounded(t *testing.T) {
+	var b safeBuffer
+	big := bytes.Repeat([]byte("y"), 64*1024)
+	for i := 0; i < 64; i++ { // 4MB written
+		b.Write(big)
+	}
+	captured := b.Bytes()
+	maxAllowed := headCaptureSize + tailCaptureSize + tailTrimSlack
+	if len(captured) > maxAllowed {
+		t.Fatalf("capture unbounded: %d > %d", len(captured), maxAllowed)
 	}
 }
