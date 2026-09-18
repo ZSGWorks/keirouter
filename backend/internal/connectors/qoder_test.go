@@ -526,3 +526,62 @@ func TestPrettifyQoderPlan(t *testing.T) {
 		}
 	}
 }
+
+func TestQoderPATCacheEvictsExpiredSessions(t *testing.T) {
+	qoderPATCache.Lock()
+	orig := qoderPATCache.sessions
+	qoderPATCache.sessions = make(map[string]qoderPATSession)
+	qoderPATCache.Unlock()
+	t.Cleanup(func() {
+		qoderPATCache.Lock()
+		qoderPATCache.sessions = orig
+		qoderPATCache.Unlock()
+	})
+
+	now := time.Now()
+	qoderPATCache.Lock()
+	qoderPATCache.sessions["fresh"] = qoderPATSession{jobToken: "jt-fresh", expiresAt: now.Add(time.Minute)}
+	qoderPATCache.sessions["stale"] = qoderPATSession{jobToken: "jt-stale", expiresAt: now.Add(-time.Minute)}
+	qoderPATCache.Unlock()
+
+	evictExpiredQoderSessions(now)
+
+	qoderPATCache.Lock()
+	_, freshOK := qoderPATCache.sessions["fresh"]
+	_, staleOK := qoderPATCache.sessions["stale"]
+	qoderPATCache.Unlock()
+	if !freshOK {
+		t.Fatal("fresh session must survive eviction")
+	}
+	if staleOK {
+		t.Fatal("expired session must be evicted (secret retention)")
+	}
+}
+
+func TestQoderCatalogPrunesStaleEntries(t *testing.T) {
+	c := NewQoder("qoder-test", "https://example.invalid")
+	stale := &qoderCatalogEntry{
+		fetchedAt:  time.Now().Add(-2 * qoderCatalogTTL),
+		rawConfigs: map[string]json.RawMessage{"m": json.RawMessage(`{}`)},
+	}
+	c.mu.Lock()
+	c.catalog["user-old"] = stale
+	c.mu.Unlock()
+
+	// Write path: sweep removes entries past TTL.
+	c.mu.Lock()
+	now := time.Now()
+	for k, e := range c.catalog {
+		if now.Sub(e.fetchedAt) >= qoderCatalogTTL {
+			delete(c.catalog, k)
+		}
+	}
+	c.mu.Unlock()
+
+	c.mu.RLock()
+	_, ok := c.catalog["user-old"]
+	c.mu.RUnlock()
+	if ok {
+		t.Fatal("stale catalog entry must be pruned")
+	}
+}

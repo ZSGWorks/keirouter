@@ -55,6 +55,17 @@ var qoderPATCache = struct {
 	flight   singleflight.Group
 }{sessions: make(map[string]qoderPATSession)}
 
+// evictExpiredQoderSessions drops sessions whose job token has expired so
+// deleted or re-authenticated accounts do not retain secrets indefinitely.
+// Caller holds qoderPATCache's lock.
+func evictExpiredQoderSessions(now time.Time) {
+	for pat, sess := range qoderPATCache.sessions {
+		if !now.Before(sess.expiresAt) {
+			delete(qoderPATCache.sessions, pat)
+		}
+	}
+}
+
 // qoderCatalogEntry is a cached model catalog for one Qoder account.
 type qoderCatalogEntry struct {
 	fetchedAt  time.Time
@@ -90,6 +101,27 @@ func NewQoder(id, defaultBaseURL string) *Qoder {
 		id:          id,
 		defaultBase: defaultBaseURL,
 		catalog:     make(map[string]*qoderCatalogEntry),
+	}
+}
+
+// pruneCatalogEntry drops the cached catalog for key when it still points at
+// the given (stale) entry, so retired accounts do not retain raw configs.
+func (c *Qoder) pruneCatalogEntry(key string, stale *qoderCatalogEntry) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if cur, ok := c.catalog[key]; ok && cur == stale {
+		delete(c.catalog, key)
+	}
+}
+
+// pruneStaleCatalog drops every catalog entry past qoderCatalogTTL.
+// Caller holds c.mu.
+func (c *Qoder) pruneStaleCatalog() {
+	now := time.Now()
+	for k, e := range c.catalog {
+		if now.Sub(e.fetchedAt) >= qoderCatalogTTL {
+			delete(c.catalog, k)
+		}
 	}
 }
 
@@ -184,6 +216,9 @@ func (c *Qoder) resolveQoderSession(ctx context.Context, pat string) (qoderPATSe
 	if sess, ok := qoderPATCache.sessions[pat]; ok && time.Now().Before(sess.expiresAt) {
 		qoderPATCache.Unlock()
 		return sess, nil
+	} else if ok {
+		// Expired: drop the stale token (secret retention) before re-minting.
+		delete(qoderPATCache.sessions, pat)
 	}
 	qoderPATCache.Unlock()
 
@@ -214,6 +249,7 @@ func (c *Qoder) resolveQoderSession(ctx context.Context, pat string) (qoderPATSe
 			expiresAt: time.Now().Add(ttl),
 		}
 		qoderPATCache.Lock()
+		evictExpiredQoderSessions(time.Now())
 		qoderPATCache.sessions[pat] = sess
 		qoderPATCache.Unlock()
 		return sess, nil
@@ -926,6 +962,10 @@ func (c *Qoder) fetchModelCatalog(ctx context.Context, cc qoderlib.CosyCreds) (m
 	if ok && time.Since(entry.fetchedAt) < qoderCatalogTTL {
 		return entry.rawConfigs, nil
 	}
+	if ok {
+		// Stale past TTL: prune so retired accounts do not retain raw configs.
+		c.pruneCatalogEntry(cacheKey, entry)
+	}
 
 	// Fetch fresh catalog.
 	cosyHeaders, err := qoderlib.BuildCosyHeaders(nil, qoderlib.ModelListURL, cc)
@@ -972,8 +1012,10 @@ func (c *Qoder) fetchModelCatalog(ctx context.Context, cc qoderlib.CosyCreds) (m
 		configs[key.Key] = entry
 	}
 
-	// Update cache.
+	// Update cache and prune entries past TTL so catalog memory tracks
+	// live accounts only.
 	c.mu.Lock()
+	c.pruneStaleCatalog()
 	c.catalog[cacheKey] = &qoderCatalogEntry{
 		fetchedAt:  time.Now(),
 		rawConfigs: configs,
