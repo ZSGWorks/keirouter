@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -144,4 +145,68 @@ func TestProbe_SkippedResponseIsNotOK(t *testing.T) {
 	require.True(t, result.Reachable)
 	require.False(t, result.OK)
 	require.Contains(t, result.Message, "skipped")
+}
+
+// TestCompress_BytesMeasurementsUnchangedBySinglePassMapping verifies that
+// building the OpenAI mapping once still yields the same bytesBefore /
+// bytesAfter values as the previous triple-serialization behavior: mapping the
+// proxy response back through the core request and re-mapping must be
+// byte-identical to the raw response messages.
+func TestCompress_BytesMeasurementsUnchangedBySinglePassMapping(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"messages":[{"role":"user","content":"compressed text"}],"tokens_before":100,"tokens_after":20,"tokens_saved":80}`))
+	}))
+	defer srv.Close()
+
+	req := testRequest()
+	stats := New(nil).Compress(context.Background(), req, Config{Enabled: true, URL: srv.URL, Timeout: 2 * time.Second})
+	require.True(t, stats.Compressed)
+	require.Greater(t, stats.BytesBefore, 0)
+	require.Greater(t, stats.BytesAfter, 0)
+
+	// Byte-equivalence: re-deriving the measurement from the mutated request
+	// must produce exactly the same number as recorded from resp.Messages.
+	require.Equal(t, jsonBytes(toOpenAIMessages(req)), stats.BytesAfter)
+}
+
+// largeTestRequest builds a conversation big enough that mapping and
+// serialization dominate the compression call.
+func largeTestRequest() *core.ChatRequest {
+	msgs := make([]core.Message, 0, 64)
+	for i := 0; i < 64; i++ {
+		msgs = append(msgs, core.Message{
+			Role:    core.RoleUser,
+			Content: []core.ContentPart{{Type: core.PartText, Text: strings.Repeat("lorem ipsum coding-agent context ", 64)}},
+		})
+	}
+	return &core.ChatRequest{Model: "gpt-4o", Messages: msgs}
+}
+
+// BenchmarkCompressAllocation measures allocations of the compress call path
+// (mapping + serialization) against an always-successful proxy. Run with
+// -benchmem to track allocs/op when tuning the serialization path.
+func BenchmarkCompressAllocation(b *testing.B) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"messages":[{"role":"user","content":"c"}],"tokens_before":1,"tokens_after":1,"tokens_saved":0}`))
+	}))
+	defer srv.Close()
+
+	c := New(nil)
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		req := largeTestRequest()
+		_ = c.Compress(context.Background(), req, Config{Enabled: true, URL: srv.URL, Timeout: 2 * time.Second})
+	}
+}
+
+// BenchmarkToOpenAIMessagesMapping isolates the mapping step that used to run
+// three times per request and now runs once.
+func BenchmarkToOpenAIMessagesMapping(b *testing.B) {
+	req := largeTestRequest()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = toOpenAIMessages(req)
+	}
 }
