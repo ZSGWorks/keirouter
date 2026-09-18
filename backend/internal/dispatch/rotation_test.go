@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -161,5 +162,28 @@ func TestPlanWithConcurrentRotationNoLock(t *testing.T) {
 	defer rt.mu.Unlock()
 	if rt.chainGets != 1 {
 		t.Fatalf("chain store reads = %d; want one cache seed", rt.chainGets)
+	}
+}
+
+func TestRotationCacheLoadedStateStaysBounded(t *testing.T) {
+	rt := &countingRouting{}
+	cache := newRotationCache(rt)
+	cache.waitForPersistence()
+
+	for i := 0; i < rotationEntryMax+512; i++ {
+		cache.advance("target", fmt.Sprintf("scope-%d", i), 4, 1)
+	}
+	cache.waitForPersistence()
+
+	cache.mu.Lock()
+	n := len(cache.cursors)
+	cache.mu.Unlock()
+	if n > rotationEntryMax {
+		t.Fatalf("cursors exceeded cap: %d > %d", n, rotationEntryMax)
+	}
+
+	// An evicted key must still advance via the re-seed path.
+	if got := cache.advanceTarget("scope-0", 4, 1); got < 0 {
+		t.Fatalf("unexpected cursor %d", got)
 	}
 }

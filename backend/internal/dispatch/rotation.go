@@ -32,7 +32,6 @@ type rotationCache struct {
 	cursors  map[string]rotationCursor
 	sizes    map[string]int
 	affinity map[string]store.AccountAffinity
-	loaded   map[string]bool
 	seeding  map[string]chan struct{}
 	routing  RoutingSource
 
@@ -64,10 +63,22 @@ func newRotationCache(routing RoutingSource) *rotationCache {
 		cursors:  make(map[string]rotationCursor),
 		sizes:    make(map[string]int),
 		affinity: make(map[string]store.AccountAffinity),
-		loaded:   make(map[string]bool),
 		seeding:  make(map[string]chan struct{}),
 		routing:  routing,
 	}
+}
+
+// isLoaded reports whether the key's persisted state is already cached in
+// memory. Loaded-ness lives in the state maps themselves, so the lazy trims
+// that bound cursors/affinity also bound loaded-ness; an evicted key simply
+// re-seeds from the store on its next use.
+func (r *rotationCache) isLoaded(key rotationKey) bool {
+	if key.kind == "affinity" {
+		_, ok := r.affinity[key.key]
+		return ok
+	}
+	_, ok := r.cursors[key.id()]
+	return ok
 }
 
 // seed loads one key's persisted state without blocking unrelated rotations.
@@ -87,7 +98,7 @@ func (r *rotationCache) seed(key rotationKey) {
 func (r *rotationCache) trySeed(key rotationKey) bool {
 	id := key.id()
 	r.mu.Lock()
-	if r.loaded[id] {
+	if r.isLoaded(key) {
 		r.mu.Unlock()
 		return true
 	}
@@ -128,7 +139,7 @@ type seedResult struct {
 func (r *rotationCache) commitSeed(res seedResult, done chan struct{}) {
 	id := res.key.id()
 	r.mu.Lock()
-	if r.loaded[id] {
+	if r.isLoaded(res.key) {
 		delete(r.seeding, id)
 		close(done)
 		r.mu.Unlock()
@@ -139,7 +150,6 @@ func (r *rotationCache) commitSeed(res seedResult, done chan struct{}) {
 	} else {
 		r.cursors[id] = res.cursor
 	}
-	r.loaded[id] = true
 	delete(r.seeding, id)
 	close(done)
 	r.mu.Unlock()
@@ -212,7 +222,6 @@ func (r *rotationCache) setAffinity(state store.AccountAffinity) {
 	r.mu.Lock()
 	// Memory is now authoritative for this key; a later seed must not
 	// overwrite the fresh pin with the stale store row.
-	r.loaded["affinity/"+state.ScopeKey] = true
 	if len(r.affinity) > rotationEntryMax {
 		now := time.Now()
 		for k, v := range r.affinity {
@@ -235,7 +244,6 @@ func (r *rotationCache) setAffinity(state store.AccountAffinity) {
 // concurrently re-pinned account is not wiped.
 func (r *rotationCache) evictAffinity(scopeKey, accountID string) {
 	r.mu.Lock()
-	r.loaded["affinity/"+scopeKey] = true
 	state := r.affinity[scopeKey]
 	if state.AccountID != accountID {
 		r.mu.Unlock()
