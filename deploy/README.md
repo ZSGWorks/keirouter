@@ -121,6 +121,9 @@ Deploying KeiRouter on [Coolify](https://coolify.io/) is highly recommended as i
     # sslmode=require when the resource enforces TLS.
     KEIROUTER_DATABASE__DSN=postgres://USER:PASSWORD@HOST:5432/DB?sslmode=disable
     KEIROUTER_LOG_FORMAT=json
+    # Optional: run the bundled Headroom compression sidecar. Remove or leave
+    # empty to skip it (KeiRouter stays fail-open; saves ~1-1.5 GB RAM).
+    COMPOSE_PROFILES=headroom
     # Uncomment for password lockout recovery; see the section below.
     # KEIROUTER_RESET_PWD=true
     ```
@@ -185,6 +188,69 @@ docker compose up -d --build
 ```
 
 For the local source installer, rerun the install command.
+
+## Headroom Sidecar Resources
+
+Docker deployments run Headroom as a private sidecar
+(`ghcr.io/headroomlabs-ai/headroom`, pinned in `compose.yaml` and
+`compose.coolify-postgres.yaml`). It is not built from this repository and is
+only reachable over the internal `headroom` network; KeiRouter calls it at
+`http://headroom:8787/v1/compress`. The sidecar is fail-open, so if it is
+unreachable requests still pass through untouched.
+
+The Coolify stack loads the sidecar only when `COMPOSE_PROFILES=headroom` is set; without it KeiRouter runs on its own and compression is skipped (fail-open).
+
+The compression models ship inside the upstream image and run CPU-only via ONNX
+Runtime — no GPU, no CUDA, and no PyTorch are required. Budget roughly
+**1–1.5 GB of resident memory** for `headroom proxy` (observed ~1.0 GiB on a warm
+`0.37.0` sidecar).
+
+### Models that load
+
+| Model | Role | Size |
+|---|---|---|
+| Kompress (`chopratejas/kompress-v2-base`, a ModernBERT fine-tune) | ML prose/tool-output compression | ONNX, 261 MB weight-only int8 (default) or 601 MB fp32 fallback |
+| Magika | Content-type detection for routing | Small ONNX classifier, one-time init |
+| `BAAI/bge-small-en-v1.5` | Relevance scorer / semantic-cache embedder | ONNX int8, ~30 MB |
+
+The SigLIP image embedder, technique-router, sentence-transformer, and spaCy NER
+models belong to optional image/memory features that are off by default and are
+not part of this sidecar's steady state.
+
+### Why memory stays high
+
+The model weights and their ONNX Runtime sessions are loaded once and stay
+resident for the lifetime of the process. There is **no idle scale-down**: the
+same plateau persists between requests (measured ~1.0 GiB, essentially unchanged
+after idle and after sustained load), and `restart: unless-stopped` keeps the
+sidecar (and its memory) up. A flat, non-shrinking RSS is expected behavior, not
+a leak.
+
+The first compression also downloads the model weights into the `HF_HOME`
+directory on the persistent `headroom-data` volume, which needs outbound egress
+once. Subsequent restarts reuse the cached weights.
+
+### CPU notes and optional speed-ups
+
+- Runs on x86_64 and ARM64. On x86 hosts **without AVX2** (some VMs and
+  emulated Docker), Magika's ONNX session fails gracefully and detection falls
+  back to non-ML tiers; on AVX2-capable CPUs ONNX Runtime selects optimized
+  kernels automatically.
+- Pre-baking the model weights into a derived image or pre-seeding the
+  `headroom-data` volume makes cold start instant. It grows the image, not the
+  runtime memory.
+- ONNX Runtime's CPU arena and thread-spinning are **off by default on Linux**
+  (the arena default is Windows-only, per `headroom/onnx_runtime.py`). Both are
+  cost levers, not free wins: enabling the arena retains memory and enabling
+  spinning pegs idle CPU. They are deliberately left off here.
+- The sidecar ships a CPU-only tuning block (see `compose.yaml`): it pins the
+  `onnx` backend and the weight-only int8 artifact, sets the ONNX inter-op thread
+  count to 1, and caps the compression worker pool. Embedding BLAS/OpenMP threads
+  are already capped at 1 by Headroom itself. Override the intra-op thread count
+  with `KEIROUTER_HEADROOM_KOMPRESS_INTRA_THREADS` (empty = ONNX Runtime auto,
+  i.e. physical cores).
+- `HEADROOM_EMBEDDING_SERVER` only saves memory when running more than one worker
+  (the default is one).
 
 ## Security Notes
 

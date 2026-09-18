@@ -186,7 +186,7 @@ Every request runs through a deterministic token-saving pipeline **before** it g
 
 ### Headroom is included
 
-KeiRouter provisions the pinned Headroom runtime automatically: Docker deployments run it as a private sidecar, while supported macOS and Linux native installs manage a private local runtime. In **Settings → Token Saving → Headroom**, flip it on and use **Test connection** to confirm the bundled runtime is ready.
+KeiRouter provisions the pinned Headroom runtime automatically: Docker deployments run it as a private sidecar, while supported macOS and Linux native installs manage a private local runtime. In **Settings → Token Saving → Headroom**, flip it on and use **Test connection** to confirm the bundled runtime is ready. The sidecar runs CPU-only ONNX models and holds roughly 1–1.5 GB resident memory with no idle scale-down — see [deploy/README.md](deploy/README.md#headroom-sidecar-resources) for the model inventory and sizing notes.
 
 ---
 
