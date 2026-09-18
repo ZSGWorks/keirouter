@@ -139,40 +139,9 @@ func (s *Server) adminSQLiteRestore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := os.Rename(tmpPath, path); err != nil {
-		// On Windows an open handle on keirouter.db makes os.Rename fail with
-		// "Access is denied". Release the handle by closing the DB pool, then
-		// move the live database aside before retrying. Never delete the live
-		// file: a failed retry must be able to restore it atomically.
-		//
-		// Non-Windows failures (EACCES, EXDEV, ...) must NOT take this path:
-		// it closes the live pool and deletes the database file, so a plain
-		// 500 is the only safe outcome.
-		if runtime.GOOS == "windows" {
-			_ = s.db.Close()
-			_ = os.Remove(path + "-wal")
-			_ = os.Remove(path + "-shm")
-			rollbackPath := safetyPath + ".rollback"
-			if moveErr := os.Rename(path, rollbackPath); moveErr != nil {
-				writeError(w, http.StatusInternalServerError, "prepare database replacement failed: "+moveErr.Error()+" (original: "+err.Error()+")")
-				return
-			}
-			if err2 := os.Rename(tmpPath, path); err2 != nil {
-				if rollbackErr := os.Rename(rollbackPath, path); rollbackErr != nil {
-					writeError(w, http.StatusInternalServerError, "replace database failed: "+err2.Error()+"; rollback failed: "+rollbackErr.Error())
-					return
-				}
-				writeError(w, http.StatusInternalServerError, "replace database failed: "+err2.Error()+"; original database restored")
-				return
-			}
-			_ = os.Remove(rollbackPath)
-		} else {
-			writeError(w, http.StatusInternalServerError, "replace database failed: "+err.Error())
-			return
-		}
-	} else {
-		_ = os.Remove(path + "-wal")
-		_ = os.Remove(path + "-shm")
+	if err := s.replaceSQLiteDatabase(tmpPath, path, safetyPath); err != nil {
+		writeError(w, http.StatusInternalServerError, "replace database failed: "+err.Error())
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -180,6 +149,31 @@ func (s *Server) adminSQLiteRestore(w http.ResponseWriter, r *http.Request) {
 		"restart_required": true,
 		"safety_backup":    safetyPath,
 	})
+}
+
+func (s *Server) replaceSQLiteDatabase(tmpPath, path, safetyPath string) error {
+	if err := os.Rename(tmpPath, path); err == nil {
+		_ = os.Remove(path + "-wal")
+		_ = os.Remove(path + "-shm")
+		return nil
+	} else if runtime.GOOS != "windows" {
+		return err
+	}
+	_ = s.db.Close()
+	_ = os.Remove(path + "-wal")
+	_ = os.Remove(path + "-shm")
+	rollbackPath := safetyPath + ".rollback"
+	if err := os.Rename(path, rollbackPath); err != nil {
+		return fmt.Errorf("prepare replacement: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err == nil {
+		_ = os.Remove(rollbackPath)
+		return nil
+	} else if rollbackErr := os.Rename(rollbackPath, path); rollbackErr != nil {
+		return fmt.Errorf("install: %v; rollback: %w", err, rollbackErr)
+	} else {
+		return fmt.Errorf("install: %v; original database restored", err)
+	}
 }
 
 func (s *Server) sqliteDBPath() (string, bool) {

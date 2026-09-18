@@ -4,7 +4,7 @@ title: Fix second-round 9router SQLite import review findings
 status: In Progress
 assignee: []
 created_date: '2026-09-17 19:56'
-updated_date: '2026-09-18 06:17'
+updated_date: '2026-09-18 06:19'
 labels:
   - security
   - import
@@ -55,4 +55,6 @@ Approved plan: harden multipart order; dispatch import/deletion by selected sect
 
 <!-- SECTION:NOTES:BEGIN -->
 Implemented bounded multipart parsing, option-specific import/deletion dispatch, deterministic 9router custom-provider/model identity, rollback-safe Windows replacement, accurate usage counters, and extracted SQLite wizard UI. Focused gateway/crypto tests, frontend typecheck, and ./scripts/verify.sh passed. Code Health improved Settings.tsx but still reports complexity degradation in gateway import/restore helpers; task remains In Progress pending follow-up refactoring/review.
+
+Committed implementation as 31acc8e (fix(import): harden 9router SQLite workflow). Full ./scripts/verify.sh passed. SQLite wizard extraction lowered ForeignImportSettings complexity from 53 to 23; Code Health still flags inherited complexity in large gateway importer/restore methods, so task remains In Progress.
 <!-- SECTION:NOTES:END -->
