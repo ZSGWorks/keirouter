@@ -231,7 +231,7 @@ func (c *GitHubCopilot) Stream(ctx context.Context, req *core.ChatRequest, creds
 			default:
 			}
 
-			payload, ok := parseSSEData(scanner.Text())
+			payload, ok := parseSSEDataBytes(scanner.Bytes())
 			if !ok {
 				continue
 			}
@@ -356,7 +356,7 @@ func (c *GitHubCopilot) streamViaResponses(ctx context.Context, req *core.ChatRe
 			default:
 			}
 
-			payload, ok := parseSSEData(scanner.Text())
+			payload, ok := parseSSEDataBytes(scanner.Bytes())
 			if !ok {
 				continue
 			}

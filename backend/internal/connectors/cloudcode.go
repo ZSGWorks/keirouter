@@ -567,10 +567,10 @@ func (c *CloudCode) Stream(ctx context.Context, req *core.ChatRequest, creds cor
 			default:
 			}
 
-			line := scanner.Text()
-			payload, ok := parseSSEData(line)
+			line := scanner.Bytes()
+			payload, ok := parseSSEDataBytes(line)
 			if !ok {
-				if isSSEKeepAlive(line) {
+				if isSSEKeepAliveBytes(line) {
 					select {
 					case out <- core.StreamChunk{Type: core.ChunkPing}:
 					case <-ctx.Done():
