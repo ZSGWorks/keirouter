@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	json "github.com/mydisha/keirouter/backend/internal/fastjson"
@@ -602,16 +603,40 @@ type streamWriteError struct{ err error }
 func (e *streamWriteError) Error() string { return e.err.Error() }
 func (e *streamWriteError) Unwrap() error { return e.err }
 
+// gatewayStreamReaderPool recycles 64KB-buffered readers for direct-stream
+// copying. Each pooled reader keeps its buffer across streams; Reset swaps the
+// source without reallocating.
+var gatewayStreamReaderPool = sync.Pool{
+	New: func() any { return bufio.NewReaderSize(nil, 64*1024) },
+}
+
+// gatewayEventBufPool recycles event accumulation buffers between streams.
+var gatewayEventBufPool = sync.Pool{
+	New: func() any { return new(bytes.Buffer) },
+}
+
+// ndjsonOversizeCap bounds how much of one NDJSON line is buffered before the
+// remainder is passed through unbuffered. Sanitization of an oversized line's
+// tail is skipped by design: the cap exists so a single crafted line cannot
+// make the gateway buffer an unbounded response.
+const ndjsonOversizeCap = 1024 * 1024
+
 // copySanitizedStream keeps the direct-stream path lightweight by framing SSE
 // events without decoding successful chunks. Only potential error events are
 // decoded; those are replaced with a dialect-compatible generic event.
 func copySanitizedStream(dst io.Writer, src io.Reader, dialect core.Dialect, flush func()) (int64, error) {
-	reader := bufio.NewReaderSize(src, 64*1024)
+	reader := gatewayStreamReaderPool.Get().(*bufio.Reader)
+	reader.Reset(src)
+	defer gatewayStreamReaderPool.Put(reader)
+
 	if dialect == core.DialectOllama {
 		return copySanitizedNDJSON(dst, reader, dialect, flush)
 	}
 
-	var event bytes.Buffer
+	event := gatewayEventBufPool.Get().(*bytes.Buffer)
+	defer gatewayEventBufPool.Put(event)
+	event.Reset()
+
 	var written int64
 	for {
 		line, readErr := reader.ReadSlice('\n')
@@ -645,9 +670,14 @@ func copySanitizedStream(dst io.Writer, src io.Reader, dialect core.Dialect, flu
 
 // copySanitizedNDJSON preserves Ollama's one-JSON-object-per-line framing.
 // ReadSlice avoids allocating for normal-sized lines; a buffer is used only
-// when an unusually large object spans the reader's bounded internal buffer.
+// when an unusually large object spans the reader's bounded internal buffer,
+// and only up to ndjsonOversizeCap — beyond that the line's remainder is
+// passed through unbuffered (and unscanned for provider errors).
 func copySanitizedNDJSON(dst io.Writer, reader *bufio.Reader, dialect core.Dialect, flush func()) (int64, error) {
-	var oversized bytes.Buffer
+	oversized := gatewayEventBufPool.Get().(*bytes.Buffer)
+	defer gatewayEventBufPool.Put(oversized)
+	oversized.Reset()
+
 	var written int64
 	for {
 		fragment, readErr := reader.ReadSlice('\n')
@@ -659,10 +689,34 @@ func copySanitizedNDJSON(dst io.Writer, reader *bufio.Reader, dialect core.Diale
 					return written, err
 				}
 			}
+		} else if oversized.Len() >= ndjsonOversizeCap && !errors.Is(readErr, bufio.ErrBufferFull) {
+			// Cap reached and the line is complete: pass the final fragment
+			// through unbuffered.
+			if len(fragment) > 0 {
+				n, err := dst.Write(fragment)
+				written += int64(n)
+				if err == nil && n != len(fragment) {
+					err = io.ErrShortWrite
+				}
+				if err != nil {
+					return written, &streamWriteError{err: err}
+				}
+			}
+			oversized.Reset()
 		} else {
 			_, _ = oversized.Write(fragment)
+			if oversized.Len() >= ndjsonOversizeCap && errors.Is(readErr, bufio.ErrBufferFull) {
+				// Cap reached mid-line: flush what was buffered and stream the
+				// rest of this line through directly.
+				n, err := writeSanitizedFrame(dst, oversized.Bytes(), dialect, flush)
+				written += n
+				if err != nil {
+					return written, err
+				}
+				oversized.Reset()
+			}
 			if !errors.Is(readErr, bufio.ErrBufferFull) {
-				if len(bytes.TrimSpace(oversized.Bytes())) > 0 {
+				if oversized.Len() > 0 && len(bytes.TrimSpace(oversized.Bytes())) > 0 {
 					n, err := writeSanitizedFrame(dst, oversized.Bytes(), dialect, flush)
 					written += n
 					if err != nil {
