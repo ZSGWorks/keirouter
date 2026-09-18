@@ -732,3 +732,66 @@ func TestKiroMetadataCachesReturnCopies(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, 100, quotaAgain.Quotas[0].Limit)
 }
+
+func TestKiroSweepExpiredCaches(t *testing.T) {
+	t.Cleanup(func() {
+		kiroModelCache.Delete("acct-old")
+		kiroModelCache.Delete("acct-fresh")
+		kiroQuotaCache.Delete("acct-old-q")
+		kiroQuotaCache.Delete("acct-fresh-q")
+	})
+	storeKiroModels("acct-old", []ModelSpec{{ID: "m"}})
+	storeKiroModels("acct-fresh", []ModelSpec{{ID: "m2"}})
+	kiroModelCache.Store("acct-old", kiroModelCacheEntry{expiresAt: time.Now().Add(-time.Minute)})
+
+	kiroSweepExpiredCaches()
+
+	if _, ok := loadKiroModels("acct-old"); ok {
+		t.Fatal("expired model cache entry must be swept")
+	}
+	if _, ok := loadKiroModels("acct-fresh"); !ok {
+		t.Fatal("live model cache entry must survive")
+	}
+
+	// Quota cache sweep.
+	kiroQuotaCache.Store("acct-old-q", kiroQuotaCacheEntry{expiresAt: time.Now().Add(-time.Minute)})
+	kiroQuotaCache.Store("acct-fresh-q", kiroQuotaCacheEntry{expiresAt: time.Now().Add(time.Minute)})
+	kiroSweepExpiredCaches()
+	if _, ok := kiroQuotaCache.Load("acct-old-q"); ok {
+		t.Fatal("expired quota cache entry must be swept")
+	}
+	if _, ok := kiroQuotaCache.Load("acct-fresh-q"); !ok {
+		t.Fatal("fresh quota cache entry must survive")
+	}
+}
+
+func TestKiroSweepExpiredAccountSlots(t *testing.T) {
+	idle := &kiroSlot{ch: make(chan struct{}, 1)}
+	idle.lastUsed = time.Now().Add(-11 * time.Minute)
+	busy := &kiroSlot{ch: make(chan struct{}, 1)}
+	busy.ch <- struct{}{}
+	busy.lastUsed = time.Now().Add(-11 * time.Minute)
+	fresh := &kiroSlot{ch: make(chan struct{}, 1)}
+	fresh.lastUsed = time.Now()
+
+	t.Cleanup(func() {
+		kiroAccountSlots.Delete("idle")
+		kiroAccountSlots.Delete("busy")
+		kiroAccountSlots.Delete("fresh")
+	})
+	kiroAccountSlots.Store("idle", idle)
+	kiroAccountSlots.Store("busy", busy)
+	kiroAccountSlots.Store("fresh", fresh)
+
+	kiroSweepExpiredCaches()
+
+	if _, ok := kiroAccountSlots.Load("idle"); ok {
+		t.Fatal("idle slot must be swept")
+	}
+	if _, ok := kiroAccountSlots.Load("busy"); !ok {
+		t.Fatal("slot with in-flight request must survive")
+	}
+	if _, ok := kiroAccountSlots.Load("fresh"); !ok {
+		t.Fatal("recently used slot must survive")
+	}
+}
