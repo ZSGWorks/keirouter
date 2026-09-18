@@ -69,10 +69,51 @@ type kiroQuotaCacheEntry struct {
 }
 
 var (
-	kiroAccountSlots sync.Map
-	kiroModelCache   sync.Map
-	kiroQuotaCache   sync.Map
+	kiroAccountSlots   sync.Map
+	kiroAccountSlotsMu sync.Mutex
+	kiroModelCache     sync.Map
+	kiroQuotaCache     sync.Map
 )
+
+// kiroSlotIdleAfter evicts account slots with no in-flight request that have
+// not been acquired for this long, so removed or idle accounts do not keep a
+// channel per account alive forever.
+const kiroSlotIdleAfter = 10 * time.Minute
+
+// kiroSlot is the per-account single-flight slot plus its last-acquisition
+// timestamp for the idle sweep.
+type kiroSlot struct {
+	ch       chan struct{}
+	lastUsed time.Time
+}
+
+// kiroSweepExpiredCaches drops expired model and quota entries so caches
+// track live accounts only, and idle account slots that hold no in-flight
+// request. Called on cache stores; sweeps are cheap at Kiro's entry counts.
+func kiroSweepExpiredCaches() {
+	now := time.Now()
+	kiroModelCache.Range(func(key, value any) bool {
+		if now.After(value.(kiroModelCacheEntry).expiresAt) {
+			kiroModelCache.Delete(key)
+		}
+		return true
+	})
+	kiroQuotaCache.Range(func(key, value any) bool {
+		if now.After(value.(kiroQuotaCacheEntry).expiresAt) {
+			kiroQuotaCache.Delete(key)
+		}
+		return true
+	})
+	kiroAccountSlotsMu.Lock()
+	defer kiroAccountSlotsMu.Unlock()
+	kiroAccountSlots.Range(func(key, value any) bool {
+		slot := value.(*kiroSlot)
+		if len(slot.ch) == 0 && now.Sub(slot.lastUsed) > kiroSlotIdleAfter {
+			kiroAccountSlots.Delete(key)
+		}
+		return true
+	})
+}
 
 // NewKiro builds a Kiro connector.
 func NewKiro(id, defaultBaseURL string) *Kiro {
@@ -286,13 +327,17 @@ func (c *Kiro) acquireAccountSlot(ctx context.Context, creds core.Credentials, m
 	default:
 	}
 
-	value, _ := kiroAccountSlots.LoadOrStore(creds.AccountID, make(chan struct{}, 1))
-	slot := value.(chan struct{})
+	kiroAccountSlotsMu.Lock()
+	value, _ := kiroAccountSlots.LoadOrStore(creds.AccountID, &kiroSlot{ch: make(chan struct{}, 1)})
+	slot := value.(*kiroSlot)
+	slot.lastUsed = time.Now()
 	select {
-	case slot <- struct{}{}:
+	case slot.ch <- struct{}{}:
+		kiroAccountSlotsMu.Unlock()
 		var once sync.Once
-		return func() { once.Do(func() { <-slot }) }, nil
+		return func() { once.Do(func() { <-slot.ch }) }, nil
 	default:
+		kiroAccountSlotsMu.Unlock()
 		return nil, &core.ProviderError{
 			Kind:       core.ErrRateLimit,
 			Provider:   c.id,
@@ -486,6 +531,7 @@ func storeKiroModels(accountID string, models []ModelSpec) {
 	if accountID == "" {
 		return
 	}
+	kiroSweepExpiredCaches()
 	kiroModelCache.Store(accountID, kiroModelCacheEntry{
 		expiresAt: time.Now().Add(kiroModelCacheTTL),
 		models:    append([]ModelSpec(nil), models...),
@@ -648,6 +694,7 @@ func (c *Kiro) cacheKiroQuota(accountID string, body []byte) (*QuotaResult, erro
 	if err != nil || accountID == "" {
 		return quota, err
 	}
+	kiroSweepExpiredCaches()
 	kiroQuotaCache.Store(accountID, kiroQuotaCacheEntry{
 		expiresAt: time.Now().Add(kiroQuotaCacheTTL),
 		quota:     cloneKiroQuota(quota),
@@ -1427,9 +1474,16 @@ func (p *eventStreamParser) next() (*eventStreamFrame, error) {
 	return decodeEventStreamFrame(frame)
 }
 
+// kiroFillBufPool recycles the 32KB scratch buffers fill() uses to read from
+// the eventstream, avoiding a fresh allocation on every fill call.
+var kiroFillBufPool = sync.Pool{
+	New: func() any { return make([]byte, 32*1024) },
+}
+
 // fill reads more bytes into the buffer.
 func (p *eventStreamParser) fill() error {
-	tmp := make([]byte, 32*1024)
+	tmp := kiroFillBufPool.Get().([]byte)
+	defer kiroFillBufPool.Put(tmp)
 	n, err := p.r.Read(tmp)
 	if n > 0 {
 		p.buf = append(p.buf, tmp[:n]...)
