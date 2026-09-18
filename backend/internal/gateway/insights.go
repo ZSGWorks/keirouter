@@ -55,7 +55,7 @@ func sinceForPeriod(period, tz string) time.Time {
 func (s *Server) adminUsageInsightsLegacy(w http.ResponseWriter, r *http.Request) {
 	period := r.URL.Query().Get("period")
 	tz := r.URL.Query().Get("tz")
-	cacheKey := "insights|" + period + "|" + tz
+	cacheKey := canonicalInsightsKey("insights", period, tz)
 	if s.cacheHit(w, cacheKey) {
 		return
 	}
@@ -295,7 +295,7 @@ func blendedInputRate(sum store.Summary) float64 {
 func (s *Server) adminModelUsage(w http.ResponseWriter, r *http.Request) {
 	period := r.URL.Query().Get("period")
 	tz := r.URL.Query().Get("tz")
-	cacheKey := "models|" + period + "|" + tz
+	cacheKey := canonicalInsightsKey("models", period, tz)
 	if s.cacheHit(w, cacheKey) {
 		return
 	}

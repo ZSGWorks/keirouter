@@ -19,7 +19,7 @@ const usageTimelineBuckets = 24
 func (s *Server) adminUsageInsights(w http.ResponseWriter, r *http.Request) {
 	period := r.URL.Query().Get("period")
 	tz := r.URL.Query().Get("tz")
-	cacheKey := "insights-v2|" + period + "|" + tz
+	cacheKey := canonicalInsightsKey("insights-v2", period, tz)
 	if s.cacheHit(w, cacheKey) {
 		return
 	}
@@ -285,7 +285,7 @@ func (s *Server) adminUsageInsights(w http.ResponseWriter, r *http.Request) {
 func (s *Server) adminModelUsageAccurate(w http.ResponseWriter, r *http.Request) {
 	period := r.URL.Query().Get("period")
 	tz := r.URL.Query().Get("tz")
-	cacheKey := "models-v2|" + period + "|" + tz
+	cacheKey := canonicalInsightsKey("models-v2", period, tz)
 	if s.cacheHit(w, cacheKey) {
 		return
 	}
