@@ -204,7 +204,7 @@ func (c *Anthropic) Stream(ctx context.Context, req *core.ChatRequest, creds cor
 			default:
 			}
 
-			payload, ok := parseSSEData(scanner.Text())
+			payload, ok := parseSSEDataBytes(scanner.Bytes())
 			if !ok {
 				continue
 			}

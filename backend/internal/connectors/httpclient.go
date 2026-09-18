@@ -525,7 +525,7 @@ func scanOpenAISSE(ctx context.Context, provider, model string, resp *http.Respo
 			default:
 			}
 
-			payload, ok := parseSSEData(scanner.Text())
+			payload, ok := parseSSEDataBytes(scanner.Bytes())
 			if !ok {
 				continue
 			}
@@ -581,35 +581,62 @@ var sseBufPool = sync.Pool{
 	New: func() any { return make([]byte, 0, 64*1024) },
 }
 
+// sseBufMaxRetain caps the size of buffers the pool keeps. Buffers larger
+// than the 2MB scanner maximum cannot exist; everything up to that cap is
+// retained so large-frame streams do not re-allocate multi-megabyte buffers
+// per stream.
+const sseBufMaxRetain = 2 * 1024 * 1024
+
 func sseScanner(r io.Reader) (*bufio.Scanner, func()) {
 	sc := bufio.NewScanner(r)
 	buf := sseBufPool.Get().([]byte)
 	sc.Buffer(buf[:0], 2*1024*1024)
 	return sc, func() {
-		// Scanner.Text() copies line contents, so the buffer is reusable once
-		// scanning finishes. Drop grown buffers so the pool stays 64 KiB-sized.
-		if cap(buf) > 64*1024 {
-			return
+		// Scanner.Bytes() copies nothing: the token aliases the scanner's
+		// internal buffer. Its capacity extends from the token start to the
+		// end of that backing array, so cap(tok) > cap(buf) identifies a
+		// scanner growth (bufio allocates a fresh backing on overflow and the
+		// original buffer stays intact and puttable).
+		tok := sc.Bytes()
+		grown := cap(tok) > cap(buf)
+		if grown && cap(tok) <= sseBufMaxRetain {
+			sseBufPool.Put(tok[:cap(tok)])
 		}
-		sseBufPool.Put(buf)
+		if !grown {
+			sseBufPool.Put(buf)
+		}
 	}
 }
 
-// parseSSEData extracts the payload from an SSE "data:" line, or returns ("",
-// false) for non-data lines (comments, event:, blank).
-func parseSSEData(line string) (string, bool) {
-	line = strings.TrimRight(line, "\r")
-	if !strings.HasPrefix(line, "data:") {
+// parseSSEDataBytes extracts the payload from an SSE "data:" line given as the
+// scanner's raw bytes, avoiding the Scanner.Text() copy. The returned string
+// is the single copy handed to the codec; call sites must finish parsing it
+// before the next Scan.
+func parseSSEDataBytes(line []byte) (string, bool) {
+	line = bytes.TrimRight(line, "\r")
+	if !bytes.HasPrefix(line, []byte("data:")) {
 		return "", false
 	}
-	return strings.TrimSpace(strings.TrimPrefix(line, "data:")), true
+	return strings.TrimSpace(string(bytes.TrimPrefix(line, []byte("data:")))), true
+}
+
+// parseSSEData is the string variant of parseSSEDataBytes for callers that
+// already hold the line as a string.
+func parseSSEData(line string) (string, bool) {
+	return parseSSEDataBytes([]byte(line))
 }
 
 // isSSEKeepAlive reports whether a non-data SSE line is an explicit comment
 // heartbeat. Connectors can translate it to ChunkPing so the pipeline's stall
 // detector observes that the upstream connection is still active.
 func isSSEKeepAlive(line string) bool {
-	return strings.HasPrefix(strings.TrimSpace(line), ":")
+	return isSSEKeepAliveBytes([]byte(line))
+}
+
+// isSSEKeepAliveBytes is the byte-slice variant of isSSEKeepAlive, avoiding a
+// copy for scanner-fed lines.
+func isSSEKeepAliveBytes(line []byte) bool {
+	return bytes.HasPrefix(bytes.TrimSpace(line), []byte(":"))
 }
 
 // transportError classifies a transport-level failure (DNS, connection, ctx).

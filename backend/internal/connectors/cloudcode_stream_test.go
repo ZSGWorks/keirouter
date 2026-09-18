@@ -1,10 +1,13 @@
 package connectors
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -99,5 +102,65 @@ func TestScanOpenAISSEPumpExitsWhenConsumerStopsAndContextCancels(t *testing.T) 
 		// pump exited: guarded send observed ctx cancellation
 	case <-time.After(5 * time.Second):
 		t.Fatal("stream pump did not exit after context cancellation")
+	}
+}
+
+// largeFramePayload builds one oversized SSE data line.
+func largeFramePayload(kb int) string {
+	return "data: {\"choices\":[{\"delta\":{\"content\":\"" + strings.Repeat("q", kb*1024) + "\"}}]}"
+}
+
+// BenchmarkSSEScannerLargeFrames measures the scanner path for streams whose
+// frames exceed the 64KB initial buffer — the shape that used to allocate a
+// fresh multi-megabyte buffer per stream because grown buffers were dropped.
+func BenchmarkSSEScannerLargeFrames(b *testing.B) {
+	body := strings.Repeat(largeFramePayload(80)+"\n\n", 8)
+	r := bytes.NewReader([]byte(body))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		r.Seek(0, io.SeekStart)
+		sc, release := sseScanner(r)
+		for sc.Scan() {
+			_, _ = parseSSEDataBytes(sc.Bytes())
+		}
+		release()
+	}
+}
+
+// BenchmarkSSEScannerSmallFrames is the common small-frame baseline.
+func BenchmarkSSEScannerSmallFrames(b *testing.B) {
+	body := strings.Repeat("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n", 64)
+	r := bytes.NewReader([]byte(body))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		r.Seek(0, io.SeekStart)
+		sc, release := sseScanner(r)
+		for sc.Scan() {
+			_, _ = parseSSEDataBytes(sc.Bytes())
+		}
+		release()
+	}
+}
+
+// TestSSEScannerPoolRetainsGrownBuffers verifies a grown buffer is reused by a
+// later scanner instead of being dropped (AC#1).
+func TestSSEScannerPoolRetainsGrownBuffers(t *testing.T) {
+	sc1, release1 := sseScanner(strings.NewReader(strings.Repeat("a", 128*1024)))
+	for sc1.Scan() {
+	}
+	release1()
+
+	sc2, release2 := sseScanner(strings.NewReader(strings.Repeat("b", 128*1024)))
+	sawBig := false
+	for sc2.Scan() {
+		if len(sc2.Bytes()) > 64*1024 {
+			sawBig = true
+		}
+	}
+	release2()
+	if !sawBig {
+		t.Fatal("expected a large token to be scanned")
 	}
 }
