@@ -654,7 +654,7 @@ func (s *Service) collectSnapshotWrites(now time.Time, flushAll bool) []snapshot
 	windowStart := now.Add(-s.cfg.RollingWindow).Truncate(time.Minute)
 	historyStart := now.Add(-s.cfg.MaxHistoryWindow).Truncate(time.Minute)
 	var toWrite []snapshotWrite
-	for _, ks := range s.states {
+	for key, ks := range s.states {
 		for m, b := range ks.buckets {
 			completed := m < currentMinute || flushAll
 			if completed && b.revision != b.snapshottedRevision {
@@ -672,19 +672,29 @@ func (s *Service) collectSnapshotWrites(now time.Time, flushAll bool) []snapshot
 				}
 			}
 		}
+		if len(ks.buckets) == 0 {
+			// Everything this key saw is outside the history window and was
+			// snapshotted before its buckets were dropped, so the in-memory
+			// state can go; a future event recreates it fresh.
+			delete(s.states, key)
+		}
 	}
 	s.pruneChainBuckets(historyStart)
 	return toWrite
 }
 
 // pruneChainBuckets drops counter-only chain buckets past the retained history
-// window so chain memory stays bounded. Caller holds s.mu.
+// window, then removes chains left without any retained bucket so chain
+// memory stays bounded. Caller holds s.mu.
 func (s *Service) pruneChainBuckets(historyStart time.Time) {
-	for _, cs := range s.chains {
+	for id, cs := range s.chains {
 		for m, cb := range cs.buckets {
 			if cb.minute.Before(historyStart) {
 				delete(cs.buckets, m)
 			}
+		}
+		if len(cs.buckets) == 0 {
+			delete(s.chains, id)
 		}
 	}
 }
