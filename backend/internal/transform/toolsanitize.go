@@ -34,6 +34,14 @@ type toolBuffer struct {
 	// snapshot-style argument retransmissions (some providers re-send the full
 	// accumulated arguments on every chunk instead of just the new delta).
 	argsLen int
+	// completeValid/complete cache whether the accumulated buffer is a
+	// complete JSON object, so snapshot detection does not re-parse the whole
+	// buffer on every streamed fragment. completeValid is set right after a
+	// replace (the buffer equals the fragment, whose completeness was just
+	// computed) and invalidated by an append, which may leave the buffer
+	// mid-object.
+	completeValid bool
+	complete      bool
 }
 
 // NewToolArgSanitizer creates a new sanitizer.
@@ -120,18 +128,37 @@ func appendToolArgs(buf *toolBuffer, fragment string) {
 	if existing == "" {
 		buf.args.WriteString(fragment)
 		buf.argsLen = len(fragment)
+		buf.completeValid = true
+		buf.complete = isCompleteJSONObject(fragment)
 		return
 	}
-	if strings.HasPrefix(fragment, existing) ||
-		(isCompleteJSONObject(existing) && isCompleteJSONObject(fragment)) {
+	fragComplete := isCompleteJSONObject(fragment)
+	if strings.HasPrefix(fragment, existing) || (buf.bufferComplete() && fragComplete) {
 		buf.args.Reset()
 		buf.args.WriteString(fragment)
 		buf.argsLen = len(fragment)
+		// The buffer now equals the fragment, whose completeness we know.
+		buf.completeValid = true
+		buf.complete = fragComplete
 		return
 	}
-	// True incremental delta: append verbatim.
+	// True incremental delta: append verbatim. The accumulated buffer may
+	// now be mid-object; drop the cached completeness rather than re-parsing.
+	buf.completeValid = false
 	buf.args.WriteString(fragment)
 	buf.argsLen += len(fragment)
+}
+
+// bufferComplete reports whether the accumulated buffer is a complete JSON
+// object, computing and memoizing the answer when the cache is stale. Caller
+// paths only reach the parse when a fragment is itself a complete object and
+// the buffer has grown by appends — rare outside snapshot streams.
+func (buf *toolBuffer) bufferComplete() bool {
+	if !buf.completeValid {
+		buf.complete = isCompleteJSONObject(buf.args.String())
+		buf.completeValid = true
+	}
+	return buf.complete
 }
 
 // isCompleteJSONObject reports whether the fragment is a standalone, complete

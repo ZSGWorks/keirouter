@@ -2,6 +2,7 @@ package transform
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -455,5 +456,91 @@ func TestToolArgSanitizer_DuplicateChunkFinishDoesNotDoubleEmit(t *testing.T) {
 	}
 	if toolCalls != 1 {
 		t.Fatalf("duplicate finish caused double-emission: expected 1 tool call, got %d", toolCalls)
+	}
+}
+
+// TestAppendToolArgs_SnapshotVsDeltaEquivalence pins the snapshot/incremental
+// detection semantics so the memoized-completeness optimization keeps the
+// original classification for every shape.
+func TestAppendToolArgs_SnapshotVsDeltaEquivalence(t *testing.T) {
+	cases := []struct {
+		name      string
+		fragments []string
+		want      string
+	}{
+		{name: "deltas concatenate", fragments: []string{`{"a":`, `1,`, `"b":2}`}, want: `{"a":1,"b":2}`},
+		{name: "snapshot retransmission replaces", fragments: []string{`{"a":1}`, `{"a":1,"b":2}`}, want: `{"a":1,"b":2}`},
+		{name: "correcting snapshot replaces", fragments: []string{`{"a":1}`, `{"a":2}`}, want: `{"a":2}`},
+		{name: "prefix snapshot replaces", fragments: []string{`{"a":1}`, `{"a":1}`}, want: `{"a":1}`},
+		{name: "empty brace skipped", fragments: []string{`{"a":1}`, `{}`, `{"a":1}`}, want: `{"a":1}`},
+		{name: "repeated prefix fragment replaces then appends", fragments: []string{`{"a":`, `{"a":`, `1}`}, want: `{"a":1}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			buf := &toolBuffer{}
+			for _, f := range tc.fragments {
+				appendToolArgs(buf, f)
+			}
+			if got := buf.args.String(); got != tc.want {
+				t.Fatalf("buffered args = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+// benchmarkAppendStream feeds the sanitizer a stream of k fragments.
+func benchmarkAppendStream(b *testing.B, makeFrag func(i, k int) string) {
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		const k = 512
+		buf := &toolBuffer{}
+		for j := 0; j < k; j++ {
+			appendToolArgs(buf, makeFrag(j, k))
+		}
+	}
+}
+
+// BenchmarkAppendToolArgsSnapshot measures a snapshot-style stream where every
+// fragment re-sends the full accumulated object (previously O(N^2) parsing).
+func BenchmarkAppendToolArgsSnapshot(b *testing.B) {
+	benchmarkAppendStream(b, func(i, k int) string {
+		pairs := make([]string, 0, i+1)
+		for n := 0; n <= i; n++ {
+			pairs = append(pairs, fmt.Sprintf(`"k%d":%d`, n, n))
+		}
+		return "{" + strings.Join(pairs, ",") + "}"
+	})
+}
+
+// BenchmarkAppendToolArgsDelta measures a pure incremental delta stream
+// (the linear common case).
+func BenchmarkAppendToolArgsDelta(b *testing.B) {
+	benchmarkAppendStream(b, func(i, _ int) string {
+		return fmt.Sprintf(`"k%d":%d,`, i, i)
+	})
+}
+
+// reorderedSnapshotFrag builds a complete object whose keys rotate per
+// fragment: full snapshots that never prefix-extend (exercises the
+// both-complete-objects replace path).
+func reorderedSnapshotFrag(rot, j int) string {
+	pairs := make([]string, 0, j+1)
+	for n := 0; n <= j; n++ {
+		pairs = append(pairs, fmt.Sprintf("k%d:%d", (n+rot)%(j+1), n))
+	}
+	return "{" + strings.Join(pairs, ",") + "}"
+}
+
+// BenchmarkAppendToolArgsReorderedSnapshot covers the non-prefix snapshot
+// shape; the memoized completeness check avoids re-parsing the accumulated
+// buffer here.
+func BenchmarkAppendToolArgsReorderedSnapshot(b *testing.B) {
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		const k = 512
+		buf := &toolBuffer{}
+		for j := 0; j < k; j++ {
+			appendToolArgs(buf, reorderedSnapshotFrag(j, j))
+		}
 	}
 }
