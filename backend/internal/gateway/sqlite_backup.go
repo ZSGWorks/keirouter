@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -138,19 +139,41 @@ func (s *Server) adminSQLiteRestore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := os.Rename(tmpPath, path); err != nil {
+	if err := s.replaceSQLiteDatabase(tmpPath, path, safetyPath); err != nil {
 		writeError(w, http.StatusInternalServerError, "replace database failed: "+err.Error())
 		return
 	}
-
-	_ = os.Remove(path + "-wal")
-	_ = os.Remove(path + "-shm")
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":               true,
 		"restart_required": true,
 		"safety_backup":    safetyPath,
 	})
+}
+
+func (s *Server) replaceSQLiteDatabase(tmpPath, path, safetyPath string) error {
+	if err := os.Rename(tmpPath, path); err == nil {
+		_ = os.Remove(path + "-wal")
+		_ = os.Remove(path + "-shm")
+		return nil
+	} else if runtime.GOOS != "windows" {
+		return err
+	}
+	_ = s.db.Close()
+	_ = os.Remove(path + "-wal")
+	_ = os.Remove(path + "-shm")
+	rollbackPath := safetyPath + ".rollback"
+	if err := os.Rename(path, rollbackPath); err != nil {
+		return fmt.Errorf("prepare replacement: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err == nil {
+		_ = os.Remove(rollbackPath)
+		return nil
+	} else if rollbackErr := os.Rename(rollbackPath, path); rollbackErr != nil {
+		return fmt.Errorf("install: %v; rollback: %w", err, rollbackErr)
+	} else {
+		return fmt.Errorf("install: %v; original database restored", err)
+	}
 }
 
 func (s *Server) sqliteDBPath() (string, bool) {

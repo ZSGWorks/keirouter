@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import { api, type EndpointSettings, type BrandingSettings, type HeadroomTestResult, type ForeignImportResult } from "../lib/api";
 import { ChangelogMarkdown } from "../components/ChangelogMarkdown";
+import { N9routerSQLiteImport } from "../components/N9routerSQLiteImport";
 import { PALETTES, getPaletteScales } from "../lib/palettes";
 import { applyShadeScale, generateShades } from "../lib/color-utils";
 import { PageHeader } from "../components/Layout";
@@ -1270,6 +1271,9 @@ function ForeignImportSettings() {
             onChange={handleOmniFile}
           />
         </div>
+
+        {/* 9router SQLite direct import */}
+        <N9routerSQLiteImport loading={loading} setLoading={setLoading} setError={setError} setResult={setResult} />
       </div>
 
       {error && (

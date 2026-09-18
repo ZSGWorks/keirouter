@@ -44,6 +44,7 @@ type foreignImportResult struct {
 	Chains          int      `json:"chains"`
 	Aliases         int      `json:"aliases"`
 	ProxyPools      int      `json:"proxy_pools"`
+	UsageRecords    int      `json:"usage_records,omitempty"`
 	Errors          []string `json:"errors,omitempty"`
 }
 
@@ -230,15 +231,12 @@ func (s *Server) importN9routerNodes(ctx context.Context, doc map[string]json.Ra
 		if name == "" {
 			name = n.ID
 		}
-		id := uniqueCustomProviderID(prefix, name, func(candidate string) bool {
-			if _, exists := connectors.SpecByID(candidate); exists {
-				return true
-			}
-			if _, dup := s.db.CustomProviders().GetProvider(ctx, candidate); dup == nil {
-				return true
-			}
-			return false
-		})
+		id := prefix + "n9-" + slugify(n.ID)
+		if existing, err := s.db.CustomProviders().GetProvider(ctx, id); err == nil {
+			nodeIDMap[n.ID] = existing.ID
+			res.Skipped++
+			continue
+		}
 
 		alias := n.Prefix
 		if a, aerr := resolveCustomAlias(alias, name, id); aerr == nil {
@@ -385,7 +383,11 @@ func (s *Server) importN9routerConnections(ctx context.Context, doc map[string]j
 
 		now := time.Now()
 		acc := store.Account{
-			ID:        uuid.NewString(),
+			// Deterministic id: re-imports that already imported this connection
+			// hit the PK and are counted as Skipped (merge semantics), and
+			// usage_records.account_id (carrying the raw 9router connectionId)
+			// resolves to this row.
+			ID:        n9IDPrefix + c.ID,
 			TenantID:  adminTenant,
 			Provider:  provider,
 			Label:     label,
@@ -488,7 +490,7 @@ func (s *Server) importN9routerAPIKeys(ctx context.Context, doc map[string]json.
 			continue
 		}
 		rec := store.APIKey{
-			ID:         uuid.NewString(),
+			ID:         n9IDPrefix + k.ID,
 			TenantID:   adminTenant,
 			Name:       name,
 			KeyHash:    hash,
@@ -550,7 +552,7 @@ func (s *Server) importN9routerCombos(ctx context.Context, doc map[string]json.R
 		strategy := mapN9routerStrategy(c.Kind, c.Strategy)
 		now := time.Now()
 		chain := store.Chain{
-			ID:        uuid.NewString(),
+			ID:        n9IDPrefix + c.ID,
 			TenantID:  adminTenant,
 			Name:      name,
 			Strategy:  strategy,
@@ -616,6 +618,7 @@ func (s *Server) importN9routerProxyPools(ctx context.Context, doc map[string]js
 		return
 	}
 	var pools []struct {
+		ID       string `json:"id"`
 		Name     string `json:"name"`
 		ProxyURL string `json:"proxyUrl"`
 		NoProxy  string `json:"noProxy"`
@@ -632,9 +635,12 @@ func (s *Server) importN9routerProxyPools(ctx context.Context, doc map[string]js
 			res.Skipped++
 			continue
 		}
+		if p.ID == "" {
+			p.ID = uuid.NewString()
+		}
 		now := time.Now()
 		pool := store.ProxyPool{
-			ID:         uuid.NewString(),
+			ID:         n9IDPrefix + p.ID,
 			Name:       p.Name,
 			Type:       defaultStr(p.Type, "http"),
 			ProxyURL:   p.ProxyURL,
@@ -718,13 +724,13 @@ func (s *Server) importN9routerCustomModels(ctx context.Context, doc map[string]
 			name = m.ID
 		}
 		cm := store.CustomModel{
-			ID:          uuid.NewString(),
+			ID:          n9IDPrefix + slugify(m.ProviderAlias) + ":" + slugify(m.ID),
 			TenantID:    adminTenant,
 			ProviderID:  providerID,
 			ModelID:     m.ID,
 			DisplayName: name,
 			Kind:        kind,
-			Source:      "imported",
+			Source:      "9router",
 			CreatedAt:   time.Now(),
 			UpdatedAt:   time.Now(),
 		}

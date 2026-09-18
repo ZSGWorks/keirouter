@@ -7,8 +7,14 @@ func HashPassword(plaintext string) (string, error) {
 	return HashAPIKey(plaintext)
 }
 
-// VerifyPassword reports whether plaintext matches the stored argon2id hash via
-// a constant-time comparison.
+// VerifyPassword reports whether plaintext matches the stored hash. It detects
+// the hash format: argon2id PHC strings are verified via argon2; bcrypt hashes
+// ($2a$/$2b$) are verified via bcrypt.CompareHashAndPassword for backward
+// compatibility with 9router/foreign imports. The caller can re-hash a
+// bcrypt match by calling HashPassword + persisting the new argon2id hash.
 func VerifyPassword(plaintext, encodedHash string) (bool, error) {
+	if IsLegacyBcrypt(encodedHash) {
+		return verifyBcrypt(plaintext, encodedHash)
+	}
 	return VerifyAPIKey(plaintext, encodedHash)
 }
