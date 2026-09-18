@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"strings"
 	"time"
@@ -535,7 +536,14 @@ func gunzip(data []byte) ([]byte, error) {
 		return nil, err
 	}
 	defer r.Close()
-	return io.ReadAll(r)
+	out, err := io.ReadAll(io.LimitReader(r, maxCursorInflatedBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(out) > maxCursorInflatedBytes {
+		return nil, fmt.Errorf("gunzip output exceeds %d bytes", maxCursorInflatedBytes)
+	}
+	return out, nil
 }
 
 func nowISO() string {
