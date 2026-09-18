@@ -108,11 +108,14 @@ func (c *Compressor) Compress(ctx context.Context, req *core.ChatRequest, cfg Co
 		return &Stats{}
 	}
 
-	// Capture the outbound JSON size before the call so phantom-savings can be
-	// judged against the real payload, not the proxy's token claim.
-	bytesBefore := jsonBytes(toOpenAIMessages(req))
+	// Map the request to the OpenAI shape once and reuse it: the same slice
+	// feeds the bytesBefore measurement and the POST body. This avoids
+	// re-materializing and re-serializing the full message set three times
+	// per request.
+	mapped := toOpenAIMessages(req)
+	bytesBefore := jsonBytes(mapped)
 
-	resp, attempts, err := c.callCompress(ctx, req, cfg)
+	resp, attempts, err := c.callCompress(ctx, req, mapped, cfg)
 	if err != nil {
 		c.logFailOpen(cfg.URL, attempts, err)
 		return &Stats{}
@@ -123,9 +126,9 @@ func (c *Compressor) Compress(ctx context.Context, req *core.ChatRequest, cfg Co
 	}
 
 	// Success: replace the request messages with the compressed mapping and
-	// measure the resulting payload size.
+	// measure the resulting payload size (the mapped compressed messages).
 	req.Messages = fromOpenAIMessages(resp.Messages)
-	bytesAfter := jsonBytes(toOpenAIMessages(req))
+	bytesAfter := jsonBytes(resp.Messages)
 
 	stats := Stats{
 		BytesBefore: bytesBefore,
@@ -185,9 +188,9 @@ const retryBackoff = 250 * time.Millisecond
 // of attempts made. It returns an error for any non-success condition so the
 // caller can fail open; transient statuses (and transport errors) are retried
 // within the same deadline before giving up.
-func (c *Compressor) callCompress(ctx context.Context, req *core.ChatRequest, cfg Config) (*compressResponse, int, error) {
+func (c *Compressor) callCompress(ctx context.Context, req *core.ChatRequest, mapped []openAIMessage, cfg Config) (*compressResponse, int, error) {
 	body := compressRequest{
-		Messages: toOpenAIMessages(req),
+		Messages: mapped,
 		Model:    req.Model,
 	}
 	if cfg.CompressUserMessages {
