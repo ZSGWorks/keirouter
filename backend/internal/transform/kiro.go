@@ -1,6 +1,7 @@
 package transform
 
 import (
+	"bytes"
 	"container/list"
 	"crypto/sha256"
 	"fmt"
@@ -451,10 +452,11 @@ func buildKiroHistory(req *core.ChatRequest, upstream string) ([]map[string]any,
 					// CodeWhisperer requires a non-null object for input and a
 					// validator-safe tool name; a null input or an out-of-spec
 					// name returns "Improperly formed request" (HTTP 400).
-					input := rawToAny(p.ToolCall.Arguments)
-					if input == nil {
-						input = map[string]any{}
-					}
+					// Pass the raw arguments through as JSON instead of
+					// unmarshal→map→marshal boxing; CodeWhisperer accepts any
+					// JSON object, so byte-preserving passthrough is equivalent
+					// and skips a decode/encode of every tool input.
+					input := kiroToolInput(p.ToolCall.Arguments)
 					toolUses = append(toolUses, map[string]any{
 						"toolUseId": firstNonEmptyStr(p.ToolCall.ID, uuid.NewString()),
 						"name":      kiroToolUseName(p.ToolCall.Name, toolNames),
@@ -931,6 +933,17 @@ func mimeToFormat(mime string) string {
 		return "png"
 	}
 	return mime
+}
+
+// kiroToolInput passes tool arguments through as raw JSON when they are a
+// valid object and falls back to an empty object otherwise, matching what the
+// previous decode/encode path produced while skipping the boxing.
+func kiroToolInput(raw json.RawMessage) any {
+	t := bytes.TrimSpace(raw)
+	if len(t) > 0 && t[0] == '{' && json.Valid(t) {
+		return json.RawMessage(raw)
+	}
+	return map[string]any{}
 }
 
 func rawToAny(raw json.RawMessage) any {

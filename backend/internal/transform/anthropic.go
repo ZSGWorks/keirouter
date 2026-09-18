@@ -443,12 +443,9 @@ func normalizeAntToolInputRaw(raw json.RawMessage) json.RawMessage {
 }
 
 func normalizeAntToolInputValue(raw json.RawMessage) any {
-	raw = normalizeAntToolInputRaw(raw)
-	var input map[string]any
-	if err := json.Unmarshal(raw, &input); err != nil {
-		return map[string]any{}
-	}
-	return input
+	// normalizeAntToolInputRaw guarantees a valid JSON object (or `{}`), so
+	// pass it through verbatim instead of unmarshal→map→marshal boxing.
+	return normalizeAntToolInputRaw(raw)
 }
 
 func antToolInputIsObject(raw json.RawMessage) bool {
