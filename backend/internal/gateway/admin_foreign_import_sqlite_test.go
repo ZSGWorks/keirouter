@@ -90,7 +90,7 @@ func TestImport9routerSettingsIgnoresHeadroomURL(t *testing.T) {
 		"settings": []byte(`[{"data":{"headroomEnabled":true,"headroomUrl":"https://legacy.example","headroomCodeAware":true}}]`),
 	}
 	res := &foreignImportResult{}
-	s.import9routerSettings(context.Background(), doc, res, false)
+	s.import9routerSettings(context.Background(), doc, res, true, false)
 	require.Empty(t, res.Errors)
 
 	es := s.loadEndpointSettings(context.Background())
@@ -120,7 +120,7 @@ func TestDelete9routerRowsOverwritePreservesSettings(t *testing.T) {
 		require.NoError(t, err, "overwrite mode must preserve %s", key)
 	}
 
-	wipe := n9routerImportOptions{Settings: true, Mode: "wipe"}
+	wipe := n9routerImportOptions{Settings: true, Password: true, Mode: "wipe"}
 	s.delete9routerRows(ctx, wipe, &foreignImportResult{})
 
 	for _, key := range []string{endpointSettingsKey, "auth.password_hash", providerRoutingPrefix + "openai"} {
@@ -150,7 +150,8 @@ func TestImport9routerUsageMergeSkipsExisting(t *testing.T) {
 	res = &foreignImportResult{}
 	s.import9routerUsageHistory(ctx, doc, res, n9routerImportOptions{Mode: "merge"})
 	require.Empty(t, res.Errors)
-	require.Equal(t, 2, res.UsageRecords)
+	require.Zero(t, res.UsageRecords)
+	require.Equal(t, 2, res.Skipped)
 
 	var n int
 	require.NoError(t, db.SQL().QueryRowContext(ctx,

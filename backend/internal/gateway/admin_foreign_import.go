@@ -231,15 +231,12 @@ func (s *Server) importN9routerNodes(ctx context.Context, doc map[string]json.Ra
 		if name == "" {
 			name = n.ID
 		}
-		id := uniqueCustomProviderID(prefix, name, func(candidate string) bool {
-			if _, exists := connectors.SpecByID(candidate); exists {
-				return true
-			}
-			if _, dup := s.db.CustomProviders().GetProvider(ctx, candidate); dup == nil {
-				return true
-			}
-			return false
-		})
+		id := prefix + "n9-" + slugify(n.ID)
+		if existing, err := s.db.CustomProviders().GetProvider(ctx, id); err == nil {
+			nodeIDMap[n.ID] = existing.ID
+			res.Skipped++
+			continue
+		}
 
 		alias := n.Prefix
 		if a, aerr := resolveCustomAlias(alias, name, id); aerr == nil {
@@ -727,13 +724,13 @@ func (s *Server) importN9routerCustomModels(ctx context.Context, doc map[string]
 			name = m.ID
 		}
 		cm := store.CustomModel{
-			ID:          uuid.NewString(),
+			ID:          n9IDPrefix + slugify(m.ProviderAlias) + ":" + slugify(m.ID),
 			TenantID:    adminTenant,
 			ProviderID:  providerID,
 			ModelID:     m.ID,
 			DisplayName: name,
 			Kind:        kind,
-			Source:      "imported",
+			Source:      "9router",
 			CreatedAt:   time.Now(),
 			UpdatedAt:   time.Now(),
 		}

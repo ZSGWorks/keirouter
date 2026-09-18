@@ -141,9 +141,9 @@ func (s *Server) adminSQLiteRestore(w http.ResponseWriter, r *http.Request) {
 
 	if err := os.Rename(tmpPath, path); err != nil {
 		// On Windows an open handle on keirouter.db makes os.Rename fail with
-		// "Access is denied". Release the handle by closing the DB pool, clean
-		// WAL/SHM, remove the old file, then retry. The response signals
-		// restart_required, so closing here is safe.
+		// "Access is denied". Release the handle by closing the DB pool, then
+		// move the live database aside before retrying. Never delete the live
+		// file: a failed retry must be able to restore it atomically.
 		//
 		// Non-Windows failures (EACCES, EXDEV, ...) must NOT take this path:
 		// it closes the live pool and deletes the database file, so a plain
@@ -152,13 +152,20 @@ func (s *Server) adminSQLiteRestore(w http.ResponseWriter, r *http.Request) {
 			_ = s.db.Close()
 			_ = os.Remove(path + "-wal")
 			_ = os.Remove(path + "-shm")
-			if _, statErr := os.Stat(path); statErr == nil {
-				_ = os.Remove(path)
-			}
-			if err2 := os.Rename(tmpPath, path); err2 != nil {
-				writeError(w, http.StatusInternalServerError, "replace database failed: "+err2.Error()+" (original: "+err.Error()+")")
+			rollbackPath := safetyPath + ".rollback"
+			if moveErr := os.Rename(path, rollbackPath); moveErr != nil {
+				writeError(w, http.StatusInternalServerError, "prepare database replacement failed: "+moveErr.Error()+" (original: "+err.Error()+")")
 				return
 			}
+			if err2 := os.Rename(tmpPath, path); err2 != nil {
+				if rollbackErr := os.Rename(rollbackPath, path); rollbackErr != nil {
+					writeError(w, http.StatusInternalServerError, "replace database failed: "+err2.Error()+"; rollback failed: "+rollbackErr.Error())
+					return
+				}
+				writeError(w, http.StatusInternalServerError, "replace database failed: "+err2.Error()+"; original database restored")
+				return
+			}
+			_ = os.Remove(rollbackPath)
 		} else {
 			writeError(w, http.StatusInternalServerError, "replace database failed: "+err.Error())
 			return

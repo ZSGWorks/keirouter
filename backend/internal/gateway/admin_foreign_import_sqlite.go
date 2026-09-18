@@ -14,6 +14,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/mydisha/keirouter/backend/internal/caveman"
+	"github.com/mydisha/keirouter/backend/internal/connectors"
 	"github.com/mydisha/keirouter/backend/internal/crypto"
 	"github.com/mydisha/keirouter/backend/internal/ponytail"
 	"github.com/mydisha/keirouter/backend/internal/store"
@@ -147,9 +148,15 @@ func (s *Server) adminImport9routerSQLite(w http.ResponseWriter, r *http.Request
 	}
 	started := time.Now()
 
-	// Options arrive as a JSON form field alongside the file.
+	r.Body = http.MaxBytesReader(w, r.Body, sqliteBackupMaxBytes)
+	if err := r.ParseMultipartForm(sqliteBackupMaxBytes); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid upload: "+err.Error())
+		return
+	}
+	// Parse options only after the body limit is installed. FormValue would
+	// otherwise parse an unbounded multipart body before MaxBytesReader runs.
 	opts := defaultN9routerImportOptions()
-	if raw := r.FormValue("options"); raw != "" {
+	if raw := r.Form.Get("options"); raw != "" {
 		if err := json.Unmarshal([]byte(raw), &opts); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid options: "+err.Error())
 			return
@@ -159,12 +166,6 @@ func (s *Server) adminImport9routerSQLite(w http.ResponseWriter, r *http.Request
 	case "merge", "overwrite", "wipe":
 	default:
 		writeError(w, http.StatusBadRequest, "mode must be merge, overwrite, or wipe")
-		return
-	}
-
-	r.Body = http.MaxBytesReader(w, r.Body, sqliteBackupMaxBytes)
-	if err := r.ParseMultipartForm(sqliteBackupMaxBytes); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid upload: "+err.Error())
 		return
 	}
 
@@ -241,22 +242,39 @@ func (s *Server) adminImport9routerSQLite(w http.ResponseWriter, r *http.Request
 		s.delete9routerRows(ctx, opts, res)
 	}
 
-	if opts.Providers {
-		s.importN9router(ctx, doc, res) // nodes + connections + keys + combos + pools + aliases + custom models
-	}
+	s.import9routerSelected(ctx, doc, res, opts)
 	if opts.Usage {
 		s.import9routerUsageHistory(ctx, doc, res, opts)
 	}
-	if opts.Settings {
-		s.import9routerSettings(ctx, doc, res, opts.Password)
+	if opts.Settings || opts.Password {
+		s.import9routerSettings(ctx, doc, res, opts.Settings, opts.Password)
 	}
 	s.log.Info("9router import: complete", "elapsed_ms", time.Since(started).Milliseconds(),
 		"mode", opts.Mode, "accounts", res.Accounts, "custom_providers", res.CustomProviders,
 		"api_keys", res.APIKeys, "chains", res.Chains, "proxy_pools", res.ProxyPools,
 		"usage_records", res.UsageRecords, "errors", len(res.Errors))
 
-	res.Imported = res.Accounts + res.CustomProviders + res.APIKeys + res.Chains + res.Aliases + res.ProxyPools
+	res.Imported = res.Accounts + res.CustomProviders + res.APIKeys + res.Chains + res.Aliases + res.ProxyPools + res.UsageRecords
 	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) import9routerSelected(ctx context.Context, doc map[string]json.RawMessage, res *foreignImportResult, opts n9routerImportOptions) {
+	var nodeIDMap map[string]string
+	if opts.Providers {
+		nodeIDMap = s.importN9routerNodes(ctx, doc, res)
+		s.importN9routerConnections(ctx, doc, res, nodeIDMap)
+		s.importN9routerCustomModels(ctx, doc, res)
+	}
+	if opts.APIKeys {
+		s.importN9routerAPIKeys(ctx, doc, res)
+	}
+	if opts.Chains {
+		s.importN9routerCombos(ctx, doc, res)
+		s.importN9routerAliases(ctx, doc, res)
+	}
+	if opts.ProxyPools {
+		s.importN9routerProxyPools(ctx, doc, res)
+	}
 }
 
 // n9routerSafetyBackup copies the live SQLite database to a timestamped
@@ -294,6 +312,7 @@ func (s *Server) delete9routerRows(ctx context.Context, opts n9routerImportOptio
 	}
 	if opts.Providers {
 		del("accounts", "id")
+		s.delete9routerCustomResources(ctx, opts.Mode == "wipe", res)
 	}
 	if opts.APIKeys {
 		del("api_keys", "id")
@@ -310,11 +329,45 @@ func (s *Server) delete9routerRows(ctx context.Context, opts n9routerImportOptio
 		// dashboard password hash and provider routing overrides written by
 		// settings.go, with no safety backup). The safety backup is taken
 		// before wipe deletions, so a full reset is safe here.
-		for _, k := range []string{endpointSettingsKey, "auth.password_hash"} {
+		for _, k := range []string{endpointSettingsKey} {
 			_ = s.settings.Delete(ctx, k)
 		}
 		_, _ = s.db.SQL().ExecContext(ctx,
 			"DELETE FROM settings WHERE key LIKE '"+providerRoutingPrefix+"%'")
+	}
+	if opts.Password && opts.Mode == "wipe" {
+		_ = s.settings.Delete(ctx, "auth.password_hash")
+	}
+}
+
+func (s *Server) delete9routerCustomResources(ctx context.Context, wipe bool, res *foreignImportResult) {
+	providers, err := s.db.CustomProviders().ListProviders(ctx, adminTenant)
+	if err != nil {
+		res.Errors = append(res.Errors, "list custom providers: "+err.Error())
+		return
+	}
+	for _, provider := range providers {
+		if !wipe && !strings.Contains(provider.ID, "-n9-") {
+			continue
+		}
+		if err := s.db.CustomProviders().DeleteProvider(ctx, provider.ID); err != nil {
+			res.Errors = append(res.Errors, "delete custom provider "+provider.ID+": "+err.Error())
+			continue
+		}
+		connectors.UnregisterDynamicProvider(provider.ID)
+	}
+	models, err := s.db.CustomProviders().ListModels(ctx, adminTenant)
+	if err != nil {
+		res.Errors = append(res.Errors, "list custom models: "+err.Error())
+		return
+	}
+	for _, model := range models {
+		if !wipe && model.Source != "9router" {
+			continue
+		}
+		if err := s.db.CustomProviders().DeleteModel(ctx, model.ID); err != nil {
+			res.Errors = append(res.Errors, "delete custom model "+model.ID+": "+err.Error())
+		}
 	}
 }
 
@@ -618,7 +671,7 @@ func (s *Server) import9routerUsageHistory(ctx context.Context, doc map[string]j
 	// RecordBatch already splits statements to respect bind limits; chunking
 	// here additionally bounds transaction duration.
 	const chunkSize = 1000
-	imported := 0
+	inserted := 0
 	for start := 0; start < len(records); start += chunkSize {
 		end := min(start+chunkSize, len(records))
 		chunk := records[start:end]
@@ -627,21 +680,22 @@ func (s *Server) import9routerUsageHistory(ctx context.Context, doc map[string]j
 			for _, rec := range chunk {
 				if _, dup := existing[rec.ID]; !dup {
 					filtered = append(filtered, rec)
+				} else {
+					res.Skipped++
 				}
 			}
 			chunk = filtered
 		}
 		if len(chunk) == 0 {
-			imported = end
 			continue
 		}
 		if err := s.usage.RecordBatch(ctx, chunk); err != nil {
 			res.Errors = append(res.Errors, fmt.Sprintf("usageHistory: %d/%d rows: %v", start, len(records), err))
 			break
 		}
-		imported = end
+		inserted += len(chunk)
 	}
-	res.UsageRecords = imported
+	res.UsageRecords = inserted
 }
 
 // usageKeyLookup builds a map from api_key lookup_hash → api_key id for the
@@ -705,7 +759,7 @@ func map9routerUsageStatus(s string) string {
 //
 // Settings are additive: existing keys are overwritten only if the imported
 // value is non-zero, so manual tweaks are preserved when re-importing.
-func (s *Server) import9routerSettings(ctx context.Context, doc map[string]json.RawMessage, res *foreignImportResult, includePassword bool) {
+func (s *Server) import9routerSettings(ctx context.Context, doc map[string]json.RawMessage, res *foreignImportResult, includeSettings, includePassword bool) {
 	raw, ok := doc["settings"]
 	if !ok {
 		return
@@ -733,11 +787,11 @@ func (s *Server) import9routerSettings(ctx context.Context, doc map[string]json.
 		return
 	}
 
-	// ── Patch 5: token saver → endpoint_settings ──────────────────────
-	s.import9routerTokenSaver(ctx, data, res)
-
-	// ── Patch 6: routing strategy → endpoint_settings + provider_routing_*
-	s.import9routerRouting(ctx, data, res)
+	if includeSettings {
+		// Token saver and routing are both represented by the Settings section.
+		s.import9routerTokenSaver(ctx, data, res)
+		s.import9routerRouting(ctx, data, res)
+	}
 
 	// ── Patch 7: dashboard password bcrypt → argon2id ─────────────────
 	if includePassword {
