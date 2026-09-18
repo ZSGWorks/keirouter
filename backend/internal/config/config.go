@@ -37,6 +37,16 @@ type Config struct {
 // the historical 32 MiB limit, while a finite cap still protects the process.
 const DefaultMaxRequestBodyBytes int64 = 128 << 20 // 128 MiB
 
+// DefaultIdleTimeout reaps keep-alive connections idle longer than this so
+// long-running processes do not accumulate dead sockets. Short enough to
+// bound goroutine/connection lifetime, long enough for dashboard polling.
+const DefaultIdleTimeout = 120 * time.Second
+
+// DefaultMaxHeaderBytes caps inbound request header+URL size at net/http's
+// own default; made explicit so operators can tune it and slow-header clients
+// cannot negotiate beyond it.
+const DefaultMaxHeaderBytes = 1 << 20 // 1 MiB
+
 // ServerConfig controls the HTTP listener.
 type ServerConfig struct {
 	Host string `koanf:"host"`
@@ -52,6 +62,12 @@ type ServerConfig struct {
 	RequestTimeout time.Duration `koanf:"request_timeout"`
 	// CORSOrigins lists allowed dashboard origins ("*" permitted for local).
 	CORSOrigins []string `koanf:"cors_origins"`
+	// IdleTimeout reaps keep-alive connections idle longer than this.
+	// Zero or negative means DefaultIdleTimeout.
+	IdleTimeout time.Duration `koanf:"idle_timeout"`
+	// MaxHeaderBytes caps the inbound request header+URL size.
+	// Zero or negative means DefaultMaxHeaderBytes.
+	MaxHeaderBytes int `koanf:"max_header_bytes"`
 	// MaxRequestBodyBytes caps inbound API request bodies. Values less than one
 	// are replaced by DefaultMaxRequestBodyBytes.
 	MaxRequestBodyBytes int64 `koanf:"max_request_body_bytes"`
@@ -439,6 +455,12 @@ func (c *Config) validate() error {
 	}
 	if c.Server.MaxRequestBodyBytes <= 0 {
 		c.Server.MaxRequestBodyBytes = DefaultMaxRequestBodyBytes
+	}
+	if c.Server.IdleTimeout <= 0 {
+		c.Server.IdleTimeout = DefaultIdleTimeout
+	}
+	if c.Server.MaxHeaderBytes <= 0 {
+		c.Server.MaxHeaderBytes = DefaultMaxHeaderBytes
 	}
 	if c.Meter.BatchSize <= 0 {
 		c.Meter.BatchSize = 100

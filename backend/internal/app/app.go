@@ -282,19 +282,26 @@ func Build(ctx context.Context, cfg config.Config, log *slog.Logger, version str
 		ProbeRunner:           probeRunner,
 	})
 
-	srv := &http.Server{
-		Addr:              cfg.Addr(),
-		Handler:           gw.Handler(),
-		ReadHeaderTimeout: 15 * time.Second,
-		// No WriteTimeout: streaming responses are long-lived; the stall
-		// timeout is enforced per-stream inside the connectors instead.
-	}
+	srv := newHTTPServer(cfg, gw.Handler())
 
 	// Auto-seed accounts for free, no-auth providers so they are immediately
 	// usable without a manual "connect" step in the dashboard.
 	seedFreeAccounts(ctx, db.Accounts(), log)
 
 	return &App{cfg: cfg, log: log, db: db, accounts: db.Accounts(), server: srv, keepAlive: keepAlive, guardrailAudit: guardrails.audit, guardrailRetention: guardrails.retention, meter: mtr, healthChecker: healthChecker, providerHealth: healthSvc, probeRunner: probeRunner, pricingFetcher: pricingFetcher, reloadPricing: reloadPricing, refreshPricingCatalog: refreshPricingCatalog, gw: gw, dispatcher: disp}, nil
+}
+
+// newHTTPServer builds the API listener. WriteTimeout stays unset because
+// streaming responses are long-lived; the stall timeout is enforced
+// per-stream inside the connectors instead.
+func newHTTPServer(cfg config.Config, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              cfg.Addr(),
+		Handler:           handler,
+		ReadHeaderTimeout: 15 * time.Second,
+		IdleTimeout:       cfg.Server.IdleTimeout,
+		MaxHeaderBytes:    cfg.Server.MaxHeaderBytes,
+	}
 }
 
 // buildProviderHealthConfig maps config into the health telemetry service's
