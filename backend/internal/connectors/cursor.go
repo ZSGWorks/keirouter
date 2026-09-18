@@ -19,6 +19,14 @@ import (
 // response is a sequence of Connect-RPC frames carrying protobuf payloads. This
 // connector builds the framed body, reads the
 // full framed response, and decodes each frame into canonical chunks.
+// maxCursorBodyBytes caps how much of the upstream response body is read
+// into memory; a larger body is rejected instead of buffered whole.
+const maxCursorBodyBytes = 128 << 20 // 128 MiB
+
+// maxCursorInflatedBytes caps gunzip output for compressed Connect-RPC frames
+// so a crafted gzip bomb cannot inflate to arbitrary size.
+const maxCursorInflatedBytes = 64 << 20 // 64 MiB
+
 type Cursor struct {
 	id          string
 	defaultBase string
@@ -214,9 +222,12 @@ func (c *Cursor) do(ctx context.Context, req *core.ChatRequest, creds core.Crede
 	}
 	defer resp.Body.Close()
 
-	raw, err := io.ReadAll(resp.Body)
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxCursorBodyBytes+1))
 	if err != nil {
 		return nil, &core.ProviderError{Kind: core.ErrUpstream, Provider: c.id, Model: req.Model, Message: "read body: " + err.Error(), Cause: err}
+	}
+	if len(raw) > maxCursorBodyBytes {
+		return nil, &core.ProviderError{Kind: core.ErrUpstream, Provider: c.id, Model: req.Model, Message: "response body exceeds size cap"}
 	}
 	if resp.StatusCode >= 400 {
 		return nil, httpStatusError(c.id, req.Model, resp, raw)
