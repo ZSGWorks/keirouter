@@ -224,9 +224,12 @@ func (c *OpenAIResponses) Stream(ctx context.Context, req *core.ChatRequest, cre
 		}
 		if err := scanner.Err(); err != nil {
 			terminalSeen = true // error is itself terminal
-			out <- core.StreamChunk{
+			select {
+			case out <- core.StreamChunk{
 				Type: core.ChunkError,
 				Err:  &core.ProviderError{Kind: core.ErrTimeout, Provider: c.id, Model: req.Model, Message: err.Error(), Cause: err},
+			}:
+			case <-ctx.Done():
 			}
 		}
 
@@ -234,9 +237,12 @@ func (c *OpenAIResponses) Stream(ctx context.Context, req *core.ChatRequest, cre
 		// response.failed, or error), synthesize response.failed + [DONE]
 		// so Codex clients don't hang waiting for a terminal event.
 		if !terminalSeen {
-			out <- core.StreamChunk{
+			select {
+			case out <- core.StreamChunk{
 				Type:  core.ChunkText,
 				Delta: formatResponsesFailureAndDone(),
+			}:
+			case <-ctx.Done():
 			}
 		}
 	}()

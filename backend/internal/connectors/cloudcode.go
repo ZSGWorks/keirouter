@@ -594,9 +594,12 @@ func (c *CloudCode) Stream(ctx context.Context, req *core.ChatRequest, creds cor
 			}
 		}
 		if err := scanner.Err(); err != nil {
-			out <- core.StreamChunk{
+			select {
+			case out <- core.StreamChunk{
 				Type: core.ChunkError,
 				Err:  &core.ProviderError{Kind: core.ErrTimeout, Provider: c.id, Model: request.Model, Message: err.Error(), Cause: err},
+			}:
+			case <-ctx.Done():
 			}
 		}
 	}()

@@ -543,9 +543,12 @@ func scanOpenAISSE(ctx context.Context, provider, model string, resp *http.Respo
 			}
 		}
 		if err := scanner.Err(); err != nil {
-			out <- core.StreamChunk{
+			select {
+			case out <- core.StreamChunk{
 				Type: core.ChunkError,
 				Err:  &core.ProviderError{Kind: core.ErrTimeout, Provider: provider, Model: model, Message: err.Error(), Cause: err},
+			}:
+			case <-ctx.Done():
 			}
 		}
 	}()

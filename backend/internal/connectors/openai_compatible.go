@@ -641,9 +641,12 @@ func (c *OpenAICompatible) streamResponse(ctx context.Context, model string, cfg
 			}
 		}
 		if err := scanner.Err(); err != nil {
-			out <- core.StreamChunk{
+			select {
+			case out <- core.StreamChunk{
 				Type: core.ChunkError,
 				Err:  &core.ProviderError{Kind: core.ErrTimeout, Provider: c.id, Model: model, Message: err.Error(), Cause: err},
+			}:
+			case <-ctx.Done():
 			}
 		}
 	}()

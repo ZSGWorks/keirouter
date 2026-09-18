@@ -249,9 +249,12 @@ func (c *GitHubCopilot) Stream(ctx context.Context, req *core.ChatRequest, creds
 			}
 		}
 		if err := scanner.Err(); err != nil {
-			out <- core.StreamChunk{
+			select {
+			case out <- core.StreamChunk{
 				Type: core.ChunkError,
 				Err:  &core.ProviderError{Kind: core.ErrTimeout, Provider: c.id, Model: req.Model, Message: err.Error(), Cause: err},
+			}:
+			case <-ctx.Done():
 			}
 		}
 	}()
@@ -371,9 +374,12 @@ func (c *GitHubCopilot) streamViaResponses(ctx context.Context, req *core.ChatRe
 			}
 		}
 		if err := scanner.Err(); err != nil {
-			out <- core.StreamChunk{
+			select {
+			case out <- core.StreamChunk{
 				Type: core.ChunkError,
 				Err:  &core.ProviderError{Kind: core.ErrTimeout, Provider: c.id, Model: req.Model, Message: err.Error(), Cause: err},
+			}:
+			case <-ctx.Done():
 			}
 		}
 	}()
